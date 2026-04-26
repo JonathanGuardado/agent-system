@@ -1,0 +1,92 @@
+capabilities:
+  - name: architecture.design
+    description: >
+      System architecture, product architecture, SaaS application design,
+      greenfield technical planning, tradeoffs, scalability, reliability,
+      component boundaries, and high-level implementation strategy.
+    examples:
+      - build a new SaaS app from scratch
+      - design a scalable notification system
+      - architect a multi-tenant ticket automation platform
+      - plan a reliable distributed queue
+    anti_examples:
+      - implement OAuth login
+      - review this bug fix
+      - hello
+    default_signals:
+      long_context: true
+      priority: quality
+      budget_mode: premium
+
+  - name: ticket.decompose
+    description: >
+      Breaking initiatives, features, epics, product requests, or engineering
+      plans into Jira tickets, implementation tasks, acceptance criteria, and
+      ordered delivery slices.
+    examples:
+      - break this feature into Jira tickets
+      - decompose this epic into implementation tasks
+      - split this roadmap item into tickets
+      - create acceptance criteria for these Jira stories
+    anti_examples:
+      - implement OAuth login
+      - review this bug fix
+      - hello
+    default_signals:
+      needs_json: true
+      priority: quality
+
+  - name: code.implement
+    description: >
+      Writing, modifying, fixing, refactoring, or implementing code, tests,
+      scripts, APIs, features, functions, integrations, and repository changes.
+    examples:
+      - implement OAuth login
+      - add tests for the Git adapter
+      - refactor the selector module
+      - fix this parser bug
+    anti_examples:
+      - build a new SaaS app from scratch
+      - break this feature into Jira tickets
+      - review this bug fix
+      - hello
+    default_signals:
+      needs_tools: true
+      needs_json: true
+      priority: quality
+
+  - name: code.verify
+    description: >
+      Reviewing code, validating bug fixes, analyzing test failures, checking
+      correctness, inspecting stack traces, and verifying implementations.
+    examples:
+      - review this bug fix
+      - verify this implementation
+      - explain this stack trace
+      - why are these tests failing?
+    anti_examples:
+      - implement OAuth login
+      - build a new SaaS app from scratch
+      - break this feature into Jira tickets
+      - hello
+    default_signals:
+      needs_json: true
+      priority: reliability
+
+  - name: trivial.respond
+    description: >
+      Short casual prompts, greetings, acknowledgements, and lightweight
+      responses that do not need tools, code analysis, or deep reasoning.
+    examples:
+      - hello
+      - hi
+      - thanks
+      - say hi in a friendly way
+    anti_examples:
+      - implement OAuth login
+      - review this bug fix
+      - build a new SaaS app from scratch
+    default_signals:
+      needs_json: true
+      priority: latency
+      budget_mode: economy

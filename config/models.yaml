@@ -1,0 +1,60 @@
+models:
+  - selection_tier: deepseek-v4
+    provider: configured
+    model_name: deepseek-v4
+    deployment_name: deepseek-v4
+    role_tags: [coding, implementation, reasoning]
+    supports_tools: true
+    supports_json: true
+    long_context: true
+    coding_score: 10.0
+    reasoning_score: 8.0
+    latency_score: 5.0
+    cost_score: 6.0
+    reliability_score: 8.0
+    enabled: true
+
+  - selection_tier: minimax-m2.5
+    provider: configured
+    model_name: minimax-m2.5
+    deployment_name: minimax-m2.5
+    role_tags: [architecture, planning, reasoning]
+    supports_tools: true
+    supports_json: true
+    long_context: true
+    coding_score: 8.0
+    reasoning_score: 10.0
+    latency_score: 6.0
+    cost_score: 5.0
+    reliability_score: 8.5
+    enabled: true
+
+  - selection_tier: gemini-flash
+    provider: configured
+    model_name: gemini-flash
+    deployment_name: gemini-flash
+    role_tags: [fast, verify, fallback]
+    supports_tools: true
+    supports_json: true
+    long_context: true
+    coding_score: 6.0
+    reasoning_score: 6.0
+    latency_score: 10.0
+    cost_score: 8.0
+    reliability_score: 8.0
+    enabled: true
+
+  - selection_tier: router-auto
+    provider: configured
+    model_name: router-auto
+    deployment_name: router-auto
+    role_tags: [router, trivial, fast]
+    supports_tools: false
+    supports_json: true
+    long_context: false
+    coding_score: 2.0
+    reasoning_score: 2.0
+    latency_score: 11.0
+    cost_score: 11.0
+    reliability_score: 6.0
+    enabled: true

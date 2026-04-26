@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Slack-first, Jira-backed agent execution system."
 requires-python = ">=3.12"
 dependencies = [
+  "ai-model-selector @ git+https://github.com/JonathanGuardado/ai-model-selector.git",
   "PyYAML>=6.0.1",
 ]
 

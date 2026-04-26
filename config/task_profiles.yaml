@@ -1,0 +1,40 @@
+task_profiles:
+  - capability: default
+    scoring_weights:
+      latency: 1.0
+      cost: 1.0
+    fallback_count: 1
+
+  - capability: architecture.design
+    scoring_weights:
+      reasoning: 1.0
+    fallback_count: 2
+
+  - capability: ticket.decompose
+    scoring_weights:
+      reasoning: 1.0
+    fallback_count: 2
+
+  - capability: code.implement
+    required_constraints:
+      supports_tools: true
+      supports_json: true
+    scoring_weights:
+      coding: 1.0
+    fallback_count: 2
+
+  - capability: code.verify
+    required_constraints:
+      supports_json: true
+      long_context: true
+    scoring_weights:
+      latency: 1.0
+    fallback_count: 1
+
+  - capability: trivial.respond
+    required_constraints:
+      supports_json: true
+    scoring_weights:
+      latency: 1.0
+      cost: 1.0
+    fallback_count: 1
