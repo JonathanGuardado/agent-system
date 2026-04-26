@@ -33,3 +33,23 @@ class RepoContractError(AgentSystemError):
 
 class TicketLockError(AgentSystemError):
     """Raised when ticket lock configuration or usage is invalid."""
+
+
+class GitAdapterError(AgentSystemError):
+    """Base exception for expected local git adapter failures."""
+
+
+class WorktreeCreationError(GitAdapterError):
+    """Raised when a git worktree cannot be created."""
+
+
+class NoChangesToCommitError(GitAdapterError):
+    """Raised when commit is requested but there are no staged changes."""
+
+
+class PushError(GitAdapterError):
+    """Raised when pushing a branch fails."""
+
+
+class WorktreeCleanupError(GitAdapterError):
+    """Raised when a git worktree cannot be removed."""

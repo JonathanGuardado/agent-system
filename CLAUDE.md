@@ -1,0 +1,554 @@
+# CLAUDE.md — Agent System v1
+
+## Project identity
+
+This repo is an autonomous software development agent system.
+
+The system receives human requests from Slack, turns approved work into Jira
+tickets, detects `ai-ready` tickets, locks them, executes them through a
+LangGraph pipeline, opens a PR, and reports back to Slack.
+
+## Architecture in one line
+
+Slack → ai-model-selector → IntakeHandler → Jira source of truth →
+DetectionComponent → SQLite lock → LangGraph StateGraph →
+ImplementationComponent → internal ModelRouter → tests → PR → Slack alert
+
+## Current implementation focus
+
+We are building the system incrementally.
+
+Current phase:
+
+- P0: ✅ Infrastructure
+- P1: ✅ Intake handler
+- P2: ✅ Detection + Locking
+- P3: 🚧 Tool adapters
+- P4: ☐ Internal ModelRouter + PydanticAI
+- P5: ☐ LangGraph + Full pipeline
+
+Current active task:
+
+Implement and harden the P3 local tool adapters:
+FileAdapter, ShellAdapter, TestAdapter, GitAdapter, and repo contract support.
+
+Do not jump ahead to P4 or P5 unless explicitly asked.
+
+## Runtime model
+
+The LLM routing layer is implemented inside this repo as an internal Python
+module.
+
+Router package:
+
+```txt
+src/ticket_agent/router/
+├── model_router.py
+├── providers/
+│   ├── base.py
+│   ├── minimax.py
+│   ├── gemini.py
+│   └── ollama.py
+├── selector_adapter.py
+├── cost_logger.py
+└── errors.py
+```
+
+Components call the internal router directly:
+
+```python
+await model_router.invoke(
+    capability="code.implement",
+    messages=messages,
+    ticket_id=ticket_key,
+)
+```
+
+The internal ModelRouter owns:
+
+- ai-model-selector integration
+- provider selection
+- fallback chain execution
+- provider API calls
+- local Ollama calls
+- response normalization
+- cost metadata
+- JSONL cost logging
+- retry and timeout handling
+
+## Environment assumptions
+
+These are available on the HP:
+
+- Ollama + Qwen 3.5 9B
+  - Ollama runs at `localhost:11434`
+  - The internal router may call Ollama directly when the selected model
+    targets the local provider.
+
+- API keys
+  - Stored in `~/config/router.env`
+  - Includes MiniMax and Gemini keys.
+  - Load them from environment/config.
+  - Do not duplicate keys into this repo.
+  - Do not print secrets in logs or test output.
+
+- Python environment
+  - The agent system may have its own venv.
+  - Keep runtime dependencies scoped to this repo.
+
+## Package layout
+
+Main package:
+
+```txt
+src/ticket_agent/
+```
+
+Tests:
+
+```txt
+tests/unit/
+```
+
+Expected high-level areas:
+
+```txt
+src/ticket_agent/
+├── detection/
+├── intake/
+├── locks/
+├── models/
+├── orchestrator/
+├── router/
+├── tools/
+└── execution/
+```
+
+Configuration:
+
+```txt
+config/
+├── system.yaml
+├── capabilities.yaml
+├── models.yaml
+├── task_profiles.yaml
+├── budgets.yaml
+└── repos/
+```
+
+## Key architecture decisions
+
+- `ai-model-selector` is deterministic.
+  - No LLM call.
+  - No network call.
+  - Used for intent/capability resolution and model tier selection.
+
+- ModelRouter is internal.
+  - It lives inside `src/ticket_agent/router/`.
+  - It is imported and called directly by Python components.
+  - It is not an HTTP service.
+  - It should not expose an OpenAI-compatible API in v1.
+
+- Components should not call provider APIs directly.
+  - They call `ModelRouter.invoke(...)`.
+  - Provider-specific logic belongs under `router/providers/`.
+
+- Components should not know provider API keys.
+  - API keys are loaded by provider clients.
+  - Secrets must never be passed into LLM prompts, tool adapters, logs,
+    or LangGraph state.
+
+- LangGraph is workflow runtime only.
+  - It owns node sequencing, state transitions, retries, checkpoints,
+    and human interrupts.
+  - It does not write code.
+  - It does not reason about implementation details.
+
+- `ImplementationComponent` is the coding agent.
+  - It runs inside the LangGraph `implement` node.
+  - It uses internal ModelRouter for LLM calls.
+  - It uses local tool adapters for file, shell, test, and git operations.
+
+- SQLite WAL is used for both:
+  - distributed ticket locks via `ticket_locks`
+  - LangGraph checkpoints via `SqliteSaver`
+
+- A LangGraph checkpoint without a valid SQLite lock is stale.
+  - Never resume stale checkpoints.
+  - Reconciler must clean Jira and expired locks before work resumes.
+
+- Jira is the execution source of truth.
+  - Detection reads from Jira.
+  - Orchestrator works from Jira tickets.
+  - Slack is only the human-facing interface.
+
+- Slack has two separate approval moments:
+  1. Intake approval: approve the proposal before Jira is written.
+  2. Execution approval: approve the LangGraph execution before code is changed.
+
+## Internal ModelRouter contract
+
+The internal router exposes one primary async method:
+
+```python
+class ModelRouter:
+    async def invoke(
+        self,
+        capability: str,
+        messages: list[dict],
+        ticket_id: str | None = None,
+        metadata: dict | None = None,
+    ) -> ModelResponse:
+        ...
+```
+
+`ModelResponse` should include:
+
+```python
+class ModelResponse(BaseModel):
+    content: str
+    model: str
+    provider: str
+    capability: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    estimated_cost_usd: float | None = None
+    fallback_used: bool = False
+    attempts: list[ModelAttempt] = []
+```
+
+`ModelAttempt` should include:
+
+```python
+class ModelAttempt(BaseModel):
+    model: str
+    provider: str
+    success: bool
+    error: str | None = None
+    latency_ms: int | None = None
+```
+
+Provider interface:
+
+```python
+class ProviderClient(Protocol):
+    async def chat(
+        self,
+        model: str,
+        messages: list[dict],
+        timeout_s: int,
+    ) -> ProviderResponse:
+        ...
+```
+
+Provider implementations:
+
+- `MiniMaxProvider`
+- `GeminiProvider`
+- `OllamaProvider`
+
+The router should try:
+
+1. `decision.primary`
+2. each model in `decision.fallbacks`
+3. raise `AllBackendsFailedError` if all fail
+
+## ai-model-selector usage
+
+The internal ModelRouter should use:
+
+```python
+IntentResolver.resolve(...)
+build_request_context(...)
+DeterministicSelector.select(...)
+```
+
+Flow:
+
+```python
+resolution = resolver.resolve(capability)
+context = build_request_context(resolution)
+decision = selector.select(context)
+```
+
+Then the internal router maps `decision.primary` to a configured provider/model.
+
+Example:
+
+```yaml
+# config/models.yaml
+models:
+  minimax-m2.5:
+    provider: minimax
+    model_id: minimax-m2.5
+  gemini-flash:
+    provider: gemini
+    model_id: gemini-2.5-flash
+  qwen-local:
+    provider: ollama
+    model_id: qwen3.5:9b
+```
+
+## Cost logging
+
+Every successful or failed model attempt should append one JSON line to:
+
+```txt
+data/agent-costs.jsonl
+```
+
+Each entry should include:
+
+```json
+{
+  "timestamp": "2026-04-25T00:00:00Z",
+  "ticket_id": "JLA-42",
+  "capability": "code.implement",
+  "provider": "minimax",
+  "model": "minimax-m2.5",
+  "success": true,
+  "fallback_used": false,
+  "latency_ms": 1234,
+  "input_tokens": 1000,
+  "output_tokens": 500,
+  "estimated_cost_usd": 0.02,
+  "error": null
+}
+```
+
+Do not log prompt content by default.
+
+## Non-obvious rules
+
+- Test commands are never auto-detected.
+  - Always load them from `config/repos/{repo}.yaml`.
+
+- Tool adapters are direct Python calls in v1.
+  - Do not implement MCP yet.
+  - Adapter method signatures should remain MCP-compatible for future migration.
+
+- OpenClaw is post-MVP.
+  - Do not add OpenClaw integration in v1.
+
+- Do not merge PRs automatically.
+  - The system opens PRs only.
+  - Human review and merge stay manual.
+
+## Security rules enforced in code
+
+### FileAdapter
+
+FileAdapter must enforce all of the following before every read/write/list:
+
+- Use `Path.resolve()` before boundary checks.
+- Resolved path must stay inside the worktree.
+- Symlink escapes must be blocked.
+- Writes outside allowed source directories must be rejected.
+- Protected files must be rejected.
+
+Protected paths include:
+
+```txt
+.github/
+Dockerfile
+docker-compose.yml
+.env
+secrets/
+```
+
+File operation policy:
+
+- Create/modify source files: allowed inside `source_dirs`
+- Delete files: not allowed, escalate
+- Rename/move files: not allowed, escalate
+- CI/CD files: not allowed, escalate
+- Config files: only allowed if listed in `config_paths_allowed`
+
+### ShellAdapter
+
+ShellAdapter must enforce:
+
+- Command allowlist before execution.
+- Denylist for dangerous commands.
+- No shell interpolation when avoidable.
+- Run from the worktree only.
+- Strip environment variables.
+- Keep only:
+  - `PATH`
+  - `HOME`
+  - `VIRTUAL_ENV`
+- Never expose API keys or secrets.
+- Enforce timeout and kill process on timeout.
+
+### TestAdapter
+
+TestAdapter must:
+
+- Load test command from repo contract.
+- Never infer test command from package files.
+- Return structured test result.
+- Include stdout/stderr summary.
+- Mark timeout explicitly.
+
+### GitAdapter
+
+GitAdapter must:
+
+- Use isolated worktrees.
+- Branch format:
+
+```txt
+agent/{TICKET-KEY}/{short-lock-id}
+```
+
+- Never push to `main`.
+- Never force-push.
+- Clean up worktrees after PR or escalation.
+- Open PRs only. Do not merge.
+
+## Repo contract rules
+
+Every repo that agents work on must have:
+
+```txt
+config/repos/{repo}.yaml
+```
+
+The system must escalate if the repo contract is missing.
+
+Required contract fields:
+
+```yaml
+repo:
+  name: my-project
+  root: ~/repos/my-project
+  default_branch: main
+
+language:
+  primary: python
+  package_manager: poetry
+
+commands:
+  test: "pytest tests/ -x -q"
+  lint: "ruff check src/"
+  install: null
+
+policy:
+  dependency_install_allowed: false
+  config_paths_allowed: []
+  protected_paths:
+    - .github/
+    - Dockerfile
+    - docker-compose.yml
+    - .env
+    - secrets/
+
+source_dirs:
+  - src/
+
+test_dirs:
+  - tests/
+```
+
+## Coding expectations
+
+When implementing code:
+
+- Prefer small, focused modules.
+- Keep side effects isolated.
+- Add unit tests for happy paths and failure modes.
+- Use typed dataclasses or Pydantic models for structured results.
+- Avoid broad exception swallowing.
+- Use explicit custom errors for policy violations.
+- Keep security-sensitive behavior easy to inspect.
+- Do not introduce network calls outside provider clients.
+- Do not add new dependencies unless needed.
+
+## Testing expectations
+
+For every new component, add tests under:
+
+```txt
+tests/unit/
+```
+
+Security-sensitive components must include negative tests.
+
+Required adapter test coverage:
+
+- Path escape is blocked.
+- Symlink escape is blocked.
+- Protected path write is blocked.
+- Unauthorized config write is blocked.
+- Denied shell command is blocked.
+- Unknown shell command is blocked.
+- Shell timeout is handled.
+- Test command is loaded from repo contract.
+- Missing repo contract escalates.
+- Git branch name follows `agent/{TICKET-KEY}/{id}`.
+
+Required router test coverage:
+
+- Primary model succeeds.
+- Primary fails and fallback succeeds.
+- All providers fail.
+- Cost log entry is written.
+- Provider API keys are not logged.
+- Ollama provider sends `think: false` when calling Qwen.
+- Components call ModelRouter, not provider clients directly.
+
+## Current P3 implementation checklist
+
+- [ ] FileAdapter path boundary enforcement
+- [ ] FileAdapter protected path policy
+- [ ] ShellAdapter allowlist and denylist
+- [ ] ShellAdapter env isolation
+- [ ] ShellAdapter timeout handling
+- [ ] RepoContract Pydantic model
+- [ ] RepoContractLoader
+- [ ] TestAdapter using repo contract test command
+- [ ] GitAdapter worktree creation
+- [ ] GitAdapter commit/push/open PR
+- [ ] Unit tests for all adapter failure modes
+
+## Upcoming P4 implementation checklist
+
+- [ ] Internal ModelRouter
+- [ ] ProviderClient interface
+- [ ] MiniMax provider
+- [ ] Gemini provider
+- [ ] Ollama provider
+- [ ] ai-model-selector adapter
+- [ ] fallback chain
+- [ ] cost logger
+- [ ] router tests
+- [ ] PydanticAI output models
+
+## Important references
+
+Architecture spec:
+
+```txt
+Agent_System_Architecture_v1.html
+```
+
+Implementation guide:
+
+```txt
+Agent_System_Implementation_Guide.html
+```
+
+## What not to do
+
+Do not:
+
+- Replace `ai-model-selector`
+- Add MCP or OpenClaw yet
+- Auto-detect test commands
+- Push to main
+- Force-push
+- Merge PRs automatically
+- Store secrets in this repo
+- Let tools operate outside the worktree
+- Let the LLM decide security policy
+- Continue to P4/P5 until P3 adapters are tested
