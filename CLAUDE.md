@@ -43,15 +43,10 @@ Router package:
 
 ```txt
 src/ticket_agent/router/
+├── app.py
 ├── model_router.py
-├── providers/
-│   ├── base.py
-│   ├── minimax.py
-│   ├── gemini.py
-│   └── ollama.py
-├── selector_adapter.py
-├── cost_logger.py
-└── errors.py
+├── providers.py
+└── selector_config.py
 ```
 
 Components call the internal router directly:
@@ -67,13 +62,11 @@ await model_router.invoke(
 The internal ModelRouter owns:
 
 - ai-model-selector integration
-- provider selection
+- endpoint execution for selector-selected providers
 - fallback chain execution
 - provider API calls
 - local Ollama calls
 - response normalization
-- cost metadata
-- JSONL cost logging
 - retry and timeout handling
 
 ## Environment assumptions

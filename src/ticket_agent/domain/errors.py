@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ticket_agent.domain.model_router import ModelAttemptFailure
+
 
 class AgentSystemError(Exception):
     """Base exception for expected ticket-agent failures."""
@@ -53,3 +55,27 @@ class PushError(GitAdapterError):
 
 class WorktreeCleanupError(GitAdapterError):
     """Raised when a git worktree cannot be removed."""
+
+
+class ModelRouterError(AgentSystemError):
+    """Base exception for expected model router failures."""
+
+
+class ModelCallError(ModelRouterError):
+    """Raised when one model call fails."""
+
+    def __init__(self, model: str, error: str) -> None:
+        super().__init__(f"{model}: {error}")
+        self.model = model
+        self.error = error
+
+
+class AllModelsFailedError(ModelRouterError):
+    """Raised when the primary and every fallback model call fail."""
+
+    def __init__(self, failures: list[ModelAttemptFailure]) -> None:
+        self.failures = tuple(failures)
+        detail = "; ".join(
+            f"{failure.model}: {failure.error}" for failure in self.failures
+        )
+        super().__init__(f"all model attempts failed: {detail}")

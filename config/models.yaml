@@ -1,8 +1,8 @@
 models:
-  - selection_tier: deepseek-v4
-    provider: configured
-    model_name: deepseek-v4
-    deployment_name: deepseek-v4
+  - selection_tier: dev
+    provider: minimax
+    model_name: MiniMax-M2.7
+    deployment_name: MiniMax-M2.7
     role_tags: [coding, implementation, reasoning]
     supports_tools: true
     supports_json: true
@@ -14,10 +14,10 @@ models:
     reliability_score: 8.0
     enabled: true
 
-  - selection_tier: minimax-m2.5
-    provider: configured
-    model_name: minimax-m2.5
-    deployment_name: minimax-m2.5
+  - selection_tier: design
+    provider: minimax
+    model_name: MiniMax-M2.7
+    deployment_name: MiniMax-M2.7
     role_tags: [architecture, planning, reasoning]
     supports_tools: true
     supports_json: true
@@ -29,10 +29,10 @@ models:
     reliability_score: 8.5
     enabled: true
 
-  - selection_tier: gemini-flash
-    provider: configured
+  - selection_tier: browsing
+    provider: gemini
     model_name: gemini-flash
-    deployment_name: gemini-flash
+    deployment_name: gemini-2.5-flash
     role_tags: [fast, verify, fallback]
     supports_tools: true
     supports_json: true
@@ -44,10 +44,10 @@ models:
     reliability_score: 8.0
     enabled: true
 
-  - selection_tier: router-auto
-    provider: configured
-    model_name: router-auto
-    deployment_name: router-auto
+  - selection_tier: trivial
+    provider: local
+    model_name: qwen3.5:9b
+    deployment_name: qwen3.5:9b
     role_tags: [router, trivial, fast]
     supports_tools: false
     supports_json: true
