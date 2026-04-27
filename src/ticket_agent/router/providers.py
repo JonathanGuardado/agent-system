@@ -25,6 +25,11 @@ PROVIDER_DEFAULTS = {
         api_base="https://api.minimax.io/v1",
         api_key_env="MINIMAX_API_KEY",
     ),
+    "deepseek": ProviderConfig(
+        "deepseek",
+        api_base="https://api.deepseek.com",
+        api_key_env="DEEPSEEK_API_KEY",
+    ),
     "glm": ProviderConfig(
         "glm",
         api_base="https://api.z.ai/v1",

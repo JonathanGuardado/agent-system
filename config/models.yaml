@@ -1,16 +1,16 @@
 models:
   - selection_tier: dev
-    provider: minimax
-    model_name: MiniMax-M2.7
-    deployment_name: MiniMax-M2.7
+    provider: deepseek
+    model_name: deepseek-v4-pro
+    deployment_name: deepseek-v4-pro
     role_tags: [coding, implementation, reasoning]
     supports_tools: true
     supports_json: true
     long_context: true
     coding_score: 10.0
-    reasoning_score: 8.0
-    latency_score: 5.0
-    cost_score: 6.0
+    reasoning_score: 9.0
+    latency_score: 6.0
+    cost_score: 5.0
     reliability_score: 8.0
     enabled: true
 
@@ -22,7 +22,7 @@ models:
     supports_tools: true
     supports_json: true
     long_context: true
-    coding_score: 8.0
+    coding_score: 5.0
     reasoning_score: 10.0
     latency_score: 6.0
     cost_score: 5.0

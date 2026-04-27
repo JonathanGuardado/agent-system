@@ -21,7 +21,7 @@ task_profiles:
       supports_json: true
     scoring_weights:
       coding: 1.0
-    fallback_count: 2
+    fallback_count: 1
 
   - capability: code.verify
     required_constraints:

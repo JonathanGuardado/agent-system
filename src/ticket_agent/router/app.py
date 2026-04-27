@@ -98,7 +98,8 @@ PROVIDERS = load_providers()
 OVERRIDE_ALIASES = {
     "router-auto": "auto",
     "auto": "auto",
-    "minimax-coder": "dev",
+    "deepseek-pro": "dev",
+    "minimax-coder": "design",
     "gemini-flash": "browsing",
     "glm-premium": "critical",
     "local-qwen": "trivial",
@@ -335,7 +336,13 @@ async def proxy_to_provider(
             headers=headers,
             json=payload,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = response.text[:1000]
+            raise ValueError(
+                f"provider {provider.name} returned HTTP {response.status_code}: {detail}"
+            ) from exc
         data = response.json()
 
     return data
