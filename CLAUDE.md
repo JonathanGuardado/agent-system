@@ -24,16 +24,15 @@ Current phase:
 - P1: ✅ Intake handler foundation
 - P2: ✅ Detection + Locking foundation
 - P3: ✅ Tool adapters
-- P4: 🚧 Internal ModelRouter + provider clients
-- P5: ☐ LangGraph + Full pipeline
+- P4: ✅ Internal ModelRouter + provider clients
+- P5: 🚧 LangGraph skeleton + Full pipeline
 
 Current active task:
 
-Implement real provider clients for the internal ModelRouter:
-DeepSeekProvider, GeminiProvider, and OllamaProvider.
+Validate P4 with a real-provider smoke test, then start P5 LangGraph skeleton.
 
-Do not implement Slack, Jira, LangGraph, orchestrator, or PydanticAI nodes in
-this phase.
+Do not claim Slack, Jira, the full orchestrator, or PydanticAI nodes are done
+as part of the P5 skeleton.
 
 ## Runtime model
 
@@ -44,9 +43,19 @@ Router package:
 
 ```txt
 src/ticket_agent/router/
+├── __init__.py
+├── factory.py
 ├── model_router.py
-├── providers.py
-└── selector_config.py
+├── selector_config.py
+└── providers/
+    ├── __init__.py
+    ├── base.py
+    ├── config.py
+    ├── deepseek.py
+    ├── gemini.py
+    ├── http.py
+    ├── ollama.py
+    └── stubs.py
 ```
 
 Components call the internal router directly:
@@ -77,8 +86,7 @@ These are available on the HP:
 
 - Ollama + Qwen 3.5 9B
   - Ollama runs at `localhost:11434`
-  - A real Ollama provider client can be added after the foundation is in
-    place.
+  - Ollama/Qwen is optional local/simple fallback only.
 
 - API keys
   - Stored in `~/config/agent-system.env`
@@ -143,10 +151,14 @@ config/
   - It is imported and called directly by Python components.
   - It is not an HTTP service.
   - It should not expose an OpenAI-compatible API in v1.
+  - Do not add an external `router.py`.
+  - Do not add FastAPI or a `localhost:8080` router service.
 
 - Components should not call provider APIs directly.
   - They call `ModelRouter.invoke(...)`.
   - Provider-specific logic belongs under `router/providers/`.
+  - The providers package does not export `httpx` directly; tests patch
+    `ticket_agent.router.providers.http.httpx`.
 
 - Components should not know provider API keys.
   - API keys are loaded by provider clients.
@@ -271,11 +283,10 @@ Then the internal router maps `decision.primary` to a configured provider/model.
 
 ## Model policy
 
-- DeepSeek V4 Pro: coding, implementation, ticket decomposition, and
-  architecture/design.
-- Gemini Flash: verification, fast structured checks, and future
+- DeepSeek V4 Pro: primary coding and implementation model.
+- Gemini: verification, structured checks, planning/design, and future
   browsing/research-style tasks.
-- Qwen local: trivial/simple responses and local fallback.
+- Ollama/Qwen: optional local/simple fallback only.
 
 MiniMax and GLM are intentionally not part of v1 for now.
 
@@ -498,18 +509,19 @@ Required router test coverage:
 - [x] GitAdapter commit/push/cleanup
 - [x] Unit tests for adapter failure modes
 
-## Upcoming P4 implementation checklist
+## Current P4 implementation checklist
 
 - [x] Internal ModelRouter foundation
 - [x] ProviderClient interface
 - [x] ai-model-selector adapter/config wrapper
 - [x] fallback chain
 - [x] router tests
-- [ ] DeepSeekProvider
-- [ ] GeminiProvider
-- [ ] OllamaProvider
-- [ ] provider tests
-- [ ] no-secret logging/error behavior verified
+- [x] DeepSeekProvider
+- [x] GeminiProvider
+- [x] OllamaProvider
+- [x] provider tests
+- [x] no-secret logging/error behavior verified
+- [x] router factory
 
 ## Important references
 
@@ -530,8 +542,12 @@ Agent_System_Implementation_Guide.html
 Do not:
 
 - Replace `ai-model-selector`
+- Add an external `router.py`
+- Add FastAPI or a `localhost:8080` router service
 - Add MCP or OpenClaw yet
 - Auto-detect test commands
+- Add MiniMax or GLM to v1
+- Add cost-aware routing in v1
 - Push to main
 - Force-push
 - Merge PRs automatically

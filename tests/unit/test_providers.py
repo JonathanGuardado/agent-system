@@ -8,6 +8,7 @@ import pytest
 
 from ticket_agent.domain.errors import ProviderError
 from ticket_agent.router import providers
+from ticket_agent.router.providers import http as provider_http
 from ticket_agent.router.providers import DeepSeekProvider, GeminiProvider, OllamaProvider
 
 
@@ -280,7 +281,7 @@ def _install_fake_async_client(monkeypatch, result):
                 raise result
             return result
 
-    monkeypatch.setattr(providers.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(provider_http.httpx, "AsyncClient", FakeAsyncClient)
     return FakeAsyncClient
 
 
