@@ -21,18 +21,19 @@ We are building the system incrementally.
 Current phase:
 
 - P0: ✅ Infrastructure
-- P1: ✅ Intake handler
-- P2: ✅ Detection + Locking
+- P1: ✅ Intake handler foundation
+- P2: ✅ Detection + Locking foundation
 - P3: ✅ Tool adapters
-- P4: 🚧 Internal ModelRouter foundation
+- P4: 🚧 Internal ModelRouter + provider clients
 - P5: ☐ LangGraph + Full pipeline
 
 Current active task:
 
-Implement the internal ModelRouter foundation.
+Implement real provider clients for the internal ModelRouter:
+DeepSeekProvider, GeminiProvider, and OllamaProvider.
 
-Do not implement Slack, Jira, LangGraph, orchestrator, provider API calls, or
-PydanticAI nodes in this phase.
+Do not implement Slack, Jira, LangGraph, orchestrator, or PydanticAI nodes in
+this phase.
 
 ## Runtime model
 
@@ -80,7 +81,7 @@ These are available on the HP:
     place.
 
 - API keys
-  - Stored in `~/config/router.env`
+  - Stored in `~/config/agent-system.env`
   - Includes DeepSeek and Gemini keys.
   - Load them from environment/config.
   - Do not duplicate keys into this repo.
@@ -237,9 +238,10 @@ class ProviderClient(Protocol):
 
 Provider implementations for v1:
 
+- `DeepSeekProvider`
+- `GeminiProvider`
+- `OllamaProvider`
 - fake provider clients for tests
-- real `DeepSeekProvider`, `GeminiProvider`, and `OllamaProvider` clients can
-  be added in the next task
 
 The router should try:
 
@@ -267,6 +269,16 @@ decision = selector.select(context)
 
 Then the internal router maps `decision.primary` to a configured provider/model.
 
+## Model policy
+
+- DeepSeek V4 Pro: coding, implementation, ticket decomposition, and
+  architecture/design.
+- Gemini Flash: verification, fast structured checks, and future
+  browsing/research-style tasks.
+- Qwen local: trivial/simple responses and local fallback.
+
+MiniMax and GLM are intentionally not part of v1 for now.
+
 Example:
 
 ```yaml
@@ -287,7 +299,7 @@ models:
 
 Cost-aware routing is out of scope for v1. Estimated cost fields may remain on
 response models for future logging, but estimated cost must not affect model
-choice and there is no budget guard logic yet.
+choice. Do not add BudgetGuard yet.
 
 ## Non-obvious rules
 
@@ -400,8 +412,14 @@ language:
   package_manager: poetry
 
 commands:
-  test: "pytest tests/ -x -q"
-  lint: "ruff check src/"
+  test:
+    command: ["python", "-m", "pytest", "tests/", "-x", "-q"]
+    timeout_seconds: 120
+    working_directory: "."
+  lint:
+    command: ["python", "-m", "ruff", "check", "src/"]
+    timeout_seconds: 120
+    working_directory: "."
   install: null
 
 policy:
@@ -463,32 +481,35 @@ Required router test coverage:
 - Primary model succeeds.
 - Primary fails and fallback succeeds.
 - All providers fail.
-- Cost log entry is written.
 - Provider API keys are not logged.
 - Ollama provider sends `think: false` when calling Qwen.
 - Components call ModelRouter, not provider clients directly.
 
 ## Current P3 implementation checklist
 
-- [ ] FileAdapter path boundary enforcement
-- [ ] FileAdapter protected path policy
-- [ ] ShellAdapter allowlist and denylist
-- [ ] ShellAdapter env isolation
-- [ ] ShellAdapter timeout handling
-- [ ] RepoContract Pydantic model
-- [ ] RepoContractLoader
-- [ ] TestAdapter using repo contract test command
-- [ ] GitAdapter worktree creation
-- [ ] GitAdapter commit/push/open PR
-- [ ] Unit tests for all adapter failure modes
+- [x] FileAdapter path boundary enforcement
+- [x] FileAdapter protected path policy
+- [x] ShellAdapter allowlist and denylist
+- [x] ShellAdapter env isolation
+- [x] ShellAdapter timeout handling
+- [x] RepoContract
+- [x] TestAdapter using repo contract test command
+- [x] GitAdapter worktree creation
+- [x] GitAdapter commit/push/cleanup
+- [x] Unit tests for adapter failure modes
 
 ## Upcoming P4 implementation checklist
 
-- [ ] Internal ModelRouter
-- [ ] ProviderClient interface
-- [ ] ai-model-selector adapter
-- [ ] fallback chain
-- [ ] router tests
+- [x] Internal ModelRouter foundation
+- [x] ProviderClient interface
+- [x] ai-model-selector adapter/config wrapper
+- [x] fallback chain
+- [x] router tests
+- [ ] DeepSeekProvider
+- [ ] GeminiProvider
+- [ ] OllamaProvider
+- [ ] provider tests
+- [ ] no-secret logging/error behavior verified
 
 ## Important references
 
@@ -517,4 +538,4 @@ Do not:
 - Store secrets in this repo
 - Let tools operate outside the worktree
 - Let the LLM decide security policy
-- Continue to P4/P5 until P3 adapters are tested
+- Claim LangGraph or orchestration is done before it is implemented

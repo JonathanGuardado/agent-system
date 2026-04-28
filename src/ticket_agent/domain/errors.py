@@ -72,6 +72,10 @@ class ModelRouterError(AgentSystemError):
     """Base exception for expected model router failures."""
 
 
+class ProviderError(ModelRouterError):
+    """Raised when a provider client cannot complete a model call."""
+
+
 class AllBackendsFailedError(ModelRouterError):
     """Raised when every selected provider backend fails."""
 
