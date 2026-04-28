@@ -1,191 +1,248 @@
 from __future__ import annotations
 
-import json
-from urllib.error import URLError
+import asyncio
 
 import pytest
 
-from ticket_agent.domain.errors import AllModelsFailedError
+from ticket_agent.domain.errors import AllBackendsFailedError
+from ticket_agent.domain.model import ProviderResponse
 from ticket_agent.domain.model_selection import ModelEndpoint, ModelSelection
-from ticket_agent.router import model_router
 from ticket_agent.router.model_router import ModelRouter
 
 
-def test_invoke_calls_the_selected_primary_model(monkeypatch):
-    requests = _patch_selection_and_urlopen(monkeypatch)
-
-    ModelRouter().invoke(
-        "implement OAuth login",
-        [{"role": "user", "content": "implement OAuth login"}],
+def test_primary_model_succeeds():
+    selector = FakeSelector(_selection())
+    provider = RecordingProvider(
+        ProviderResponse(
+            content="done",
+            input_tokens=10,
+            output_tokens=4,
+            estimated_cost_usd=0.001,
+        )
     )
 
-    assert requests[0].payload["model"] == "primary-deployment"
-
-
-def test_invoke_returns_content_from_openai_compatible_response(monkeypatch):
-    _patch_selection_and_urlopen(monkeypatch, content="done")
-
-    response = ModelRouter().invoke(
-        "implement OAuth login",
-        [{"role": "user", "content": "implement OAuth login"}],
+    response = asyncio.run(
+        ModelRouter(
+            selector=selector,
+            providers={"deepseek": provider},
+            timeout_s=30,
+        ).invoke(
+            capability="code.implement",
+            messages=[{"role": "user", "content": "implement OAuth login"}],
+            ticket_id="ABC-123",
+            metadata={"source": "unit-test"},
+        )
     )
 
-    assert response.content == "done"
-    assert response.model_used == "primary-tier"
-    assert response.provider_used == "primary-provider"
-    assert response.deployment_used == "primary-deployment"
-    assert response.fallback_used is False
-
-
-def test_invoke_retries_first_fallback_when_primary_fails(monkeypatch):
-    requests = _patch_selection_and_urlopen(
-        monkeypatch,
-        failures={"primary-deployment"},
-        content="fallback answer",
-    )
-
-    response = ModelRouter().invoke(
-        "implement OAuth login",
-        [{"role": "user", "content": "implement OAuth login"}],
-    )
-
-    assert [request.payload["model"] for request in requests] == [
-        "primary-deployment",
-        "fallback-one-deployment",
+    assert selector.capabilities == ["code.implement"]
+    assert provider.calls == [
+        (
+            "deepseek-v4-pro",
+            [{"role": "user", "content": "implement OAuth login"}],
+            30,
+        )
     ]
+    assert response.content == "done"
+    assert response.model == "deepseek-v4-pro"
+    assert response.provider == "deepseek"
+    assert response.capability == "code.implement"
+    assert response.input_tokens == 10
+    assert response.output_tokens == 4
+    assert response.estimated_cost_usd == 0.001
+    assert response.fallback_used is False
+    attempts = [
+        (attempt.model, attempt.provider, attempt.success, attempt.error)
+        for attempt in response.attempts
+    ]
+    assert attempts == [("deepseek-v4-pro", "deepseek", True, None)]
+
+
+def test_primary_fails_and_fallback_succeeds():
+    response = asyncio.run(
+        ModelRouter(
+            selector=FakeSelector(_selection()),
+            providers={
+                "deepseek": RecordingProvider(error="primary boom"),
+                "gemini": RecordingProvider(
+                    ProviderResponse(content="fallback answer")
+                ),
+            },
+        ).invoke(
+            capability="code.implement",
+            messages=[{"role": "user", "content": "implement OAuth login"}],
+        )
+    )
+
     assert response.content == "fallback answer"
-    assert response.model_used == "fallback-one-tier"
-    assert response.deployment_used == "fallback-one-deployment"
+    assert response.model == "gemini-2.5-flash"
+    assert response.provider == "gemini"
+    assert [attempt.model for attempt in response.attempts] == [
+        "deepseek-v4-pro",
+        "gemini-2.5-flash",
+    ]
+    assert [attempt.success for attempt in response.attempts] == [False, True]
+    assert response.attempts[0].error == "primary boom"
 
 
-def test_fallback_used_is_true_when_fallback_succeeds(monkeypatch):
-    _patch_selection_and_urlopen(monkeypatch, failures={"primary-deployment"})
-
-    response = ModelRouter().invoke(
-        "implement OAuth login",
-        [{"role": "user", "content": "implement OAuth login"}],
+def test_fallback_used_is_true_when_fallback_succeeds():
+    response = asyncio.run(
+        ModelRouter(
+            selector=FakeSelector(_selection()),
+            providers={
+                "deepseek": RecordingProvider(error="primary boom"),
+                "gemini": RecordingProvider(
+                    ProviderResponse(content="fallback answer")
+                ),
+            },
+        ).invoke(
+            capability="code.implement",
+            messages=[{"role": "user", "content": "implement OAuth login"}],
+        )
     )
 
     assert response.fallback_used is True
 
 
-def test_if_all_models_fail_raises_all_models_failed(monkeypatch):
-    _patch_selection_and_urlopen(
-        monkeypatch,
-        failures={
-            "primary-deployment",
-            "fallback-one-deployment",
-            "fallback-two-deployment",
-        },
+def test_all_providers_fail_raises_all_backends_failed():
+    with pytest.raises(AllBackendsFailedError) as exc_info:
+        asyncio.run(
+            ModelRouter(
+                selector=FakeSelector(_selection()),
+                providers={
+                    "deepseek": RecordingProvider(error="primary boom"),
+                    "gemini": RecordingProvider(error="gemini boom"),
+                    "ollama": RecordingProvider(error="ollama boom"),
+                },
+            ).invoke(
+                capability="code.implement",
+                messages=[{"role": "user", "content": "implement OAuth login"}],
+            )
+        )
+
+    attempts = [
+        (attempt.model, attempt.provider, attempt.success, attempt.error)
+        for attempt in exc_info.value.attempts
+    ]
+    assert attempts == [
+        ("deepseek-v4-pro", "deepseek", False, "primary boom"),
+        ("gemini-2.5-flash", "gemini", False, "gemini boom"),
+        ("qwen3.5:9b", "ollama", False, "ollama boom"),
+    ]
+
+
+def test_missing_provider_raises_and_records_failed_attempt():
+    with pytest.raises(AllBackendsFailedError) as exc_info:
+        asyncio.run(
+            ModelRouter(
+                selector=FakeSelector(_selection(fallbacks=())),
+                providers={},
+            ).invoke(
+                capability="code.implement",
+                messages=[{"role": "user", "content": "implement OAuth login"}],
+            )
+        )
+
+    attempts = [
+        (attempt.model, attempt.provider, attempt.success, attempt.error)
+        for attempt in exc_info.value.attempts
+    ]
+    assert attempts == [
+        (
+            "deepseek-v4-pro",
+            "deepseek",
+            False,
+            "provider not configured: deepseek",
+        ),
+    ]
+
+
+def test_attempts_include_model_provider_success_error_and_latency():
+    response = asyncio.run(
+        ModelRouter(
+            selector=FakeSelector(_selection()),
+            providers={
+                "deepseek": RecordingProvider(error="primary boom"),
+                "gemini": RecordingProvider(
+                    ProviderResponse(content="fallback answer")
+                ),
+            },
+        ).invoke(
+            capability="code.implement",
+            messages=[{"role": "user", "content": "implement OAuth login"}],
+        )
     )
 
-    with pytest.raises(AllModelsFailedError) as exc_info:
-        ModelRouter().invoke(
-            "implement OAuth login",
-            [{"role": "user", "content": "implement OAuth login"}],
-        )
-
-    assert [failure.model for failure in exc_info.value.failures] == [
-        "primary-tier",
-        "fallback-one-tier",
-        "fallback-two-tier",
-    ]
-    assert [failure.deployment for failure in exc_info.value.failures] == [
-        "primary-deployment",
-        "fallback-one-deployment",
-        "fallback-two-deployment",
-    ]
+    assert response.attempts[0].model == "deepseek-v4-pro"
+    assert response.attempts[0].provider == "deepseek"
+    assert response.attempts[0].success is False
+    assert response.attempts[0].error == "primary boom"
+    assert isinstance(response.attempts[0].latency_ms, int)
+    assert response.attempts[1].model == "gemini-2.5-flash"
+    assert response.attempts[1].provider == "gemini"
+    assert response.attempts[1].success is True
+    assert response.attempts[1].error is None
+    assert isinstance(response.attempts[1].latency_ms, int)
 
 
-def test_authorization_header_is_only_sent_when_api_key_is_provided(monkeypatch):
-    requests = _patch_selection_and_urlopen(monkeypatch)
+class FakeSelector:
+    def __init__(self, selection: ModelSelection) -> None:
+        self._selection = selection
+        self.capabilities: list[str] = []
 
-    ModelRouter(api_key=None).invoke("hello", [{"role": "user", "content": "hello"}])
-    ModelRouter(api_key="secret").invoke("hello", [{"role": "user", "content": "hello"}])
-
-    assert requests[0].authorization is None
-    assert requests[1].authorization == "Bearer secret"
-
-
-def test_selection_metadata_headers_are_sent(monkeypatch):
-    requests = _patch_selection_and_urlopen(monkeypatch)
-
-    ModelRouter().invoke("hello", [{"role": "user", "content": "hello"}])
-
-    assert requests[0].selection_tier == "primary-tier"
-    assert requests[0].provider == "primary-provider"
-    assert requests[0].invocation == "openai_chat"
+    def select(self, capability: str) -> ModelSelection:
+        self.capabilities.append(capability)
+        return self._selection
 
 
-class CapturedRequest:
-    def __init__(self, request):
-        self.payload = json.loads(request.data.decode("utf-8"))
-        self.authorization = request.get_header("Authorization")
-        self.selection_tier = request.get_header("X-model-selection-tier")
-        self.provider = request.get_header("X-model-provider")
-        self.invocation = request.get_header("X-model-invocation")
+class RecordingProvider:
+    def __init__(
+        self,
+        response: ProviderResponse | None = None,
+        *,
+        error: str | None = None,
+    ) -> None:
+        self._response = response or ProviderResponse(content="ok")
+        self._error = error
+        self.calls: list[tuple[str, list[dict], int]] = []
+
+    async def chat(
+        self,
+        model: str,
+        messages: list[dict],
+        timeout_s: int,
+    ) -> ProviderResponse:
+        self.calls.append((model, messages, timeout_s))
+        if self._error is not None:
+            raise RuntimeError(self._error)
+        return self._response
 
 
-class FakeResponse:
-    status = 200
-
-    def __init__(self, content: str) -> None:
-        self._content = content
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, traceback):
-        return False
-
-    def read(self) -> bytes:
-        return json.dumps(
-            {"choices": [{"message": {"content": self._content}}]}
-        ).encode("utf-8")
-
-
-def _patch_selection_and_urlopen(
-    monkeypatch,
+def _selection(
     *,
-    failures: set[str] | None = None,
-    content: str = "ok",
-) -> list[CapturedRequest]:
-    failures = failures or set()
-    requests: list[CapturedRequest] = []
-
-    def fake_select(_capability_or_text: str) -> ModelSelection:
-        return ModelSelection(
-            capability="code.implement",
-            primary=ModelEndpoint(
-                selection_tier="primary-tier",
-                provider="primary-provider",
-                model_name="primary-model",
-                deployment_name="primary-deployment",
+    fallbacks: tuple[ModelEndpoint, ...] | None = None,
+) -> ModelSelection:
+    return ModelSelection(
+        capability="code.implement",
+        primary=ModelEndpoint(
+            selection_tier="deepseek-v4-pro",
+            provider="deepseek",
+            model_name="deepseek-v4-pro",
+            deployment_name="deepseek-v4-pro",
+        ),
+        fallbacks=(
+            ModelEndpoint(
+                selection_tier="gemini-flash",
+                provider="gemini",
+                model_name="gemini-flash",
+                deployment_name="gemini-2.5-flash",
             ),
-            fallbacks=(
-                ModelEndpoint(
-                    selection_tier="fallback-one-tier",
-                    provider="fallback-one-provider",
-                    model_name="fallback-one-model",
-                    deployment_name="fallback-one-deployment",
-                ),
-                ModelEndpoint(
-                    selection_tier="fallback-two-tier",
-                    provider="fallback-two-provider",
-                    model_name="fallback-two-model",
-                    deployment_name="fallback-two-deployment",
-                ),
+            ModelEndpoint(
+                selection_tier="qwen-local",
+                provider="ollama",
+                model_name="qwen-local",
+                deployment_name="qwen3.5:9b",
             ),
         )
-
-    def fake_urlopen(request, timeout: int):
-        del timeout
-        captured = CapturedRequest(request)
-        requests.append(captured)
-        if captured.payload["model"] in failures:
-            raise URLError("boom")
-        return FakeResponse(content)
-
-    monkeypatch.setattr(model_router, "select_model_for_capability", fake_select)
-    monkeypatch.setattr(model_router, "urlopen", fake_urlopen)
-    return requests
+        if fallbacks is None
+        else fallbacks,
+    )

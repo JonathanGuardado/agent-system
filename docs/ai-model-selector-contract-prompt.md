@@ -24,7 +24,7 @@ The returned plan must include full endpoint metadata for the primary and fallba
 @dataclass(frozen=True, slots=True)
 class ModelSelection:
     selection_tier: str       # stable policy/interface name
-    provider: str             # runtime provider key: gemini, minimax, openrouter, local, etc.
+    provider: str             # runtime provider key: deepseek, gemini, ollama, etc.
     model_name: str           # human/config model identity
     deployment_name: str      # exact model/deployment string the router sends
     invocation: str = "openai_chat"  # optional if you add this in config
@@ -44,8 +44,8 @@ class SelectionDecision:
 Field semantics:
 
 - `selection_tier` is the stable app-facing interface, such as `dev`, `coding_primary`, `reasoning_primary`, `web_agent`, or `local_fast`.
-- `provider` is a lookup key used by the app/router to find credentials/client config.
-- `deployment_name` is the exact value the app/router sends as `payload["model"]` or equivalent.
+- `provider` is a lookup key used by the internal router to find credentials/client config.
+- `deployment_name` is the exact value the internal router sends to the provider client.
 - `model_name` is descriptive model identity and may equal `deployment_name`.
 - `invocation` or `api_style`, if added, tells the app/router how to call the endpoint. Start with `openai_chat` as the default. Do not put API keys in selector config.
 
@@ -106,4 +106,4 @@ selection.primary.deployment_name
 selection.fallbacks
 ```
 
-The app sends `endpoint.deployment_name` as the OpenAI-compatible `model` payload while preserving `endpoint.selection_tier` in metadata/logs.
+The app sends `endpoint.deployment_name` to the internal provider client while preserving `endpoint.selection_tier` in metadata/logs.

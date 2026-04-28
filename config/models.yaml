@@ -1,5 +1,5 @@
 models:
-  - selection_tier: dev
+  - selection_tier: deepseek-v4-pro
     provider: deepseek
     model_name: deepseek-v4-pro
     deployment_name: deepseek-v4-pro
@@ -11,25 +11,10 @@ models:
     reasoning_score: 9.0
     latency_score: 6.0
     cost_score: 5.0
-    reliability_score: 8.0
-    enabled: true
-
-  - selection_tier: design
-    provider: minimax
-    model_name: MiniMax-M2.7
-    deployment_name: MiniMax-M2.7
-    role_tags: [architecture, planning, reasoning]
-    supports_tools: true
-    supports_json: true
-    long_context: true
-    coding_score: 5.0
-    reasoning_score: 10.0
-    latency_score: 6.0
-    cost_score: 5.0
     reliability_score: 8.5
     enabled: true
 
-  - selection_tier: browsing
+  - selection_tier: gemini-flash
     provider: gemini
     model_name: gemini-flash
     deployment_name: gemini-2.5-flash
@@ -41,17 +26,17 @@ models:
     reasoning_score: 6.0
     latency_score: 10.0
     cost_score: 8.0
-    reliability_score: 8.0
+    reliability_score: 9.5
     enabled: true
 
-  - selection_tier: trivial
-    provider: local
-    model_name: qwen3.5:9b
+  - selection_tier: qwen-local
+    provider: ollama
+    model_name: qwen-local
     deployment_name: qwen3.5:9b
     role_tags: [router, trivial, fast]
-    supports_tools: false
+    supports_tools: true
     supports_json: true
-    long_context: false
+    long_context: true
     coding_score: 2.0
     reasoning_score: 2.0
     latency_score: 11.0

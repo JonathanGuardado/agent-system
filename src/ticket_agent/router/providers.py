@@ -2,6 +2,59 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Protocol
+
+from ticket_agent.domain.model import ProviderResponse
+
+
+class ProviderClient(Protocol):
+    async def chat(
+        self,
+        model: str,
+        messages: list[dict],
+        timeout_s: int,
+    ) -> ProviderResponse:
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class StaticProviderClient:
+    """Tiny provider stub for tests and local wiring experiments."""
+
+    content: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    estimated_cost_usd: float | None = None
+
+    async def chat(
+        self,
+        model: str,
+        messages: list[dict],
+        timeout_s: int,
+    ) -> ProviderResponse:
+        del model, messages, timeout_s
+        return ProviderResponse(
+            content=self.content,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            estimated_cost_usd=self.estimated_cost_usd,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FailingProviderClient:
+    """Tiny provider stub that always fails."""
+
+    error: str = "provider failed"
+
+    async def chat(
+        self,
+        model: str,
+        messages: list[dict],
+        timeout_s: int,
+    ) -> ProviderResponse:
+        del model, messages, timeout_s
+        raise RuntimeError(self.error)
 
 
 @dataclass(frozen=True)
@@ -13,27 +66,16 @@ class ProviderConfig:
 
 
 PROVIDER_DEFAULTS = {
-    "local": ProviderConfig("local", local=True),
     "ollama": ProviderConfig("ollama", local=True),
     "gemini": ProviderConfig(
         "gemini",
         api_base="https://generativelanguage.googleapis.com/v1beta/openai",
         api_key_env="GEMINI_API_KEY",
     ),
-    "minimax": ProviderConfig(
-        "minimax",
-        api_base="https://api.minimax.io/v1",
-        api_key_env="MINIMAX_API_KEY",
-    ),
     "deepseek": ProviderConfig(
         "deepseek",
         api_base="https://api.deepseek.com",
         api_key_env="DEEPSEEK_API_KEY",
-    ),
-    "glm": ProviderConfig(
-        "glm",
-        api_base="https://api.z.ai/v1",
-        api_key_env="GLM_API_KEY",
     ),
 }
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Sequence
 
+from ticket_agent.domain.model import ModelAttempt
 from ticket_agent.domain.model_router import ModelAttemptFailure
 
 
@@ -68,6 +70,18 @@ class WorktreeCleanupError(GitAdapterError):
 
 class ModelRouterError(AgentSystemError):
     """Base exception for expected model router failures."""
+
+
+class AllBackendsFailedError(ModelRouterError):
+    """Raised when every selected provider backend fails."""
+
+    def __init__(self, attempts: Sequence[ModelAttempt]) -> None:
+        self.attempts = tuple(attempts)
+        detail = "; ".join(
+            f"{attempt.provider}/{attempt.model}: {attempt.error or 'unknown error'}"
+            for attempt in self.attempts
+        )
+        super().__init__(f"all model backends failed: {detail}")
 
 
 class ModelCallError(ModelRouterError):

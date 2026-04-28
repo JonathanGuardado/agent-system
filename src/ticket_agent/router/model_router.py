@@ -1,118 +1,150 @@
 from __future__ import annotations
 
-import json
+import time
+from collections.abc import Mapping
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
-from ticket_agent.domain.errors import AllModelsFailedError, ModelCallError
-from ticket_agent.domain.model_selection import ModelEndpoint
-from ticket_agent.domain.model_router import ModelAttemptFailure, ModelRouterResponse
-from ticket_agent.router.selector_config import select_model_for_capability
+from ticket_agent.domain.errors import AllBackendsFailedError
+from ticket_agent.domain.model import ModelAttempt, ModelResponse
+from ticket_agent.router.providers import ProviderClient
 
 
 class ModelRouter:
     def __init__(
         self,
-        base_url: str = "http://localhost:8080/v1",
-        api_key: str | None = None,
-        timeout_seconds: int = 120,
+        selector: Any | None = None,
+        providers: Mapping[str, ProviderClient] | None = None,
+        timeout_s: int = 120,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
-        self.timeout_seconds = timeout_seconds
+        if timeout_s <= 0:
+            raise ValueError("timeout_s must be positive")
+        self._selector = selector if selector is not None else _load_default_selector()
+        self._providers = dict(providers or {})
+        self._timeout_s = timeout_s
 
-    def invoke(
+    async def invoke(
         self,
-        capability_or_text: str,
-        messages: list[dict[str, str]],
-    ) -> ModelRouterResponse:
-        selection = select_model_for_capability(capability_or_text)
-        endpoints = (selection.primary, *selection.fallbacks)
-        failures: list[ModelAttemptFailure] = []
+        capability: str,
+        messages: list[dict],
+        ticket_id: str | None = None,
+        metadata: dict | None = None,
+    ) -> ModelResponse:
+        del ticket_id, metadata
 
-        for index, endpoint in enumerate(endpoints):
-            try:
-                raw_response = self._post_chat_completion(endpoint, messages)
-                content = self._extract_content(endpoint.selection_tier, raw_response)
-            except ModelCallError as exc:
-                failures.append(
-                    ModelAttemptFailure(
-                        model=endpoint.selection_tier,
-                        provider=endpoint.provider,
-                        deployment=endpoint.deployment_name,
-                        error=str(exc),
+        decision = _select_for_capability(self._selector, capability)
+        selected_models = (decision.primary, *decision.fallbacks)
+        attempts: list[ModelAttempt] = []
+
+        for index, selected_model in enumerate(selected_models):
+            provider_name = str(selected_model.provider)
+            model_name = _execution_model_name(selected_model)
+            started = time.monotonic()
+            provider = self._providers.get(provider_name)
+
+            if provider is None:
+                attempts.append(
+                    ModelAttempt(
+                        model=model_name,
+                        provider=provider_name,
+                        success=False,
+                        error=f"provider not configured: {provider_name}",
+                        latency_ms=_elapsed_ms(started),
                     )
                 )
                 continue
 
-            return ModelRouterResponse(
-                capability=selection.capability,
-                model_used=endpoint.selection_tier,
-                provider_used=endpoint.provider,
-                deployment_used=endpoint.deployment_name,
+            try:
+                provider_response = await provider.chat(
+                    model_name,
+                    messages,
+                    self._timeout_s,
+                )
+            except Exception as exc:
+                attempts.append(
+                    ModelAttempt(
+                        model=model_name,
+                        provider=provider_name,
+                        success=False,
+                        error=_error_message(exc),
+                        latency_ms=_elapsed_ms(started),
+                    )
+                )
+                continue
+
+            attempts.append(
+                ModelAttempt(
+                    model=model_name,
+                    provider=provider_name,
+                    success=True,
+                    latency_ms=_elapsed_ms(started),
+                )
+            )
+            return ModelResponse(
+                content=provider_response.content,
+                model=model_name,
+                provider=provider_name,
+                capability=decision.capability,
+                input_tokens=provider_response.input_tokens,
+                output_tokens=provider_response.output_tokens,
+                estimated_cost_usd=provider_response.estimated_cost_usd,
                 fallback_used=index > 0,
-                content=content,
-                raw_response=raw_response,
+                attempts=tuple(attempts),
             )
 
-        raise AllModelsFailedError(failures)
+        raise AllBackendsFailedError(attempts)
 
-    def _post_chat_completion(
-        self,
-        endpoint: ModelEndpoint,
-        messages: list[dict[str, str]],
-    ) -> dict[str, Any]:
-        payload = {"model": endpoint.deployment_name, "messages": messages}
-        headers = {"Content-Type": "application/json"}
-        headers["X-Model-Selection-Tier"] = endpoint.selection_tier
-        headers["X-Model-Provider"] = endpoint.provider
-        headers["X-Model-Invocation"] = endpoint.invocation
-        if self.api_key is not None:
-            headers["Authorization"] = f"Bearer {self.api_key}"
 
-        request = Request(
-            f"{self.base_url}/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
+def _load_default_selector() -> Any:
+    from ticket_agent.router.selector_config import load_model_selector
 
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                body = response.read()
-                status = int(getattr(response, "status", 200))
-        except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise ModelCallError(endpoint.selection_tier, f"HTTP {exc.code}: {detail}") from exc
-        except (OSError, TimeoutError, URLError) as exc:
-            raise ModelCallError(endpoint.selection_tier, str(exc)) from exc
+    return load_model_selector()
 
-        if status >= 400:
-            detail = body.decode("utf-8", errors="replace")
-            raise ModelCallError(endpoint.selection_tier, f"HTTP {status}: {detail}")
 
-        try:
-            raw = json.loads(body.decode("utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ModelCallError(endpoint.selection_tier, f"invalid JSON response: {exc}") from exc
+def _select_for_capability(selector: Any, capability: str) -> Any:
+    resolver = getattr(selector, "resolver", None)
+    deterministic_selector = getattr(selector, "selector", None)
+    if resolver is not None and deterministic_selector is not None:
+        resolution = resolver.resolve(capability)
+        context = _build_request_context(resolution)
+        return deterministic_selector.select(context)
 
-        if not isinstance(raw, dict):
-            raise ModelCallError(endpoint.selection_tier, "response JSON root must be an object")
-        return raw
+    if hasattr(selector, "resolve") and hasattr(selector, "select"):
+        resolution = selector.resolve(capability)
+        context = _build_request_context(resolution)
+        return selector.select(context)
 
-    def _extract_content(self, model: str, raw_response: dict[str, Any]) -> str:
-        try:
-            content = raw_response["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise ModelCallError(
-                model,
-                "response missing choices[0].message.content",
-            ) from exc
+    if hasattr(selector, "resolve_intent") and hasattr(selector, "select"):
+        resolution = selector.resolve_intent(capability)
+        context = _build_request_context(resolution)
+        return selector.select(context)
 
-        if not isinstance(content, str):
-            raise ModelCallError(
-                model,
-                "choices[0].message.content must be a string",
-            )
-        return content
+    if hasattr(selector, "select"):
+        return selector.select(capability)
+
+    raise TypeError("selector must expose resolver/select or select(capability)")
+
+
+def _build_request_context(resolution: Any) -> Any:
+    from ai_model_selector import build_request_context
+
+    return build_request_context(resolution)
+
+
+def _execution_model_name(selected_model: Any) -> str:
+    deployment_name = getattr(selected_model, "deployment_name", None)
+    if deployment_name:
+        return str(deployment_name)
+
+    model_name = getattr(selected_model, "model_name", None)
+    if model_name:
+        return str(model_name)
+
+    raise ValueError("selected model must include deployment_name or model_name")
+
+
+def _elapsed_ms(started: float) -> int:
+    return round((time.monotonic() - started) * 1000)
+
+
+def _error_message(exc: Exception) -> str:
+    return str(exc) or exc.__class__.__name__

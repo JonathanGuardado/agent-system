@@ -16,7 +16,6 @@ capabilities:
     default_signals:
       long_context: true
       priority: quality
-      budget_mode: premium
 
   - name: ticket.decompose
     description: >
@@ -89,4 +88,3 @@ capabilities:
     default_signals:
       needs_json: true
       priority: latency
-      budget_mode: economy

@@ -9,16 +9,8 @@ description = "Slack-first, Jira-backed agent execution system."
 requires-python = ">=3.12"
 dependencies = [
   "ai-model-selector @ git+https://github.com/JonathanGuardado/ai-model-selector.git",
-  "fastapi>=0.115.0",
-  "httpx>=0.27.0",
-  "ollama>=0.4.0",
-  "python-dotenv>=1.0.0",
   "PyYAML>=6.0.1",
-  "uvicorn>=0.30.0",
 ]
-
-[project.scripts]
-ticket-agent-router = "ticket_agent.router.app:main"
 
 [project.optional-dependencies]
 dev = [

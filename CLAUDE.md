@@ -23,16 +23,16 @@ Current phase:
 - P0: ✅ Infrastructure
 - P1: ✅ Intake handler
 - P2: ✅ Detection + Locking
-- P3: 🚧 Tool adapters
-- P4: ☐ Internal ModelRouter + PydanticAI
+- P3: ✅ Tool adapters
+- P4: 🚧 Internal ModelRouter foundation
 - P5: ☐ LangGraph + Full pipeline
 
 Current active task:
 
-Implement and harden the P3 local tool adapters:
-FileAdapter, ShellAdapter, TestAdapter, GitAdapter, and repo contract support.
+Implement the internal ModelRouter foundation.
 
-Do not jump ahead to P4 or P5 unless explicitly asked.
+Do not implement Slack, Jira, LangGraph, orchestrator, provider API calls, or
+PydanticAI nodes in this phase.
 
 ## Runtime model
 
@@ -43,7 +43,6 @@ Router package:
 
 ```txt
 src/ticket_agent/router/
-├── app.py
 ├── model_router.py
 ├── providers.py
 └── selector_config.py
@@ -64,10 +63,12 @@ The internal ModelRouter owns:
 - ai-model-selector integration
 - endpoint execution for selector-selected providers
 - fallback chain execution
-- provider API calls
-- local Ollama calls
+- provider lookup
 - response normalization
-- retry and timeout handling
+- attempt tracking and timeout handling
+
+The router is internal Python code. It does not expose an HTTP server or an
+OpenAI-compatible API.
 
 ## Environment assumptions
 
@@ -75,12 +76,12 @@ These are available on the HP:
 
 - Ollama + Qwen 3.5 9B
   - Ollama runs at `localhost:11434`
-  - The internal router may call Ollama directly when the selected model
-    targets the local provider.
+  - A real Ollama provider client can be added after the foundation is in
+    place.
 
 - API keys
   - Stored in `~/config/router.env`
-  - Includes MiniMax and Gemini keys.
+  - Includes DeepSeek and Gemini keys.
   - Load them from environment/config.
   - Do not duplicate keys into this repo.
   - Do not print secrets in logs or test output.
@@ -234,11 +235,11 @@ class ProviderClient(Protocol):
         ...
 ```
 
-Provider implementations:
+Provider implementations for v1:
 
-- `MiniMaxProvider`
-- `GeminiProvider`
-- `OllamaProvider`
+- fake provider clients for tests
+- real `DeepSeekProvider`, `GeminiProvider`, and `OllamaProvider` clients can
+  be added in the next task
 
 The router should try:
 
@@ -271,9 +272,9 @@ Example:
 ```yaml
 # config/models.yaml
 models:
-  minimax-m2.5:
-    provider: minimax
-    model_id: minimax-m2.5
+  deepseek-v4-pro:
+    provider: deepseek
+    model_id: deepseek-v4-pro
   gemini-flash:
     provider: gemini
     model_id: gemini-2.5-flash
@@ -282,34 +283,11 @@ models:
     model_id: qwen3.5:9b
 ```
 
-## Cost logging
+## Cost metadata
 
-Every successful or failed model attempt should append one JSON line to:
-
-```txt
-data/agent-costs.jsonl
-```
-
-Each entry should include:
-
-```json
-{
-  "timestamp": "2026-04-25T00:00:00Z",
-  "ticket_id": "JLA-42",
-  "capability": "code.implement",
-  "provider": "minimax",
-  "model": "minimax-m2.5",
-  "success": true,
-  "fallback_used": false,
-  "latency_ms": 1234,
-  "input_tokens": 1000,
-  "output_tokens": 500,
-  "estimated_cost_usd": 0.02,
-  "error": null
-}
-```
-
-Do not log prompt content by default.
+Cost-aware routing is out of scope for v1. Estimated cost fields may remain on
+response models for future logging, but estimated cost must not affect model
+choice and there is no budget guard logic yet.
 
 ## Non-obvious rules
 
@@ -508,14 +486,9 @@ Required router test coverage:
 
 - [ ] Internal ModelRouter
 - [ ] ProviderClient interface
-- [ ] MiniMax provider
-- [ ] Gemini provider
-- [ ] Ollama provider
 - [ ] ai-model-selector adapter
 - [ ] fallback chain
-- [ ] cost logger
 - [ ] router tests
-- [ ] PydanticAI output models
 
 ## Important references
 
