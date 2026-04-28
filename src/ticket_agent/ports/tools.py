@@ -47,6 +47,9 @@ class FilePort(Protocol):
     def exists(self, path: str | Path) -> bool:
         """Return whether a worktree-scoped path exists."""
 
+    def list_files(self, path: str | Path = ".") -> tuple[str, ...]:
+        """Return relative POSIX-style files inside the worktree."""
+
 
 class ShellPort(Protocol):
     """Command execution boundary."""
