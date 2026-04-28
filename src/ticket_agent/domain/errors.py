@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Sequence
 
 from ticket_agent.domain.model import ModelAttempt
-from ticket_agent.domain.model_router import ModelAttemptFailure
 
 
 class AgentSystemError(Exception):
@@ -86,23 +85,3 @@ class AllBackendsFailedError(ModelRouterError):
             for attempt in self.attempts
         )
         super().__init__(f"all model backends failed: {detail}")
-
-
-class ModelCallError(ModelRouterError):
-    """Raised when one model call fails."""
-
-    def __init__(self, model: str, error: str) -> None:
-        super().__init__(f"{model}: {error}")
-        self.model = model
-        self.error = error
-
-
-class AllModelsFailedError(ModelRouterError):
-    """Raised when the primary and every fallback model call fail."""
-
-    def __init__(self, failures: list[ModelAttemptFailure]) -> None:
-        self.failures = tuple(failures)
-        detail = "; ".join(
-            f"{failure.model}: {failure.error}" for failure in self.failures
-        )
-        super().__init__(f"all model attempts failed: {detail}")
