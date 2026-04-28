@@ -20,6 +20,15 @@ class PathBoundaryError(AgentSystemError):
         self.root = Path(root)
 
 
+class PolicyViolationError(AgentSystemError):
+    """Raised when a local adapter operation violates repository policy."""
+
+    def __init__(self, path: str | Path, reason: str) -> None:
+        super().__init__(f"policy violation for {path!s}: {reason}")
+        self.path = Path(path)
+        self.reason = reason
+
+
 class CommandNotAllowedError(AgentSystemError):
     """Raised when a shell command is not covered by the configured allowlist."""
 

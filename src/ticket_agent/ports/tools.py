@@ -15,10 +15,11 @@ class CommandResult:
     returncode: int
     stdout: str
     stderr: str
+    timed_out: bool = False
 
     @property
     def ok(self) -> bool:
-        return self.returncode == 0
+        return self.returncode == 0 and not self.timed_out
 
 
 class FilePort(Protocol):
@@ -69,3 +70,6 @@ class TestPort(Protocol):
 
     def run_tests(self, suite: str = "default") -> CommandResult:
         """Run a named test suite from the repo contract."""
+
+    def run_lint(self) -> CommandResult | None:
+        """Run the repo contract lint command when one is configured."""
