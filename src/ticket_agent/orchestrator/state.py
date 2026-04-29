@@ -34,6 +34,9 @@ class TicketState(BaseModel):
     execution_approved: bool | None = None
     implementation_attempts: int = 0
     max_attempts: int = 3
+    implementation_result: dict | None = None
+    branch_name: str | None = None
+    lock_id: str | None = None
     tests_passed: bool | None = None
     test_result: dict | None = None
     review_passed: bool | None = None
