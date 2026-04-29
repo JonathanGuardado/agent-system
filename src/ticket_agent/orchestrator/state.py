@@ -26,12 +26,20 @@ class TicketState(BaseModel):
     summary: str
     description: str = ""
     repository: str | None = None
+    repo_path: str | None = None
+    worktree_path: str | None = None
+    decomposition: dict | None = None
     current_node: str | None = None
     workflow_status: WorkflowStatus = "new"
     execution_approved: bool | None = None
+    implementation_attempts: int = 0
+    max_attempts: int = 3
     tests_passed: bool | None = None
+    test_result: dict | None = None
     review_passed: bool | None = None
+    verification_result: dict | None = None
     pull_request_url: str | None = None
     escalation_reason: str | None = None
+    error: str | None = None
     visited_nodes: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)

@@ -79,6 +79,7 @@ def build_ticket_graph(
         route_after_tests,
         {
             "passed": REVIEW,
+            "retry": IMPLEMENT,
             "failed": ESCALATE,
         },
     )
@@ -103,8 +104,15 @@ def route_after_execution_approval(
     return "approved" if state.execution_approved is True else "blocked"
 
 
-def route_after_tests(state: TicketState) -> Literal["passed", "failed"]:
-    return "passed" if state.tests_passed is True else "failed"
+def route_after_tests(state: TicketState) -> Literal["passed", "retry", "failed"]:
+    if state.tests_passed is True:
+        return "passed"
+    if (
+        state.tests_passed is False
+        and state.implementation_attempts < state.max_attempts
+    ):
+        return "retry"
+    return "failed"
 
 
 def route_after_review(state: TicketState) -> Literal["accepted", "rejected"]:

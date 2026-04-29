@@ -23,7 +23,12 @@ async def request_execution_approval(state: TicketState) -> TicketStateUpdate:
 
 
 async def implement_ticket(state: TicketState) -> TicketStateUpdate:
-    return _mark_node(state, "implement", workflow_status="implementing")
+    return _mark_node(
+        state,
+        "implement",
+        workflow_status="implementing",
+        implementation_attempts=state.implementation_attempts + 1,
+    )
 
 
 async def run_tests(state: TicketState) -> TicketStateUpdate:
