@@ -7,6 +7,7 @@ from ticket_agent.orchestrator.graph import (
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.service_impls import (
     AdapterTestService,
+    GitService,
     LocalImplementationService,
 )
 from ticket_agent.orchestrator.services import (
@@ -24,6 +25,7 @@ __all__ = [
     "AdapterTestService",
     "ApprovalService",
     "EscalationService",
+    "GitService",
     "ImplementationService",
     "LocalImplementationService",
     "PlannerService",

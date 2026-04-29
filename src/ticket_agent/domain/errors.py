@@ -63,6 +63,10 @@ class PushError(GitAdapterError):
     """Raised when pushing a branch fails."""
 
 
+class PullRequestCreationError(GitAdapterError):
+    """Raised when opening a pull request fails."""
+
+
 class WorktreeCleanupError(GitAdapterError):
     """Raised when a git worktree cannot be removed."""
 
