@@ -12,8 +12,8 @@ from ticket_agent.domain.errors import (
     PullRequestCreationError,
     PushError,
 )
+from ticket_agent.orchestrator.git_services import GhPullRequestOpener, GitService
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
-from ticket_agent.orchestrator.local_services import GhPullRequestOpener, GitService
 from ticket_agent.orchestrator.state import TicketState
 
 

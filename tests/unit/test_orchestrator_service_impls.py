@@ -21,6 +21,28 @@ from ticket_agent.orchestrator.state import TicketState
 from ticket_agent.ports.tools import CommandResult
 
 
+def test_service_impls_preserves_compatibility_exports():
+    from ticket_agent.orchestrator import local_services
+    from ticket_agent.orchestrator import service_impls
+    from ticket_agent.orchestrator.git_services import (
+        GhPullRequestOpener,
+        GitService,
+    )
+    from ticket_agent.orchestrator.local_services import (
+        AdapterTestService as LocalAdapterTestService,
+        ImplementationContext,
+        LocalImplementationService,
+    )
+
+    assert service_impls.AdapterTestService is LocalAdapterTestService
+    assert service_impls.GhPullRequestOpener is GhPullRequestOpener
+    assert service_impls.GitService is GitService
+    assert service_impls.ImplementationContext is ImplementationContext
+    assert service_impls.LocalImplementationService is LocalImplementationService
+    assert local_services.GhPullRequestOpener is GhPullRequestOpener
+    assert local_services.GitService is GitService
+
+
 def test_adapter_test_service_returns_passed_result_when_adapter_succeeds(tmp_path):
     service, calls = _service_for(
         CommandResult(

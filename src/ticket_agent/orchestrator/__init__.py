@@ -4,10 +4,10 @@ from ticket_agent.orchestrator.graph import (
     TicketWorkflowNodes,
     build_ticket_graph,
 )
+from ticket_agent.orchestrator.git_services import GitService
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.local_services import (
     AdapterTestService,
-    GitService,
     LocalImplementationService,
 )
 from ticket_agent.orchestrator.services import (
