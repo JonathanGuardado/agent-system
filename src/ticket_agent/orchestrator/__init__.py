@@ -6,6 +6,12 @@ from ticket_agent.orchestrator.graph import (
 )
 from ticket_agent.orchestrator.git_services import GitService
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
+from ticket_agent.orchestrator.runner import (
+    LockManager,
+    OrchestratorRunner,
+    TicketAlreadyLockedError,
+    TicketWorkItem,
+)
 from ticket_agent.orchestrator.local_services import (
     AdapterTestService,
     LocalImplementationService,
@@ -28,12 +34,16 @@ __all__ = [
     "GitService",
     "ImplementationService",
     "LocalImplementationService",
+    "LockManager",
+    "OrchestratorRunner",
     "PlannerService",
     "PullRequestService",
     "ReviewService",
     "TestService",
+    "TicketAlreadyLockedError",
     "TicketState",
     "TicketNodeRunner",
+    "TicketWorkItem",
     "TicketWorkflowNodes",
     "build_ticket_graph",
 ]
