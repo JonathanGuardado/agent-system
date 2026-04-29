@@ -15,6 +15,9 @@ dependencies = [
   "PyYAML>=6.0.1",
 ]
 
+[project.scripts]
+ticket-agent-smoke-model-router = "ticket_agent.router.smoke:main"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",

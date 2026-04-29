@@ -15,7 +15,7 @@ from ticket_agent.config.repo_contract import (
 from ticket_agent.domain.errors import RepoContractError, WorktreeCreationError
 from ticket_agent.domain.git import WorktreeInfo
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
-from ticket_agent.orchestrator.service_impls import (
+from ticket_agent.orchestrator.local_services import (
     ImplementationContext,
     LocalImplementationService,
 )

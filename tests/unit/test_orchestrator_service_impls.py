@@ -16,7 +16,7 @@ from ticket_agent.config.repo_contract import (
 )
 from ticket_agent.domain.errors import RepoContractError
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
-from ticket_agent.orchestrator.service_impls import AdapterTestService
+from ticket_agent.orchestrator.local_services import AdapterTestService
 from ticket_agent.orchestrator.state import TicketState
 from ticket_agent.ports.tools import CommandResult
 

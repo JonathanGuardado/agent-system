@@ -5,7 +5,7 @@ from ticket_agent.orchestrator.graph import (
     build_ticket_graph,
 )
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
-from ticket_agent.orchestrator.service_impls import (
+from ticket_agent.orchestrator.local_services import (
     AdapterTestService,
     GitService,
     LocalImplementationService,

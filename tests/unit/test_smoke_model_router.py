@@ -1,17 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
-from pathlib import Path
 
 from ticket_agent.domain.model import ModelResponse
-
-SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "smoke_model_router.py"
-SPEC = importlib.util.spec_from_file_location("smoke_model_router", SCRIPT_PATH)
-assert SPEC is not None
-assert SPEC.loader is not None
-smoke_model_router = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(smoke_model_router)
+from ticket_agent.router import smoke as smoke_model_router
 
 
 def test_smoke_model_router_skips_real_call_without_remote_keys(
