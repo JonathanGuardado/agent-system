@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -20,6 +20,9 @@ from ticket_agent.orchestrator.nodes import (
     run_tests,
 )
 from ticket_agent.orchestrator.state import TicketState
+
+if TYPE_CHECKING:
+    from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 
 PLAN = "plan"
 REQUEST_EXECUTION_APPROVAL = "request_execution_approval"
@@ -46,9 +49,9 @@ class TicketWorkflowNodes:
 
 
 def build_ticket_graph(
-    nodes: TicketWorkflowNodes | None = None,
+    nodes: TicketWorkflowNodes | TicketNodeRunner | None = None,
 ) -> CompiledStateGraph:
-    workflow_nodes = nodes or TicketWorkflowNodes()
+    workflow_nodes = _coerce_workflow_nodes(nodes)
     graph = StateGraph(TicketState)
 
     graph.add_node(PLAN, workflow_nodes.plan)
@@ -96,6 +99,16 @@ def build_ticket_graph(
     graph.add_edge(REPORT, END)
 
     return graph.compile()
+
+
+def _coerce_workflow_nodes(
+    nodes: TicketWorkflowNodes | TicketNodeRunner | None,
+) -> TicketWorkflowNodes:
+    if nodes is None:
+        return TicketWorkflowNodes()
+    if isinstance(nodes, TicketWorkflowNodes):
+        return nodes
+    return nodes.as_workflow_nodes()
 
 
 def route_after_execution_approval(
