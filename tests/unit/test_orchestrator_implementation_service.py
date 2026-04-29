@@ -196,6 +196,25 @@ def test_local_implementation_service_returns_failed_result_for_invalid_contract
     assert result["error"].startswith("repo contract missing or invalid:")
 
 
+def test_local_implementation_service_returns_failed_result_without_repo_root():
+    service = LocalImplementationService(
+        contract_loader=lambda path: _contract(repo_root=""),
+    )
+
+    result = asyncio.run(
+        service.implement(
+            TicketState(
+                ticket_key="AGENT-123",
+                summary="Missing repo root",
+                repository="example",
+            )
+        )
+    )
+
+    assert result["implementation_result"]["status"] == "failed"
+    assert result["error"] == "repo_path or repo.root is required to create worktree"
+
+
 def test_local_implementation_service_returns_failed_result_for_worktree_error(
     tmp_path,
 ):

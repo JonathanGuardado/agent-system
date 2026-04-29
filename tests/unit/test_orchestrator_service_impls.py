@@ -68,6 +68,16 @@ def test_adapter_test_service_returns_failed_result_when_adapter_fails(tmp_path)
     assert "AssertionError" in result["error"]
 
 
+def test_adapter_test_service_returns_failed_result_when_adapter_raises(tmp_path):
+    service, _ = _service_for(RepoContractError("suite is not configured"))
+
+    result = asyncio.run(service.run_tests(_state(tmp_path)))
+
+    assert result["status"] == "failed"
+    assert result["tests_passed"] is False
+    assert result["error"] == "test adapter failed: suite is not configured"
+
+
 def test_adapter_test_service_returns_failed_result_without_worktree_path():
     loader_called = False
 
@@ -168,7 +178,7 @@ def test_ticket_node_runner_run_tests_stores_adapter_service_result(
 
 
 def _service_for(
-    command_result: CommandResult,
+    command_result: CommandResult | Exception,
 ) -> tuple[AdapterTestService, dict[str, Any]]:
     calls: dict[str, Any] = {"adapter_calls": []}
     contract = _contract()
@@ -253,12 +263,14 @@ class _FakeShell:
 
 
 class _FakeTestAdapter:
-    def __init__(self, result: CommandResult, calls: list[str]) -> None:
+    def __init__(self, result: CommandResult | Exception, calls: list[str]) -> None:
         self._result = result
         self._calls = calls
 
     def run_tests(self, suite: str = "default") -> CommandResult:
         self._calls.append(suite)
+        if isinstance(self._result, Exception):
+            raise self._result
         return self._result
 
     def run_lint(self) -> CommandResult | None:
