@@ -26,6 +26,7 @@ class TicketWorkItem:
     repository: str
     repo_path: str | None = None
     worktree_path: str | None = None
+    max_attempts: int = 3
 
 
 class LockManager(Protocol):
@@ -159,6 +160,7 @@ class OrchestratorRunner:
             repository=work_item.repository,
             repo_path=work_item.repo_path,
             worktree_path=work_item.worktree_path,
+            max_attempts=work_item.max_attempts,
             **updates,
         )
 
