@@ -90,6 +90,8 @@ class OrchestratorRunner:
             raise TicketAlreadyLockedError(work_item.ticket_key)
 
         state: TicketState | None = None
+        graph_exception: Exception | None = None
+        graph_traceback = None
         try:
             state = self._build_initial_state(work_item, lock)
             await self._emit(
@@ -109,6 +111,8 @@ class OrchestratorRunner:
             )
             return final_state
         except Exception as exc:
+            graph_exception = exc
+            graph_traceback = exc.__traceback__
             if state is None:
                 raise
             failed_state = _mark_failed(state, exc)
@@ -126,7 +130,13 @@ class OrchestratorRunner:
                 )
             return failed_state
         finally:
-            self._lock_manager.release(lock)
+            try:
+                self._lock_manager.release(lock)
+            except Exception as release_exc:
+                await self._emit_lock_release_failed(work_item, lock, release_exc)
+                if graph_exception is not None:
+                    raise graph_exception.with_traceback(graph_traceback) from None
+                raise
 
     def _build_initial_state(
         self,
@@ -158,6 +168,34 @@ class OrchestratorRunner:
         result = self._event_emitter(event_name, payload)
         if isawaitable(result):
             await result
+
+    async def _emit_lock_release_failed(
+        self,
+        work_item: TicketWorkItem,
+        lock: Lock,
+        exc: Exception,
+    ) -> None:
+        lock_id = _lock_id(lock)
+        payload = {
+            "ticket_key": work_item.ticket_key,
+            "component_id": self._component_id,
+            "lock_id": lock_id,
+            "error": str(exc) or exc.__class__.__name__,
+        }
+        if self._logger is not None:
+            self._logger.exception(
+                "lock_release_failed for %s",
+                work_item.ticket_key,
+                extra=payload,
+            )
+        try:
+            await self._emit("lock_release_failed", **payload)
+        except Exception:
+            if self._logger is not None:
+                self._logger.exception(
+                    "failed to emit lock_release_failed for %s",
+                    work_item.ticket_key,
+                )
 
 
 def _coerce_graph_result(initial_state: TicketState, result: Any) -> TicketState:
