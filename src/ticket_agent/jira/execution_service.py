@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from inspect import isawaitable
 
@@ -16,6 +17,7 @@ from ticket_agent.jira.constants import (
     LABEL_AI_FAILED,
     STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
+    STATUS_TODO,
 )
 from ticket_agent.jira.models import JiraExecutionError
 
@@ -30,6 +32,8 @@ _STEP_ADD_LABELS = "add_labels"
 _STEP_REMOVE_LABELS = "remove_labels"
 _STEP_TRANSITION_TICKET = "transition_ticket"
 _STEP_UPDATE_FIELDS = "update_fields"
+
+_LOGGER = logging.getLogger(__name__)
 
 EventEmitter = Callable[[str, dict[str, object]], object]
 
@@ -50,14 +54,15 @@ class JiraExecutionService:
     async def mark_claimed(self, ticket_key: str) -> None:
         """Mark a Jira ticket as claimed by this component."""
 
-        await self._call_jira(
-            _MARK_CLAIMED_OPERATION,
-            ticket_key,
-            _STEP_ADD_LABELS,
-            lambda: self._client.add_labels(ticket_key, list(_CLAIMED_LABELS)),
-        )
-        failed_step = _STEP_TRANSITION_TICKET
+        failed_step = _STEP_ADD_LABELS
         try:
+            await self._call_jira(
+                _MARK_CLAIMED_OPERATION,
+                ticket_key,
+                failed_step,
+                lambda: self._client.add_labels(ticket_key, list(_CLAIMED_LABELS)),
+            )
+            failed_step = _STEP_TRANSITION_TICKET
             await self._call_jira(
                 _MARK_CLAIMED_OPERATION,
                 ticket_key,
@@ -77,12 +82,12 @@ class JiraExecutionService:
                     {FIELD_AGENT_ASSIGNED_COMPONENT: self._component_id},
                 ),
             )
-        except JiraExecutionError:
+        except JiraExecutionError as exc:
             await self._run_compensation(
                 ticket_key=ticket_key,
                 operation=_MARK_CLAIMED_OPERATION,
                 failed_step=failed_step,
-                compensation_action="remove_claimed_label_and_clear_component",
+                compensation_action="release_claim_and_restore_todo",
                 actions=(
                     (
                         "remove_claimed_label",
@@ -96,6 +101,20 @@ class JiraExecutionService:
                         lambda: self._client.update_fields(
                             ticket_key,
                             {FIELD_AGENT_ASSIGNED_COMPONENT: None},
+                        ),
+                    ),
+                    (
+                        "transition_back_to_todo",
+                        lambda: self._client.transition_ticket(
+                            ticket_key,
+                            STATUS_TODO,
+                        ),
+                    ),
+                    (
+                        "add_claim_failure_comment",
+                        lambda: self._client.add_comment(
+                            ticket_key,
+                            _claim_compensation_comment(failed_step, exc),
                         ),
                     ),
                 ),
@@ -314,13 +333,21 @@ class JiraExecutionService:
                 raise
             except Exception as exc:
                 failed = True
+                payload = {
+                    "ticket_key": ticket_key,
+                    "operation": operation,
+                    "failed_step": failed_step,
+                    "compensation_action": action_name,
+                    "error": _error_message(exc),
+                }
                 await self._emit_compensation(
                     EVENT_JIRA_COMPENSATION_FAILED,
-                    ticket_key=ticket_key,
-                    operation=operation,
-                    failed_step=failed_step,
-                    compensation_action=action_name,
-                    error=_error_message(exc),
+                    **payload,
+                )
+                _LOGGER.warning(
+                    "jira_compensation_failed",
+                    extra=payload,
+                    exc_info=True,
                 )
 
         if failed:
@@ -353,6 +380,16 @@ class JiraExecutionService:
 
 def _error_message(exc: BaseException) -> str:
     return str(exc) or exc.__class__.__name__
+
+
+def _claim_compensation_comment(failed_step: str, error: JiraExecutionError) -> str:
+    return (
+        "AI execution could not claim this ticket cleanly.\n\n"
+        f"Failed step: {failed_step}\n"
+        f"Error: {_error_message(error)}\n\n"
+        "Best-effort compensation was attempted: removed ai-claimed, cleared the "
+        "assigned component, and moved the ticket back to To Do."
+    )
 
 
 __all__ = ["EventEmitter", "JiraExecutionService"]

@@ -19,6 +19,8 @@ from ticket_agent.jira.constants import (
 from ticket_agent.jira.execution_service import JiraExecutionService
 from ticket_agent.jira.models import JiraExecutionError, JiraTicket
 
+_ConfiguredFailure = BaseException | list[BaseException | None]
+
 
 def test_mark_claimed_updates_jira_execution_state():
     client = _FakeJiraClient(_ticket(labels=[LABEL_AI_READY]))
@@ -127,10 +129,54 @@ def test_mark_released_clears_claim_without_status_change():
     assert client.comments == []
 
 
-def test_mark_claimed_transition_failure_compensates_by_removing_claim():
+def test_mark_claimed_add_labels_failure_compensates_clean_state():
+    client = _FakeJiraClient(
+        _ticket(
+            labels=[LABEL_AI_READY, LABEL_AI_CLAIMED],
+            fields={FIELD_AGENT_ASSIGNED_COMPONENT: "runner-1"},
+        ),
+        fail_on={"add_labels": RuntimeError("label exploded")},
+    )
+    service = JiraExecutionService(client, component_id="runner-1")
+
+    with pytest.raises(JiraExecutionError) as exc_info:
+        asyncio.run(service.mark_claimed("AGENT-123"))
+
+    assert str(exc_info.value) == "mark_claimed failed for AGENT-123: label exploded"
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert client.calls == [
+        ("add_labels", "AGENT-123", [LABEL_AI_CLAIMED]),
+        ("remove_labels", "AGENT-123", [LABEL_AI_CLAIMED]),
+        (
+            "update_fields",
+            "AGENT-123",
+            {FIELD_AGENT_ASSIGNED_COMPONENT: None},
+        ),
+        ("transition_ticket", "AGENT-123", STATUS_TODO),
+        (
+            "add_comment",
+            "AGENT-123",
+            _claim_compensation_comment(
+                "add_labels",
+                "mark_claimed failed for AGENT-123: label exploded",
+            ),
+        ),
+    ]
+    assert client.ticket.status == STATUS_TODO
+    assert client.ticket.labels == [LABEL_AI_READY]
+    assert client.ticket.fields[FIELD_AGENT_ASSIGNED_COMPONENT] is None
+    assert client.comments == [
+        _claim_compensation_comment(
+            "add_labels",
+            "mark_claimed failed for AGENT-123: label exploded",
+        )
+    ]
+
+
+def test_mark_claimed_transition_failure_compensates_claim_and_comments():
     client = _FakeJiraClient(
         _ticket(labels=[LABEL_AI_READY]),
-        fail_on={"transition_ticket": RuntimeError("transition exploded")},
+        fail_on={"transition_ticket": [RuntimeError("transition exploded")]},
     )
     service = JiraExecutionService(client, component_id="runner-1")
 
@@ -150,11 +196,25 @@ def test_mark_claimed_transition_failure_compensates_by_removing_claim():
             "AGENT-123",
             {FIELD_AGENT_ASSIGNED_COMPONENT: None},
         ),
+        ("transition_ticket", "AGENT-123", STATUS_TODO),
+        (
+            "add_comment",
+            "AGENT-123",
+            _claim_compensation_comment(
+                "transition_ticket",
+                "mark_claimed failed for AGENT-123: transition exploded",
+            ),
+        ),
     ]
     assert client.ticket.status == STATUS_TODO
     assert client.ticket.labels == [LABEL_AI_READY]
     assert client.ticket.fields[FIELD_AGENT_ASSIGNED_COMPONENT] is None
-    assert client.comments == []
+    assert client.comments == [
+        _claim_compensation_comment(
+            "transition_ticket",
+            "mark_claimed failed for AGENT-123: transition exploded",
+        )
+    ]
 
 
 def test_mark_claimed_update_fields_failure_compensates_claim_and_component():
@@ -183,19 +243,33 @@ def test_mark_claimed_update_fields_failure_compensates_claim_and_component():
             "AGENT-123",
             {FIELD_AGENT_ASSIGNED_COMPONENT: None},
         ),
+        ("transition_ticket", "AGENT-123", STATUS_TODO),
+        (
+            "add_comment",
+            "AGENT-123",
+            _claim_compensation_comment(
+                "update_fields",
+                "mark_claimed failed for AGENT-123: update exploded",
+            ),
+        ),
     ]
-    assert client.ticket.status == STATUS_IN_PROGRESS
+    assert client.ticket.status == STATUS_TODO
     assert client.ticket.labels == [LABEL_AI_READY]
     assert client.ticket.fields[FIELD_AGENT_ASSIGNED_COMPONENT] is None
-    assert client.comments == []
+    assert client.comments == [
+        _claim_compensation_comment(
+            "update_fields",
+            "mark_claimed failed for AGENT-123: update exploded",
+        )
+    ]
 
 
-def test_mark_claimed_compensation_failure_emits_and_preserves_original_error():
+def test_mark_claimed_transition_back_failure_preserves_original_error():
     client = _FakeJiraClient(
         _ticket(labels=[LABEL_AI_READY]),
         fail_on={
-            "transition_ticket": RuntimeError("transition exploded"),
-            "remove_labels": RuntimeError("remove exploded"),
+            "transition_ticket": [None, RuntimeError("transition back exploded")],
+            "update_fields": [RuntimeError("update exploded")],
         },
     )
     events = _EventRecorder()
@@ -204,18 +278,30 @@ def test_mark_claimed_compensation_failure_emits_and_preserves_original_error():
     with pytest.raises(JiraExecutionError) as exc_info:
         asyncio.run(service.mark_claimed("AGENT-123"))
 
-    assert str(exc_info.value) == (
-        "mark_claimed failed for AGENT-123: transition exploded"
-    )
+    assert str(exc_info.value) == "mark_claimed failed for AGENT-123: update exploded"
     assert isinstance(exc_info.value.__cause__, RuntimeError)
     assert client.calls == [
         ("add_labels", "AGENT-123", [LABEL_AI_CLAIMED]),
         ("transition_ticket", "AGENT-123", STATUS_IN_PROGRESS),
+        (
+            "update_fields",
+            "AGENT-123",
+            {FIELD_AGENT_ASSIGNED_COMPONENT: "runner-1"},
+        ),
         ("remove_labels", "AGENT-123", [LABEL_AI_CLAIMED]),
         (
             "update_fields",
             "AGENT-123",
             {FIELD_AGENT_ASSIGNED_COMPONENT: None},
+        ),
+        ("transition_ticket", "AGENT-123", STATUS_TODO),
+        (
+            "add_comment",
+            "AGENT-123",
+            _claim_compensation_comment(
+                "update_fields",
+                "mark_claimed failed for AGENT-123: update exploded",
+            ),
         ),
     ]
     assert events.names == [
@@ -227,13 +313,20 @@ def test_mark_claimed_compensation_failure_emits_and_preserves_original_error():
         {
             "ticket_key": "AGENT-123",
             "operation": "mark_claimed",
-            "failed_step": "transition_ticket",
-            "compensation_action": "remove_claimed_label",
-            "error": "remove exploded",
+            "failed_step": "update_fields",
+            "compensation_action": "transition_back_to_todo",
+            "error": "transition back exploded",
         },
     )
-    assert client.ticket.labels == [LABEL_AI_READY, LABEL_AI_CLAIMED]
+    assert client.ticket.status == STATUS_IN_PROGRESS
+    assert client.ticket.labels == [LABEL_AI_READY]
     assert client.ticket.fields[FIELD_AGENT_ASSIGNED_COMPONENT] is None
+    assert client.comments == [
+        _claim_compensation_comment(
+            "update_fields",
+            "mark_claimed failed for AGENT-123: update exploded",
+        )
+    ]
 
 
 def test_mark_failed_remove_labels_failure_keeps_failed_label_and_raises():
@@ -566,6 +659,16 @@ def _partial_failure_comment(operation: str, failed_step: str, error: str) -> st
     )
 
 
+def _claim_compensation_comment(failed_step: str, error: str) -> str:
+    return (
+        "AI execution could not claim this ticket cleanly.\n\n"
+        f"Failed step: {failed_step}\n"
+        f"Error: {error}\n\n"
+        "Best-effort compensation was attempted: removed ai-claimed, cleared the "
+        "assigned component, and moved the ticket back to To Do."
+    )
+
+
 class _EventRecorder:
     def __init__(self) -> None:
         self.events: list[tuple[str, dict[str, object]]] = []
@@ -583,7 +686,7 @@ class _FakeJiraClient:
         self,
         ticket: JiraTicket,
         *,
-        fail_on: dict[str, BaseException | list[BaseException]] | None = None,
+        fail_on: dict[str, _ConfiguredFailure] | None = None,
     ) -> None:
         self.ticket = ticket
         self.fail_on = {} if fail_on is None else fail_on
@@ -627,7 +730,9 @@ class _FakeJiraClient:
         configured = self.fail_on.get(method_name)
         if isinstance(configured, list):
             if configured:
-                raise configured.pop(0)
+                exc = configured.pop(0)
+                if exc is not None:
+                    raise exc
             return
         if configured is not None:
             raise configured
