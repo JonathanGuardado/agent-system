@@ -51,13 +51,7 @@ def test_load_uses_work_item_max_attempts_default_when_field_is_absent():
 
     work_item = asyncio.run(loader.load("AGENT-123"))
 
-    default_work_item = TicketWorkItem(
-        ticket_key="default",
-        summary="Default",
-        description="",
-        repository="agent-system",
-    )
-    assert work_item.max_attempts == default_work_item.max_attempts
+    assert work_item.max_attempts == 3
 
 
 @pytest.mark.parametrize("missing_field", [FIELD_REPOSITORY, FIELD_REPO_PATH])
@@ -77,7 +71,31 @@ def test_load_raises_clear_error_when_required_field_is_missing(missing_field: s
     )
 
 
-@pytest.mark.parametrize("bad_value", ["", "0", 0, "not-a-number"])
+@pytest.mark.parametrize("blank_field", [FIELD_REPOSITORY, FIELD_REPO_PATH])
+@pytest.mark.parametrize("blank_value", ["", "   "])
+def test_load_raises_clear_error_when_required_field_is_blank(
+    blank_field: str,
+    blank_value: str,
+):
+    fields = {
+        FIELD_REPOSITORY: "agent-system",
+        FIELD_REPO_PATH: "/repos/agent-system",
+    }
+    fields[blank_field] = blank_value
+    loader = JiraWorkItemLoader(_FakeJiraClient(_ticket(fields=fields)))
+
+    with pytest.raises(JiraWorkItemLoadError) as exc_info:
+        asyncio.run(loader.load("AGENT-123"))
+
+    assert str(exc_info.value) == (
+        f"Jira ticket AGENT-123 is missing required field: {blank_field}"
+    )
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    ["", "0", "5", 1.5, True, 0, -1, "not-a-number"],
+)
 def test_load_raises_clear_error_when_max_attempts_is_invalid(bad_value: object):
     loader = JiraWorkItemLoader(
         _FakeJiraClient(

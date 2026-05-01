@@ -48,21 +48,19 @@ def _required_string(ticket: JiraTicket, field_name: str) -> str:
 
 
 def _max_attempts(ticket: JiraTicket) -> int:
-    value = ticket.fields.get(
-        FIELD_MAX_ATTEMPTS,
-        _ticket_work_item_default("max_attempts"),
-    )
-    try:
-        attempts = int(value)
-    except (TypeError, ValueError) as exc:
-        raise JiraWorkItemLoadError(
-            f"Jira ticket {ticket.key} has invalid field: {FIELD_MAX_ATTEMPTS}"
-        ) from exc
-    if attempts < 1:
+    if FIELD_MAX_ATTEMPTS not in ticket.fields:
+        return _ticket_work_item_default("max_attempts")
+
+    value = ticket.fields[FIELD_MAX_ATTEMPTS]
+    if type(value) is not int:
         raise JiraWorkItemLoadError(
             f"Jira ticket {ticket.key} has invalid field: {FIELD_MAX_ATTEMPTS}"
         )
-    return attempts
+    if value < 1:
+        raise JiraWorkItemLoadError(
+            f"Jira ticket {ticket.key} has invalid field: {FIELD_MAX_ATTEMPTS}"
+        )
+    return value
 
 
 def _ticket_work_item_default(field_name: str) -> Any:
