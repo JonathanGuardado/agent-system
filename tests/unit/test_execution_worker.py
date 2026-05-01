@@ -13,38 +13,41 @@ from ticket_agent.orchestrator.execution_worker import (
 )
 
 
-def test_run_once_returns_false_when_queue_is_empty():
-    queue = _FakeQueue()
+@pytest.mark.asyncio
+async def test_run_once_returns_false_when_queue_is_empty():
+    queue = _RecordingQueue()
     coordinator = _FakeCoordinator()
     worker = ExecutionWorker(queue, coordinator)
 
-    processed = asyncio.run(worker.run_once())
+    processed = await worker.run_once()
 
     assert processed is False
     assert coordinator.calls == []
     assert queue.task_done_calls == 0
 
 
-def test_run_once_processes_one_ticket_and_calls_task_done():
-    queue = _FakeQueue(["AGENT-123", "AGENT-456"])
+@pytest.mark.asyncio
+async def test_run_once_processes_one_ticket_and_calls_coordinator():
+    queue = _queue_with("AGENT-123", "AGENT-456")
     coordinator = _FakeCoordinator()
     worker = ExecutionWorker(queue, coordinator)
 
-    processed = asyncio.run(worker.run_once())
+    processed = await worker.run_once()
 
     assert processed is True
     assert coordinator.calls == ["AGENT-123"]
-    assert queue.items == ["AGENT-456"]
+    assert queue.get_nowait() == "AGENT-456"
     assert queue.task_done_calls == 1
 
 
-def test_success_emits_started_and_completed():
-    queue = _FakeQueue(["AGENT-123"])
+@pytest.mark.asyncio
+async def test_successful_run_emits_started_and_completed():
+    queue = _queue_with("AGENT-123")
     coordinator = _FakeCoordinator()
     events = _EventRecorder()
     worker = ExecutionWorker(queue, coordinator, emit=events)
 
-    asyncio.run(worker.run_once())
+    await worker.run_once()
 
     assert events.names == [
         EVENT_EXECUTION_WORKER_STARTED,
@@ -58,14 +61,15 @@ def test_success_emits_started_and_completed():
     }
 
 
-def test_failure_emits_failed_and_does_not_raise_when_stop_on_error_is_false():
+@pytest.mark.asyncio
+async def test_failure_emits_failed_and_does_not_raise_when_stop_on_error_is_false():
     error = RuntimeError("runner exploded")
-    queue = _FakeQueue(["AGENT-123"])
+    queue = _queue_with("AGENT-123")
     coordinator = _FakeCoordinator(error)
     events = _EventRecorder()
     worker = ExecutionWorker(queue, coordinator, emit=events)
 
-    processed = asyncio.run(worker.run_once())
+    processed = await worker.run_once()
 
     assert processed is True
     assert coordinator.calls == ["AGENT-123"]
@@ -79,9 +83,10 @@ def test_failure_emits_failed_and_does_not_raise_when_stop_on_error_is_false():
     }
 
 
-def test_failure_raises_when_stop_on_error_is_true():
+@pytest.mark.asyncio
+async def test_failure_raises_when_stop_on_error_is_true():
     error = RuntimeError("runner exploded")
-    queue = _FakeQueue(["AGENT-123"])
+    queue = _queue_with("AGENT-123")
     coordinator = _FakeCoordinator(error)
     events = _EventRecorder()
     worker = ExecutionWorker(
@@ -92,7 +97,7 @@ def test_failure_raises_when_stop_on_error_is_true():
     )
 
     with pytest.raises(RuntimeError) as exc_info:
-        asyncio.run(worker.run_once())
+        await worker.run_once()
 
     assert exc_info.value is error
     assert events.names == [
@@ -101,44 +106,47 @@ def test_failure_raises_when_stop_on_error_is_true():
     ]
 
 
-def test_task_done_is_called_even_on_failure():
-    queue = _FakeQueue(["AGENT-123"])
+@pytest.mark.asyncio
+async def test_task_done_is_called_even_when_coordinator_run_ticket_fails():
+    queue = _queue_with("AGENT-123")
     coordinator = _FakeCoordinator(RuntimeError("runner exploded"))
     worker = ExecutionWorker(queue, coordinator, stop_on_error=True)
 
     with pytest.raises(RuntimeError):
-        asyncio.run(worker.run_once())
+        await worker.run_once()
 
     assert queue.task_done_calls == 1
 
 
-def test_run_forever_propagates_cancelled_error():
-    queue = _FakeQueue()
+@pytest.mark.asyncio
+async def test_run_forever_propagates_cancelled_error():
+    queue = _RecordingQueue()
     coordinator = _FakeCoordinator()
     worker = ExecutionWorker(queue, coordinator)
 
-    async def cancel_during_sleep() -> None:
-        task = asyncio.create_task(worker.run_forever(poll_interval_s=60.0))
-        await asyncio.sleep(0)
-        task.cancel()
-        await task
+    task = asyncio.create_task(worker.run_forever(poll_interval_s=60.0))
+    await asyncio.sleep(0)
+    task.cancel()
 
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(cancel_during_sleep())
+        await task
 
 
-class _FakeQueue:
-    def __init__(self, items: list[str] | None = None) -> None:
-        self.items = [] if items is None else list(items)
+class _RecordingQueue(asyncio.Queue[str]):
+    def __init__(self) -> None:
+        super().__init__()
         self.task_done_calls = 0
-
-    def get_nowait(self) -> str:
-        if not self.items:
-            raise asyncio.QueueEmpty
-        return self.items.pop(0)
 
     def task_done(self) -> None:
         self.task_done_calls += 1
+        super().task_done()
+
+
+def _queue_with(*ticket_keys: str) -> _RecordingQueue:
+    queue = _RecordingQueue()
+    for ticket_key in ticket_keys:
+        queue.put_nowait(ticket_key)
+    return queue
 
 
 class _FakeCoordinator:

@@ -21,6 +21,7 @@ ticket-agent-smoke-model-router = "ticket_agent.router.smoke:main"
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
+  "pytest-asyncio>=0.23",
 ]
 
 [tool.setuptools.packages.find]

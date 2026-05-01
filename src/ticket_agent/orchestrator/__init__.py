@@ -5,6 +5,7 @@ from ticket_agent.orchestrator.graph import (
     build_ticket_graph,
 )
 from ticket_agent.orchestrator.execution_worker import (
+    Coordinator,
     ExecutionWorker,
     TicketExecutionCoordinator,
 )
@@ -34,6 +35,7 @@ from ticket_agent.orchestrator.state import TicketState
 __all__ = [
     "AdapterTestService",
     "ApprovalService",
+    "Coordinator",
     "EscalationService",
     "ExecutionWorker",
     "GitService",

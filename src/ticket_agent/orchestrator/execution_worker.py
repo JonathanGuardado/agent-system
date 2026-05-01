@@ -5,20 +5,23 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from inspect import isawaitable
-from typing import Protocol
+from typing import Any, Protocol
 
-EventEmitter = Callable[[str, dict[str, object]], object]
+EventEmitter = Callable[[str, dict[str, Any]], Any]
 
 EVENT_EXECUTION_WORKER_STARTED = "execution_worker_started"
 EVENT_EXECUTION_WORKER_COMPLETED = "execution_worker_completed"
 EVENT_EXECUTION_WORKER_FAILED = "execution_worker_failed"
 
 
-class TicketExecutionCoordinator(Protocol):
+class Coordinator(Protocol):
     """Minimal execution boundary used by the queue worker."""
 
-    async def run_ticket(self, ticket_key: str) -> object:
+    async def run_ticket(self, ticket_key: str) -> Any:
         """Run one ticket by key."""
+
+
+TicketExecutionCoordinator = Coordinator
 
 
 class ExecutionWorker:
@@ -27,7 +30,7 @@ class ExecutionWorker:
     def __init__(
         self,
         queue: asyncio.Queue[str],
-        coordinator: TicketExecutionCoordinator,
+        coordinator: Coordinator,
         emit: EventEmitter | None = None,
         stop_on_error: bool = False,
     ) -> None:
@@ -69,7 +72,7 @@ class ExecutionWorker:
             if not processed:
                 await asyncio.sleep(poll_interval_s)
 
-    async def _emit(self, event_name: str, **payload: object) -> None:
+    async def _emit(self, event_name: str, **payload: Any) -> None:
         if self._event_emitter is None:
             return
         result = self._event_emitter(event_name, payload)
@@ -92,6 +95,7 @@ __all__ = [
     "EVENT_EXECUTION_WORKER_COMPLETED",
     "EVENT_EXECUTION_WORKER_FAILED",
     "EVENT_EXECUTION_WORKER_STARTED",
+    "Coordinator",
     "EventEmitter",
     "ExecutionWorker",
     "TicketExecutionCoordinator",
