@@ -21,6 +21,13 @@ from ticket_agent.orchestrator.local_services import (
     AdapterTestService,
     LocalImplementationService,
 )
+from ticket_agent.orchestrator.model_services import (
+    ModelRouterImplementationService,
+    ModelRouterPlannerService,
+    ModelRouterProtocol,
+    ModelRouterReviewService,
+    ModelServiceError,
+)
 from ticket_agent.orchestrator.services import (
     ApprovalService,
     EscalationService,
@@ -42,6 +49,11 @@ __all__ = [
     "ImplementationService",
     "LocalImplementationService",
     "LockManager",
+    "ModelRouterImplementationService",
+    "ModelRouterPlannerService",
+    "ModelRouterProtocol",
+    "ModelRouterReviewService",
+    "ModelServiceError",
     "OrchestratorRunner",
     "PlannerService",
     "PullRequestService",
