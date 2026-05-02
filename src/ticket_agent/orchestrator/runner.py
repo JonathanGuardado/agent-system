@@ -152,6 +152,8 @@ class OrchestratorRunner:
             updates["lock_id"] = lock_id
         if "component_id" in state_fields:
             updates["component_id"] = self._component_id
+        if "branch_name" in state_fields:
+            updates["branch_name"] = _branch_name(work_item.ticket_key, lock)
 
         return TicketState(
             ticket_key=work_item.ticket_key,
@@ -228,3 +230,14 @@ def _lock_id(lock: Lock) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _branch_name(ticket_key: str, lock: Lock) -> str:
+    """Build branch name following agent/{TICKET-KEY}/{short-lock-id} convention."""
+    short_id = _lock_id(lock)
+    if short_id is None:
+        # Derive a short, stable ID from the lock owner when no lock_id is present.
+        owner = str(getattr(lock, "owner", "") or "")
+        short_id = "".join(c for c in owner if c.isalnum() or c == "-") or "run"
+    safe_key = ticket_key.replace("/", "-")
+    return f"agent/{safe_key}/{short_id}"

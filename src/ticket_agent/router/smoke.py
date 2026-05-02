@@ -99,6 +99,10 @@ def _load_dotenv_if_available() -> None:
     except ModuleNotFoundError:
         return
 
+    # Check canonical key store first, then repo-local .env for dev convenience.
+    config_env = Path.home() / "config" / "agent-system.env"
+    if config_env.exists():
+        load_dotenv(config_env)
     load_dotenv(REPO_ROOT / ".env")
 
 

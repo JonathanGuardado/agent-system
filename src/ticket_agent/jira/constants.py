@@ -3,6 +3,7 @@
 LABEL_AI_READY = "ai-ready"
 LABEL_AI_CLAIMED = "ai-claimed"
 LABEL_AI_FAILED = "ai-failed"
+LABEL_AI_EXECUTION_APPROVED = "ai-execution-approved"
 LABEL_DO_NOT_AUTOMATE = "do-not-automate"
 
 STATUS_TODO = "To Do"
@@ -44,6 +45,7 @@ __all__ = [
     "FIELD_REPOSITORY",
     "FIELD_REPO_PATH",
     "LABEL_AI_CLAIMED",
+    "LABEL_AI_EXECUTION_APPROVED",
     "LABEL_AI_FAILED",
     "LABEL_AI_READY",
     "LABEL_DO_NOT_AUTOMATE",

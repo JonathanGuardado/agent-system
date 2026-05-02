@@ -161,7 +161,30 @@ def test_initial_ticket_state_is_built_from_work_item():
         repo_path="/repos/agent-system",
         worktree_path="/worktrees/AGENT-123",
         lock_id="lock-123",
+        branch_name="agent/AGENT-123/lock-123",
     )
+
+
+def test_branch_name_uses_lock_id_when_available():
+    graph = _Graph({})
+    lock_manager = _LockManager(lock=_Lock("PROJ-42", lock_id="abc123"))
+    runner = _runner(graph, lock_manager)
+
+    asyncio.run(runner.run_ticket(_work_item()))
+
+    assert graph.last_state is not None
+    assert graph.last_state.branch_name == "agent/AGENT-123/abc123"
+
+
+def test_branch_name_falls_back_to_owner_when_no_lock_id():
+    graph = _Graph({})
+    lock_manager = _LockManager(lock=_LockWithOwner("AGENT-123", owner="orchestrator-7"))
+    runner = _runner(graph, lock_manager)
+
+    asyncio.run(runner.run_ticket(_work_item()))
+
+    assert graph.last_state is not None
+    assert graph.last_state.branch_name == "agent/AGENT-123/orchestrator-7"
 
 
 def test_lock_id_is_copied_into_state_when_available():
@@ -205,6 +228,14 @@ def _work_item(**updates: Any) -> TicketWorkItem:
 class _Lock:
     ticket_key: str
     lock_id: str
+
+
+@dataclass(frozen=True)
+class _LockWithOwner:
+    """Mimics real TicketLock which has owner but no lock_id."""
+
+    ticket_key: str
+    owner: str
 
 
 class _LockManager:

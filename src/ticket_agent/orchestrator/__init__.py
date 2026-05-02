@@ -10,6 +10,10 @@ from ticket_agent.orchestrator.execution_worker import (
     TicketExecutionCoordinator,
 )
 from ticket_agent.orchestrator.git_services import GitService
+from ticket_agent.orchestrator.jira_services import (
+    JiraEscalationService,
+    JiraLabelApprovalService,
+)
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.runner import (
     LockManager,
@@ -46,6 +50,8 @@ __all__ = [
     "EscalationService",
     "ExecutionWorker",
     "GitService",
+    "JiraEscalationService",
+    "JiraLabelApprovalService",
     "ImplementationService",
     "LocalImplementationService",
     "LockManager",
