@@ -18,6 +18,7 @@ from ticket_agent.orchestrator.nodes import (
     request_execution_approval,
     review_changes,
     run_tests,
+    service_backed_ticket_nodes,
 )
 from ticket_agent.orchestrator.state import TicketState
 
@@ -108,7 +109,7 @@ def _coerce_workflow_nodes(
         return TicketWorkflowNodes()
     if isinstance(nodes, TicketWorkflowNodes):
         return nodes
-    return nodes.as_workflow_nodes()
+    return TicketWorkflowNodes(**service_backed_ticket_nodes(nodes))
 
 
 def route_after_execution_approval(

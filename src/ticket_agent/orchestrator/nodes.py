@@ -1,13 +1,34 @@
-"""Async node skeletons for the ticket workflow graph."""
+"""Async nodes and service-backed node bindings for the ticket workflow graph."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Awaitable, Callable, Mapping
+from typing import TYPE_CHECKING, Any
 
 from ticket_agent.orchestrator.state import TicketState, WorkflowStatus
 
+if TYPE_CHECKING:
+    from ticket_agent.orchestrator.node_runner import TicketNodeRunner
+
 TicketStateUpdate = Mapping[str, Any]
+TicketNode = Callable[[TicketState], Awaitable[TicketStateUpdate]]
+
+
+def service_backed_ticket_nodes(
+    runner: TicketNodeRunner,
+) -> dict[str, TicketNode]:
+    """Bind graph node names to the injected service-backed runner methods."""
+
+    return {
+        "plan": runner.plan,
+        "request_execution_approval": runner.request_execution_approval,
+        "implement": runner.implement,
+        "run_tests": runner.run_tests,
+        "review": runner.review,
+        "open_pull_request": runner.open_pull_request,
+        "escalate": runner.escalate,
+        "report": runner.report,
+    }
 
 
 async def plan_ticket(state: TicketState) -> TicketStateUpdate:
