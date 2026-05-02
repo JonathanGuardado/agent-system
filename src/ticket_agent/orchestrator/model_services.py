@@ -28,6 +28,18 @@ class ModelRouterProtocol(Protocol):
 FileAdapterFactory = Callable[[str], Any]
 
 _MODEL_ENVELOPE_FIELDS = ("content", "text", "message", "data")
+_MODEL_ENVELOPE_METADATA_FIELDS = frozenset(
+    {
+        "model",
+        "usage",
+        "provider",
+        "raw",
+        "response_id",
+        "created_at",
+        "id",
+        "finish_reason",
+    }
+)
 _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 
 
@@ -149,7 +161,10 @@ def _coerce_model_payload_inner(response: Any, *, seen: set[int]) -> dict[str, A
         if len(response) == 1:
             for field in _MODEL_ENVELOPE_FIELDS:
                 if field in response:
-                    return _coerce_model_payload_inner(response[field], seen=seen)
+                    return _coerce_envelope_field(response, field, seen=seen)
+        envelope_field = _mapping_envelope_field(response)
+        if envelope_field is not None:
+            return _coerce_envelope_field(response, envelope_field, seen=seen)
         return dict(response)
 
     if isinstance(response, str):
@@ -159,11 +174,53 @@ def _coerce_model_payload_inner(response: Any, *, seen: set[int]) -> dict[str, A
         if hasattr(response, field):
             value = getattr(response, field)
             if value is not None:
-                return _coerce_model_payload_inner(value, seen=seen)
+                return _coerce_envelope_value(value, field, seen=seen)
 
     raise ModelServiceError(
         f"model response has unsupported shape: {type(response).__name__}"
     )
+
+
+def _mapping_envelope_field(response: Mapping[str, Any]) -> str | None:
+    has_metadata = bool(_MODEL_ENVELOPE_METADATA_FIELDS.intersection(response))
+    invalid_metadata_field: str | None = None
+
+    for field in _MODEL_ENVELOPE_FIELDS:
+        if field not in response or response[field] is None:
+            continue
+        value = response[field]
+        if _is_payload_like_envelope_value(value):
+            return field
+        if has_metadata:
+            invalid_metadata_field = field
+
+    return invalid_metadata_field
+
+
+def _is_payload_like_envelope_value(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return True
+    if isinstance(value, str):
+        return _try_extract_json_object(value) is not None
+    return False
+
+
+def _coerce_envelope_field(
+    response: Mapping[str, Any],
+    field: str,
+    *,
+    seen: set[int],
+) -> dict[str, Any]:
+    return _coerce_envelope_value(response[field], field, seen=seen)
+
+
+def _coerce_envelope_value(value: Any, field: str, *, seen: set[int]) -> dict[str, Any]:
+    try:
+        return _coerce_model_payload_inner(value, seen=seen)
+    except ModelServiceError as exc:
+        raise ModelServiceError(
+            f"model response envelope field {field!r} could not be parsed: {exc}"
+        ) from exc
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
@@ -192,6 +249,13 @@ def _extract_json_object(text: str) -> dict[str, Any]:
             return parsed
 
     raise ModelServiceError("model response could not be parsed as a JSON object")
+
+
+def _try_extract_json_object(text: str) -> dict[str, Any] | None:
+    try:
+        return _extract_json_object(text)
+    except ModelServiceError:
+        return None
 
 
 def _parse_json_dict(text: str) -> dict[str, Any] | None:
@@ -237,7 +301,8 @@ def _planning_messages(state: TicketState) -> list[dict[str, str]]:
             "role": "system",
             "content": (
                 "You decompose software tickets into concise execution plans. "
-                "Return JSON only."
+                "Return exactly one strict JSON object. Do not include markdown "
+                "fences or prose."
             ),
         },
         {
@@ -253,11 +318,16 @@ def _planning_messages(state: TicketState) -> list[dict[str, str]]:
                     f"max_attempts: {state.max_attempts}",
                     "Required JSON schema:",
                     (
-                        '{"plan": string, "files_to_modify": string[], '
-                        '"risks": string[], "complexity": string, '
-                        '"requires_human_review": boolean}'
+                        '{"plan": "string", '
+                        '"files_to_modify": ["relative/path.py"], '
+                        '"risks": ["string"], '
+                        '"complexity": "low|medium|high", '
+                        '"requires_human_review": false}'
                     ),
-                    "Return JSON only. Do not include markdown.",
+                    "Paths must be relative, must not contain '..', and must "
+                    "not be absolute.",
+                    "Return JSON only. No markdown fences. No prose before or "
+                    "after JSON.",
                 ]
             ),
         },
@@ -270,7 +340,8 @@ def _implementation_messages(state: TicketState) -> list[dict[str, str]]:
             "role": "system",
             "content": (
                 "You produce explicit repository file write plans for a "
-                "software implementation agent. Return JSON only."
+                "software implementation agent. Return exactly one strict JSON "
+                "object. Do not include markdown fences or prose."
             ),
         },
         {
@@ -288,17 +359,18 @@ def _implementation_messages(state: TicketState) -> list[dict[str, str]]:
                     f"repository: {state.repository or ''}",
                     f"repo_path: {state.repo_path or ''}",
                     f"worktree_path: {state.worktree_path or ''}",
-                    "Supported file operation:",
-                    (
-                        '{"operation": "write_file", "path": string, '
-                        '"content": string}'
-                    ),
                     "Required JSON schema:",
                     (
-                        '{"summary": string, "files": [file_operation], '
-                        '"notes": string[]}'
+                        '{"summary": "string", "operations": ['
+                        '{"type": "write_file", '
+                        '"path": "relative/path.py", '
+                        '"content": "file content"}]}'
                     ),
-                    "Return JSON only. Do not include markdown.",
+                    "Implementation supports write_file only for now.",
+                    "Paths must be relative, must not contain '..', and must "
+                    "not be absolute.",
+                    "Return JSON only. No markdown fences. No prose before or "
+                    "after JSON.",
                 ]
             ),
         },
@@ -311,7 +383,8 @@ def _review_messages(state: TicketState) -> list[dict[str, str]]:
             "role": "system",
             "content": (
                 "You verify whether implementation results satisfy a ticket. "
-                "Return JSON only."
+                "Return exactly one strict JSON object. Do not include markdown "
+                "fences or prose."
             ),
         },
         {
@@ -335,10 +408,11 @@ def _review_messages(state: TicketState) -> list[dict[str, str]]:
                     ),
                     "Required JSON schema:",
                     (
-                        '{"passed": boolean, "reasoning": string, '
-                        '"issues": string[], "confidence": number}'
+                        '{"passed": true, "reasoning": "string", '
+                        '"issues": ["string"], "confidence": 0.0}'
                     ),
-                    "Return JSON only. Do not include markdown.",
+                    "Return JSON only. No markdown fences. No prose before or "
+                    "after JSON.",
                 ]
             ),
         },
@@ -359,9 +433,9 @@ def _changed_files_from_state(state: TicketState) -> list[str]:
 
 
 def _required_file_operations(payload: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
-    files = payload.get("files")
+    files = payload.get("operations", payload.get("files"))
     if not isinstance(files, Sequence) or isinstance(files, (str, bytes)):
-        raise ModelServiceError("model response must include files as a list")
+        raise ModelServiceError("model response must include operations as a list")
     operations: list[Mapping[str, Any]] = []
     for index, operation in enumerate(files):
         if not isinstance(operation, Mapping):
@@ -375,7 +449,7 @@ def _apply_file_operation(
     operation: Mapping[str, Any],
     index: int,
 ) -> str:
-    operation_name = operation.get("operation")
+    operation_name = operation.get("type", operation.get("operation"))
     if operation_name != "write_file":
         raise ModelServiceError(
             f"unsupported file operation at index {index}: {operation_name!r}"

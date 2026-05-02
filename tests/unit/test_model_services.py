@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -61,6 +62,59 @@ def test_planner_parses_json_string_response():
     assert result["requires_human_review"] is False
 
 
+def test_planner_accepts_dict_envelope_with_content_json_string():
+    router = _FakeRouter(
+        {
+            "ticket.decompose": {
+                "content": json.dumps(
+                    {
+                        "plan": "Do it",
+                        "files_to_modify": ["src/app.py"],
+                        "risks": [],
+                        "complexity": "medium",
+                        "requires_human_review": False,
+                    }
+                ),
+                "model": "gemini-pro",
+                "usage": {"input_tokens": 10, "output_tokens": 20},
+            }
+        }
+    )
+
+    result = asyncio.run(ModelRouterPlannerService(router).plan(_state()))
+
+    assert result == {
+        "plan": "Do it",
+        "files_to_modify": ["src/app.py"],
+        "risks": [],
+        "complexity": "medium",
+        "requires_human_review": False,
+    }
+
+
+def test_planner_accepts_dict_envelope_with_content_dict_payload():
+    router = _FakeRouter(
+        {
+            "ticket.decompose": {
+                "content": {
+                    "plan": "Use dict content",
+                    "files_to_modify": ["src/app.py"],
+                    "risks": [],
+                    "complexity": "medium",
+                    "requires_human_review": False,
+                },
+                "model": "gemini-pro",
+                "usage": {"input_tokens": 10, "output_tokens": 20},
+            }
+        }
+    )
+
+    result = asyncio.run(ModelRouterPlannerService(router).plan(_state()))
+
+    assert result["plan"] == "Use dict content"
+    assert result["files_to_modify"] == ["src/app.py"]
+
+
 def test_planner_parses_fenced_json_response_and_fills_defaults():
     router = _FakeRouter(
         {
@@ -83,11 +137,63 @@ def test_planner_parses_fenced_json_response_and_fills_defaults():
     }
 
 
+def test_planner_accepts_dict_envelope_with_fenced_json_content():
+    router = _FakeRouter(
+        {
+            "ticket.decompose": {
+                "content": (
+                    "```json\n"
+                    '{"plan": "Do it", "files_to_modify": ["src/app.py"], '
+                    '"risks": [], "complexity": "low", '
+                    '"requires_human_review": false}\n'
+                    "```"
+                ),
+                "model": "gemini-pro",
+            }
+        }
+    )
+
+    result = asyncio.run(ModelRouterPlannerService(router).plan(_state()))
+
+    assert result["plan"] == "Do it"
+    assert result["files_to_modify"] == ["src/app.py"]
+    assert result["complexity"] == "low"
+
+
 def test_planner_raises_model_service_error_on_invalid_json():
     router = _FakeRouter({"ticket.decompose": "not json"})
 
     with pytest.raises(ModelServiceError, match="could not be parsed"):
         asyncio.run(ModelRouterPlannerService(router).plan(_state()))
+
+
+def test_planner_raises_model_service_error_on_invalid_envelope_content():
+    router = _FakeRouter(
+        {
+            "ticket.decompose": {
+                "content": "not json",
+                "model": "gemini-pro",
+                "usage": {"input_tokens": 10},
+            }
+        }
+    )
+
+    with pytest.raises(ModelServiceError, match="envelope field 'content'"):
+        asyncio.run(ModelRouterPlannerService(router).plan(_state()))
+
+
+def test_planner_accepts_object_envelope_with_content():
+    router = _FakeRouter(
+        {
+            "ticket.decompose": _ObjectEnvelope(
+                content='{"plan": "Object content", "files_to_modify": []}'
+            )
+        }
+    )
+
+    result = asyncio.run(ModelRouterPlannerService(router).plan(_state()))
+
+    assert result["plan"] == "Object content"
 
 
 def test_review_calls_router_and_accepts_passed():
@@ -114,6 +220,35 @@ def test_review_calls_router_and_accepts_passed():
     }
 
 
+def test_review_accepts_dict_envelope_with_content_json_string():
+    router = _FakeRouter(
+        {
+            "code.verify": {
+                "content": json.dumps(
+                    {
+                        "passed": True,
+                        "reasoning": "Looks good",
+                        "issues": [],
+                        "confidence": 0.8,
+                    }
+                ),
+                "model": "gemini-pro",
+                "usage": {"input_tokens": 10, "output_tokens": 20},
+            }
+        }
+    )
+
+    result = asyncio.run(ModelRouterReviewService(router).review(_state()))
+
+    assert result == {
+        "passed": True,
+        "status": "approved",
+        "reasoning": "Looks good",
+        "issues": [],
+        "confidence": 0.8,
+    }
+
+
 def test_review_accepts_approved_alias_and_fills_issues_default():
     router = _FakeRouter(
         {
@@ -131,10 +266,46 @@ def test_review_accepts_approved_alias_and_fills_issues_default():
     assert result["issues"] == []
 
 
+def test_review_accepts_approved_alias_from_dict_envelope():
+    router = _FakeRouter(
+        {
+            "code.verify": {
+                "content": json.dumps(
+                    {
+                        "approved": True,
+                        "reasoning": "Implementation is sufficient.",
+                    }
+                ),
+                "model": "gemini-pro",
+            }
+        }
+    )
+
+    result = asyncio.run(ModelRouterReviewService(router).review(_state()))
+
+    assert result["passed"] is True
+    assert result["status"] == "approved"
+    assert result["issues"] == []
+
+
 def test_review_raises_model_service_error_when_response_is_invalid():
     router = _FakeRouter({"code.verify": ["not", "an", "object"]})
 
     with pytest.raises(ModelServiceError, match="unsupported shape"):
+        asyncio.run(ModelRouterReviewService(router).review(_state()))
+
+
+def test_review_raises_model_service_error_on_invalid_envelope_content():
+    router = _FakeRouter(
+        {
+            "code.verify": {
+                "content": "not json",
+                "model": "gemini-pro",
+            }
+        }
+    )
+
+    with pytest.raises(ModelServiceError, match="envelope field 'content'"):
         asyncio.run(ModelRouterReviewService(router).review(_state()))
 
 
@@ -184,6 +355,43 @@ def test_implementation_calls_router_and_writes_files_through_adapter():
     }
 
 
+def test_implementation_accepts_dict_envelope_and_writes_files_through_adapter():
+    adapter = _FakeFileAdapter()
+    router = _FakeRouter(
+        {
+            "code.implement": {
+                "content": json.dumps(
+                    {
+                        "summary": "Updated files",
+                        "operations": [
+                            {
+                                "type": "write_file",
+                                "path": "src/hello.py",
+                                "content": "def hello():\n    return 'hello'\n",
+                            }
+                        ],
+                    }
+                ),
+                "model": "deepseek-v4-pro",
+                "usage": {"input_tokens": 10, "output_tokens": 20},
+            }
+        }
+    )
+    factory = _AdapterFactory(adapter)
+
+    result = asyncio.run(
+        ModelRouterImplementationService(router, factory).implement(
+            _state(worktree_path="/tmp/worktree")
+        )
+    )
+
+    assert adapter.writes == [
+        ("src/hello.py", "def hello():\n    return 'hello'\n")
+    ]
+    assert result["implementation_result"]["changed_files"] == ["src/hello.py"]
+    assert result["implementation_result"]["summary"] == "Updated files"
+
+
 def test_implementation_rejects_absolute_paths():
     router = _FakeRouter(
         {
@@ -208,6 +416,35 @@ def test_implementation_rejects_absolute_paths():
         )
 
 
+def test_implementation_rejects_absolute_paths_from_envelope_payload():
+    router = _FakeRouter(
+        {
+            "code.implement": {
+                "content": json.dumps(
+                    {
+                        "summary": "Unsafe",
+                        "operations": [
+                            {
+                                "type": "write_file",
+                                "path": "/tmp/outside.py",
+                                "content": "nope\n",
+                            }
+                        ],
+                    }
+                ),
+                "model": "deepseek-v4-pro",
+            }
+        }
+    )
+
+    with pytest.raises(ModelServiceError, match="must be relative"):
+        asyncio.run(
+            ModelRouterImplementationService(router, _AdapterFactory()).implement(
+                _state(worktree_path="/tmp/worktree")
+            )
+        )
+
+
 def test_implementation_rejects_traversal_paths():
     router = _FakeRouter(
         {
@@ -220,6 +457,35 @@ def test_implementation_rejects_traversal_paths():
                         "content": "nope\n",
                     }
                 ],
+            }
+        }
+    )
+
+    with pytest.raises(ModelServiceError, match="must not contain '\\.\\.'"):
+        asyncio.run(
+            ModelRouterImplementationService(router, _AdapterFactory()).implement(
+                _state(worktree_path="/tmp/worktree")
+            )
+        )
+
+
+def test_implementation_rejects_traversal_paths_from_envelope_payload():
+    router = _FakeRouter(
+        {
+            "code.implement": {
+                "content": json.dumps(
+                    {
+                        "summary": "Unsafe",
+                        "operations": [
+                            {
+                                "type": "write_file",
+                                "path": "src/../outside.py",
+                                "content": "nope\n",
+                            }
+                        ],
+                    }
+                ),
+                "model": "deepseek-v4-pro",
             }
         }
     )
@@ -304,6 +570,24 @@ def test_implementation_propagates_file_adapter_errors():
         )
 
 
+def test_implementation_raises_model_service_error_on_invalid_envelope_content():
+    router = _FakeRouter(
+        {
+            "code.implement": {
+                "content": "not json",
+                "model": "deepseek-v4-pro",
+            }
+        }
+    )
+
+    with pytest.raises(ModelServiceError, match="envelope field 'content'"):
+        asyncio.run(
+            ModelRouterImplementationService(router, _AdapterFactory()).implement(
+                _state(worktree_path="/tmp/worktree")
+            )
+        )
+
+
 def test_service_backed_graph_completes_with_model_services():
     adapter = _FakeFileAdapter()
     router = _FakeRouter(
@@ -368,6 +652,11 @@ def _state(**updates: Any) -> TicketState:
     }
     values.update(updates)
     return TicketState(**values)
+
+
+@dataclass(frozen=True)
+class _ObjectEnvelope:
+    content: Any
 
 
 @dataclass(frozen=True)
