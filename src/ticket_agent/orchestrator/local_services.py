@@ -303,6 +303,18 @@ def _failed_result(error: str) -> TestResult:
     }
 
 
+class AutoApprovalService:
+    """Default MVP execution approval.
+
+    The human approves the full plan in Slack before Jira tickets are
+    created/marked ai-ready, so individual ticket execution does not require
+    another manual approval.
+    """
+
+    async def request_approval(self, state: TicketState) -> bool:
+        return True
+
+
 def _failed_implementation_update(error: str) -> dict[str, Any]:
     return {
         "implementation_result": {
@@ -316,6 +328,7 @@ def _failed_implementation_update(error: str) -> dict[str, Any]:
 
 __all__ = [
     "AdapterTestService",
+    "AutoApprovalService",
     "GhPullRequestOpener",
     "GitPullRequestPort",
     "GitService",

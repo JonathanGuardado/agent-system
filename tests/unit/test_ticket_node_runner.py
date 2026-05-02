@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 from ticket_agent.orchestrator.graph import build_ticket_graph
+from ticket_agent.orchestrator.local_services import AutoApprovalService
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.state import TicketState
 
@@ -19,6 +20,22 @@ def test_plan_service_output_sets_decomposition():
     assert state.workflow_status == "planned"
     assert state.decomposition == {"steps": ["edit"]}
     assert state.visited_nodes == ["plan"]
+
+
+def test_auto_approval_service_proceeds_to_implementation():
+    """AutoApprovalService is the default MVP gate: execution proceeds without
+    any manual per-ticket approval step."""
+    implementation = _Implementation({"worktree_path": "/tmp/worktree"})
+    runner = _runner(approval=AutoApprovalService(), implementation=implementation)
+    graph = build_ticket_graph(runner)
+
+    result = asyncio.run(graph.ainvoke(_initial_state()))
+    state = TicketState.model_validate(result)
+
+    assert "request_execution_approval" in state.visited_nodes
+    assert "implement" in state.visited_nodes
+    assert state.execution_approved is True
+    assert state.workflow_status == "completed"
 
 
 def test_approval_service_false_routes_to_escalation_in_graph():

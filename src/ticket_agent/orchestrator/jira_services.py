@@ -45,12 +45,20 @@ class JiraEscalationService:
 
 
 class JiraLabelApprovalService:
-    """Approve execution when the ticket carries the ai-execution-approved label.
+    """Optional per-ticket Jira approval gate — not the default MVP mode.
 
-    A human (or Slack bot) adds the label to signal consent.  The graph checks
-    it once at the approval node; if absent it returns False and the graph
-    escalates.  Errors from Jira bubble up so the OrchestratorRunner can
-    escalate the ticket correctly.
+    Checks whether the ticket carries the ``ai-execution-approved`` label
+    before allowing execution to proceed.  Absent label → returns False →
+    graph escalates.
+
+    This service is **not** wired by default.  The default MVP approval path
+    is :class:`AutoApprovalService` in ``local_services``: the human approves
+    the full plan in Slack before tickets are created, so no per-ticket label
+    is required.
+
+    Use this service when you need an extra manual gate, e.g. for high-risk
+    tickets or emergency manual override.  Errors from Jira bubble up so the
+    OrchestratorRunner can escalate the ticket correctly.
     """
 
     def __init__(self, client: JiraClient) -> None:

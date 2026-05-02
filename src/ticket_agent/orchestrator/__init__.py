@@ -23,6 +23,7 @@ from ticket_agent.orchestrator.runner import (
 )
 from ticket_agent.orchestrator.local_services import (
     AdapterTestService,
+    AutoApprovalService,
     LocalImplementationService,
 )
 from ticket_agent.orchestrator.model_services import (
@@ -46,6 +47,7 @@ from ticket_agent.orchestrator.state import TicketState
 __all__ = [
     "AdapterTestService",
     "ApprovalService",
+    "AutoApprovalService",
     "Coordinator",
     "EscalationService",
     "ExecutionWorker",
