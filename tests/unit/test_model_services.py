@@ -309,7 +309,7 @@ def test_review_raises_model_service_error_on_invalid_envelope_content():
         asyncio.run(ModelRouterReviewService(router).review(_state()))
 
 
-def test_implementation_calls_router_and_writes_files_through_adapter():
+def test_implementation_calls_router_and_writes_files_through_adapter(tmp_path):
     adapter = _FakeFileAdapter()
     router = _FakeRouter(
         {
@@ -335,12 +335,12 @@ def test_implementation_calls_router_and_writes_files_through_adapter():
 
     result = asyncio.run(
         ModelRouterImplementationService(router, factory).implement(
-            _state(worktree_path="/tmp/worktree")
+            _state(worktree_path=str(tmp_path))
         )
     )
 
     assert router.calls[0].capability == "code.implement"
-    assert factory.calls == ["/tmp/worktree"]
+    assert factory.calls == [str(tmp_path)]
     assert adapter.writes == [
         ("src/api/users.py", "def list_users():\n    return []\n"),
         ("tests/test_users.py", "def test_users():\n    assert True\n"),
@@ -586,6 +586,90 @@ def test_implementation_raises_model_service_error_on_invalid_envelope_content()
                 _state(worktree_path="/tmp/worktree")
             )
         )
+
+
+def test_implementation_includes_repo_context_in_messages(tmp_path):
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "users.py").write_text(
+        "def list_users():\n    return []\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "README.md").write_text("# Project\n", encoding="utf-8")
+
+    router = _FakeRouter(
+        {
+            "code.implement": {
+                "summary": "Touch README",
+                "operations": [
+                    {
+                        "type": "write_file",
+                        "path": "README.md",
+                        "content": "# Project\n",
+                    }
+                ],
+            }
+        }
+    )
+
+    asyncio.run(
+        ModelRouterImplementationService(
+            router,
+            _AdapterFactory(),
+        ).implement(
+            _state(
+                worktree_path=str(tmp_path),
+                decomposition={"files_to_modify": ["src/users.py"]},
+            )
+        )
+    )
+
+    user_message = router.calls[0].messages[1]["content"]
+    assert "repo_context" in user_message
+    assert "src/users.py" in user_message
+
+
+def test_implementation_includes_failed_test_excerpt_on_retry(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "users.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    router = _FakeRouter(
+        {
+            "code.implement": {
+                "summary": "Retry",
+                "operations": [
+                    {
+                        "type": "write_file",
+                        "path": "src/users.py",
+                        "content": "VALUE = 2\n",
+                    }
+                ],
+            }
+        }
+    )
+
+    asyncio.run(
+        ModelRouterImplementationService(
+            router,
+            _AdapterFactory(),
+        ).implement(
+            _state(
+                worktree_path=str(tmp_path),
+                implementation_attempts=1,
+                test_result={
+                    "status": "failed",
+                    "tests_passed": False,
+                    "stdout": "FAILED tests/test_users.py::test_pagination",
+                    "stderr": "AssertionError: pagination missing",
+                },
+            )
+        )
+    )
+
+    user_message = router.calls[0].messages[1]["content"]
+    assert "previous_test_failure" in user_message
+    assert "AssertionError" in user_message
+    assert "implementation_attempts: 1" in user_message
 
 
 def test_service_backed_graph_completes_with_model_services():

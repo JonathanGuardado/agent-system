@@ -9,6 +9,10 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Protocol
 
 from ticket_agent.adapters.local.file_adapter import LocalFileAdapter
+from ticket_agent.orchestrator.repo_context import (
+    RepoContext,
+    RepoContextBuilder,
+)
 from ticket_agent.orchestrator.state import TicketState
 
 
@@ -85,17 +89,20 @@ class ModelRouterImplementationService:
         self,
         model_router: ModelRouterProtocol,
         file_adapter_factory: FileAdapterFactory | None = None,
+        repo_context_builder: RepoContextBuilder | None = None,
     ) -> None:
         self._model_router = model_router
         self._file_adapter_factory = file_adapter_factory or LocalFileAdapter
+        self._repo_context_builder = repo_context_builder or RepoContextBuilder()
 
     async def implement(self, state: TicketState) -> dict[str, Any]:
         if not state.worktree_path:
             raise ModelServiceError("worktree_path is required to apply file writes")
 
+        repo_context = self._repo_context_builder.build(state)
         response = await self._model_router.invoke(
             capability="code.implement",
-            messages=_implementation_messages(state),
+            messages=_implementation_messages(state, repo_context),
             ticket_id=state.ticket_key,
             metadata={"workflow_node": "implement"},
         )
@@ -334,7 +341,44 @@ def _planning_messages(state: TicketState) -> list[dict[str, str]]:
     ]
 
 
-def _implementation_messages(state: TicketState) -> list[dict[str, str]]:
+def _implementation_messages(
+    state: TicketState,
+    repo_context: RepoContext,
+) -> list[dict[str, str]]:
+    failed_test_excerpt = _failed_test_excerpt(state.test_result)
+    user_lines = [
+        "Create an explicit file operation plan for this ticket.",
+        f"ticket_key: {state.ticket_key}",
+        f"summary: {state.summary}",
+        f"description: {state.description}",
+        f"decomposition: {_json_for_prompt(state.decomposition)}",
+        f"previous_test_result: {_json_for_prompt(state.test_result)}",
+        f"implementation_attempts: {state.implementation_attempts}",
+        f"max_attempts: {state.max_attempts}",
+        f"repository: {state.repository or ''}",
+        f"repo_path: {state.repo_path or ''}",
+        f"worktree_path: {state.worktree_path or ''}",
+        f"repo_context: {_json_for_prompt(repo_context.to_prompt_dict())}",
+    ]
+    if failed_test_excerpt is not None:
+        user_lines.append(f"previous_test_failure: {failed_test_excerpt}")
+    user_lines.extend(
+        [
+            "Required JSON schema:",
+            (
+                '{"summary": "string", "operations": ['
+                '{"type": "write_file", '
+                '"path": "relative/path.py", '
+                '"content": "file content"}]}'
+            ),
+            "Implementation supports write_file only for now.",
+            "Paths must be relative, must not contain '..', and must "
+            "not be absolute.",
+            "Return JSON only. No markdown fences. No prose before or "
+            "after JSON.",
+        ]
+    )
+
     return [
         {
             "role": "system",
@@ -346,35 +390,27 @@ def _implementation_messages(state: TicketState) -> list[dict[str, str]]:
         },
         {
             "role": "user",
-            "content": "\n".join(
-                [
-                    "Create an explicit file operation plan for this ticket.",
-                    f"ticket_key: {state.ticket_key}",
-                    f"summary: {state.summary}",
-                    f"description: {state.description}",
-                    f"decomposition: {_json_for_prompt(state.decomposition)}",
-                    f"previous_test_result: {_json_for_prompt(state.test_result)}",
-                    f"implementation_attempts: {state.implementation_attempts}",
-                    f"max_attempts: {state.max_attempts}",
-                    f"repository: {state.repository or ''}",
-                    f"repo_path: {state.repo_path or ''}",
-                    f"worktree_path: {state.worktree_path or ''}",
-                    "Required JSON schema:",
-                    (
-                        '{"summary": "string", "operations": ['
-                        '{"type": "write_file", '
-                        '"path": "relative/path.py", '
-                        '"content": "file content"}]}'
-                    ),
-                    "Implementation supports write_file only for now.",
-                    "Paths must be relative, must not contain '..', and must "
-                    "not be absolute.",
-                    "Return JSON only. No markdown fences. No prose before or "
-                    "after JSON.",
-                ]
-            ),
+            "content": "\n".join(user_lines),
         },
     ]
+
+
+def _failed_test_excerpt(test_result: Any) -> str | None:
+    if not isinstance(test_result, Mapping):
+        return None
+    passed = test_result.get("tests_passed")
+    status = test_result.get("status")
+    failed = passed is False or (isinstance(status, str) and status.lower() == "failed")
+    if not failed:
+        return None
+    excerpt_parts: list[str] = []
+    for field in ("stdout", "stderr", "summary", "output", "message"):
+        value = test_result.get(field)
+        if isinstance(value, str) and value.strip():
+            excerpt_parts.append(f"{field}: {value.strip()}")
+    if not excerpt_parts:
+        return _json_for_prompt(test_result)
+    return " | ".join(excerpt_parts)
 
 
 def _review_messages(state: TicketState) -> list[dict[str, str]]:
