@@ -32,11 +32,19 @@ def _ticket(**overrides) -> JiraTicket:
     return JiraTicket(**base)
 
 
-def _checker(*, lock_lookup=None, max_retries=3) -> OwnershipChecker:
+def _checker(
+    *,
+    lock_lookup=None,
+    max_retries=3,
+    known_agent_account_ids=None,
+    known_agent_assignees=None,
+) -> OwnershipChecker:
     return OwnershipChecker(
         component_id=COMPONENT_ID,
         lock_lookup=lock_lookup or (lambda key: None),
         max_retries=max_retries,
+        known_agent_account_ids=known_agent_account_ids,
+        known_agent_assignees=known_agent_assignees,
     )
 
 
@@ -63,6 +71,29 @@ def test_r1_human_assignee_skips_with_reason():
 
     assert decision.eligible is False
     assert decision.reason == "human_assigned"
+
+
+def test_r1_known_agent_assignee_does_not_skip():
+    ticket = _ticket(assignee="agent-account-1")
+
+    decision = _checker(
+        known_agent_account_ids=["agent-account-1"],
+    ).check(ticket)
+
+    assert decision.eligible is True
+
+
+def test_r1_known_agent_identity_can_match_normalized_fields():
+    ticket = _ticket(
+        assignee="Agent Runner",
+        fields={"assignee_account_id": "agent-account-1"},
+    )
+
+    decision = _checker(
+        known_agent_account_ids=["agent-account-1"],
+    ).check(ticket)
+
+    assert decision.eligible is True
 
 
 def test_r2_different_component_skips_with_reason():
@@ -113,6 +144,12 @@ def test_r5_active_lock_skips_with_reason():
 
     assert decision.eligible is False
     assert decision.reason == "active_lock"
+
+
+def test_r5_false_lock_lookup_marker_does_not_skip():
+    decision = _checker(lock_lookup=lambda key: False).check(_ticket())
+
+    assert decision.eligible is True
 
 
 def test_r6_blocked_by_unresolved_issue_skips_with_reason():
@@ -172,10 +209,11 @@ def test_invalid_component_id_raises():
         OwnershipChecker(component_id="", lock_lookup=lambda k: None)
 
 
-def test_lock_lookup_exception_treated_as_no_lock():
+def test_lock_lookup_exception_fails_closed():
     def raising(key: str):
         raise RuntimeError("db unavailable")
 
     decision = _checker(lock_lookup=raising).check(_ticket())
 
-    assert decision.eligible is True
+    assert decision.eligible is False
+    assert decision.reason == "lock_lookup_failed"

@@ -17,7 +17,7 @@ from ticket_agent.jira.constants import (
 )
 from ticket_agent.jira.execution_service import JiraExecutionService
 from ticket_agent.jira.work_item_loader import JiraWorkItemLoader
-from ticket_agent.orchestrator.runner import TicketWorkItem
+from ticket_agent.orchestrator.runner import TicketClaimFailedError, TicketWorkItem
 from ticket_agent.orchestrator.state import TicketState
 
 EventEmitter = Callable[[str, dict[str, object]], object]
@@ -59,16 +59,11 @@ class JiraExecutionCoordinator:
             raise
 
         try:
-            await self._execution_service.mark_claimed(ticket_key)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            await self._emit_failed(ticket_key, exc)
-            raise
-
-        try:
             final_state = await self._runner.run_ticket(work_item)
         except asyncio.CancelledError:
+            raise
+        except TicketClaimFailedError as exc:
+            await self._emit_failed(ticket_key, exc)
             raise
         except Exception as exc:
             await self._mark_failed(ticket_key, exc)

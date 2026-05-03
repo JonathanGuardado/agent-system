@@ -14,6 +14,15 @@ from ticket_agent.orchestrator.state import TicketState
 
 Lock = TicketLock
 EventEmitter = Callable[[str, Mapping[str, Any]], Any]
+ClaimTicket = Callable[[str], Any]
+
+EVENT_LOCK_ACQUIRED = "lock.acquired"
+EVENT_LOCK_RELEASED = "lock.released"
+EVENT_LOCK_RELEASE_FAILED = "lock.release_failed"
+EVENT_TICKET_STARTED = "ticket_started"
+EVENT_TICKET_COMPLETED = "ticket_completed"
+EVENT_TICKET_FAILED = "ticket_failed"
+EVENT_TICKET_SKIPPED = "ticket_skipped"
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +66,16 @@ class TicketAlreadyLockedError(TicketLockError):
         self.ticket_key = ticket_key
 
 
+class TicketClaimFailedError(TicketLockError):
+    """Raised when Jira cannot reflect a lock-backed ticket claim."""
+
+    def __init__(self, ticket_key: str, error: BaseException) -> None:
+        message = str(error) or error.__class__.__name__
+        super().__init__(f"ticket claim failed for {ticket_key}: {message}")
+        self.ticket_key = ticket_key
+        self.original_error = error
+
+
 class OrchestratorRunner:
     """Acquire a ticket lock, run the graph, and release the lock."""
 
@@ -68,12 +87,14 @@ class OrchestratorRunner:
         component_id: str,
         logger: Logger | None = None,
         event_emitter: EventEmitter | None = None,
+        claim_ticket: ClaimTicket | None = None,
     ) -> None:
         self._graph = graph
         self._lock_manager = lock_manager
         self._component_id = component_id
         self._logger = logger
         self._event_emitter = event_emitter
+        self._claim_ticket = claim_ticket
 
     async def run_ticket(self, work_item: TicketWorkItem) -> TicketState:
         """Run one ticket through the graph when its lock can be acquired."""
@@ -81,7 +102,7 @@ class OrchestratorRunner:
         lock = self._lock_manager.acquire(work_item.ticket_key)
         if lock is None:
             await self._emit(
-                "ticket_skipped",
+                EVENT_TICKET_SKIPPED,
                 ticket_key=work_item.ticket_key,
                 reason="already_locked",
                 component_id=self._component_id,
@@ -90,13 +111,15 @@ class OrchestratorRunner:
                 self._logger.info("ticket already locked: %s", work_item.ticket_key)
             raise TicketAlreadyLockedError(work_item.ticket_key)
 
+        await self._emit_lock_event(EVENT_LOCK_ACQUIRED, work_item, lock)
         state: TicketState | None = None
         graph_exception: Exception | None = None
         graph_traceback = None
         try:
+            await self._claim_jira_ticket(work_item.ticket_key)
             state = self._build_initial_state(work_item, lock)
             await self._emit(
-                "ticket_started",
+                EVENT_TICKET_STARTED,
                 ticket_key=state.ticket_key,
                 component_id=self._component_id,
                 lock_id=state.lock_id,
@@ -104,7 +127,7 @@ class OrchestratorRunner:
             result = await self._graph.ainvoke(state)
             final_state = _coerce_graph_result(state, result)
             await self._emit(
-                "ticket_completed",
+                EVENT_TICKET_COMPLETED,
                 ticket_key=final_state.ticket_key,
                 component_id=self._component_id,
                 workflow_status=final_state.workflow_status,
@@ -118,7 +141,7 @@ class OrchestratorRunner:
                 raise
             failed_state = _mark_failed(state, exc)
             await self._emit(
-                "ticket_failed",
+                EVENT_TICKET_FAILED,
                 ticket_key=failed_state.ticket_key,
                 component_id=self._component_id,
                 error=failed_state.error,
@@ -138,6 +161,8 @@ class OrchestratorRunner:
                 if graph_exception is not None:
                     raise graph_exception.with_traceback(graph_traceback) from None
                 raise
+            else:
+                await self._emit_lock_event(EVENT_LOCK_RELEASED, work_item, lock)
 
     def _build_initial_state(
         self,
@@ -173,6 +198,29 @@ class OrchestratorRunner:
         if isawaitable(result):
             await result
 
+    async def _claim_jira_ticket(self, ticket_key: str) -> None:
+        if self._claim_ticket is None:
+            return
+        try:
+            result = self._claim_ticket(ticket_key)
+            if isawaitable(result):
+                await result
+        except Exception as exc:
+            raise TicketClaimFailedError(ticket_key, exc) from exc
+
+    async def _emit_lock_event(
+        self,
+        event_name: str,
+        work_item: TicketWorkItem,
+        lock: Lock,
+    ) -> None:
+        await self._emit(
+            event_name,
+            ticket_key=work_item.ticket_key,
+            component_id=self._component_id,
+            lock_id=_lock_id(lock),
+        )
+
     async def _emit_lock_release_failed(
         self,
         work_item: TicketWorkItem,
@@ -193,7 +241,7 @@ class OrchestratorRunner:
                 extra=payload,
             )
         try:
-            await self._emit("lock_release_failed", **payload)
+            await self._emit(EVENT_LOCK_RELEASE_FAILED, **payload)
         except Exception:
             if self._logger is not None:
                 self._logger.exception(

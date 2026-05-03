@@ -17,11 +17,11 @@ EventEmitter = Callable[[str, Mapping[str, Any]], Any]
 TicketQueue = asyncio.Queue
 
 
-EVENT_DETECTION_POLL_STARTED = "detection_poll_started"
-EVENT_DETECTION_ENQUEUED = "detection_enqueued"
-EVENT_DETECTION_SKIPPED = "detection_skipped"
-EVENT_DETECTION_POLL_COMPLETED = "detection_poll_completed"
-EVENT_DETECTION_POLL_FAILED = "detection_poll_failed"
+EVENT_DETECTION_POLL_STARTED = "detection.poll_started"
+EVENT_DETECTION_ENQUEUED = "detection.enqueued"
+EVENT_DETECTION_SKIPPED = "detection.skipped"
+EVENT_DETECTION_POLL_COMPLETED = "detection.poll_completed"
+EVENT_DETECTION_POLL_FAILED = "detection.poll_failed"
 
 
 class DetectionSearchClient(Protocol):

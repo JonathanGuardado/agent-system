@@ -34,6 +34,23 @@ class FakeJiraClient:
         self._raise_if_configured("get_ticket")
         return self._ticket(ticket_key)
 
+    async def search_issues(
+        self,
+        jql: str,
+        *,
+        fields: Sequence[str] | None = None,
+    ) -> Sequence[JiraTicket]:
+        """Return stored tickets matching the subset of JQL used in tests."""
+
+        payload = {"jql": jql, "fields": None if fields is None else list(fields)}
+        self.calls.append(("search_issues", "", payload))
+        self._raise_if_configured("search_issues")
+        return [
+            ticket
+            for ticket in self.tickets.values()
+            if _matches_basic_jql(ticket, jql)
+        ]
+
     async def transition_ticket(self, ticket_key: str, status: str) -> None:
         """Set a ticket's current workflow status."""
 
@@ -143,6 +160,36 @@ def _coerce_failure(failure: JiraOperationFailure) -> _ConfiguredFailure:
     if isinstance(failure, BaseException):
         return failure
     return list(failure)
+
+
+def _matches_basic_jql(ticket: JiraTicket, jql: str) -> bool:
+    normalized = " ".join(jql.split())
+    if 'status = "To Do"' in normalized and ticket.status != "To Do":
+        return False
+
+    required_labels = _quoted_terms_after(normalized, "labels = ")
+    if any(label not in ticket.labels for label in required_labels):
+        return False
+
+    excluded_labels = _quoted_terms_after(normalized, "labels != ")
+    return not any(label in ticket.labels for label in excluded_labels)
+
+
+def _quoted_terms_after(text: str, marker: str) -> list[str]:
+    values: list[str] = []
+    start = 0
+    while True:
+        index = text.find(marker, start)
+        if index < 0:
+            return values
+        quote_start = text.find('"', index + len(marker))
+        if quote_start < 0:
+            return values
+        quote_end = text.find('"', quote_start + 1)
+        if quote_end < 0:
+            return values
+        values.append(text[quote_start + 1 : quote_end])
+        start = quote_end + 1
 
 
 __all__ = [

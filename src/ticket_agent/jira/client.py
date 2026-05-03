@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from collections.abc import Mapping, Sequence
+from typing import Any, Protocol
 
 from ticket_agent.jira.models import JiraTicket
 
@@ -12,6 +13,14 @@ class JiraClient(Protocol):
 
     async def get_ticket(self, ticket_key: str) -> JiraTicket:
         """Return one Jira ticket by key."""
+
+    async def search_issues(
+        self,
+        jql: str,
+        *,
+        fields: Sequence[str] | None = None,
+    ) -> Sequence[JiraTicket | Mapping[str, Any]] | Mapping[str, Any]:
+        """Return Jira issues matching a JQL query."""
 
     async def transition_ticket(self, ticket_key: str, status: str) -> None:
         """Move a Jira ticket to a workflow status."""

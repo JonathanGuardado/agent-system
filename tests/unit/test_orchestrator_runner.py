@@ -6,9 +6,18 @@ from typing import Any
 
 import pytest
 
+from ticket_agent.locking.sqlite_store import SQLiteLockManager
 from ticket_agent.orchestrator.runner import (
+    EVENT_LOCK_ACQUIRED,
+    EVENT_LOCK_RELEASED,
+    EVENT_LOCK_RELEASE_FAILED,
+    EVENT_TICKET_COMPLETED,
+    EVENT_TICKET_FAILED,
+    EVENT_TICKET_SKIPPED,
+    EVENT_TICKET_STARTED,
     OrchestratorRunner,
     TicketAlreadyLockedError,
+    TicketClaimFailedError,
     TicketWorkItem,
 )
 from ticket_agent.orchestrator.state import TicketState
@@ -26,16 +35,31 @@ def test_successful_run_acquires_lock_invokes_graph_and_releases_lock():
     assert graph.invocations == 1
     assert lock_manager.releases == [lock_manager.lock]
     assert state.workflow_status == "completed"
-    assert events.names == ["ticket_started", "ticket_completed"]
-    assert events.payloads["ticket_started"] == {
+    assert events.names == [
+        EVENT_LOCK_ACQUIRED,
+        EVENT_TICKET_STARTED,
+        EVENT_TICKET_COMPLETED,
+        EVENT_LOCK_RELEASED,
+    ]
+    assert events.payloads[EVENT_LOCK_ACQUIRED] == {
         "ticket_key": "AGENT-123",
         "component_id": "orchestrator-test",
         "lock_id": "lock-123",
     }
-    assert events.payloads["ticket_completed"] == {
+    assert events.payloads[EVENT_TICKET_STARTED] == {
+        "ticket_key": "AGENT-123",
+        "component_id": "orchestrator-test",
+        "lock_id": "lock-123",
+    }
+    assert events.payloads[EVENT_TICKET_COMPLETED] == {
         "ticket_key": "AGENT-123",
         "component_id": "orchestrator-test",
         "workflow_status": "completed",
+        "lock_id": "lock-123",
+    }
+    assert events.payloads[EVENT_LOCK_RELEASED] == {
+        "ticket_key": "AGENT-123",
+        "component_id": "orchestrator-test",
         "lock_id": "lock-123",
     }
 
@@ -52,8 +76,8 @@ def test_lock_unavailable_skips_graph_execution():
     assert lock_manager.acquires == ["AGENT-123"]
     assert graph.invocations == 0
     assert lock_manager.releases == []
-    assert events.names == ["ticket_skipped"]
-    assert events.payloads["ticket_skipped"] == {
+    assert events.names == [EVENT_TICKET_SKIPPED]
+    assert events.payloads[EVENT_TICKET_SKIPPED] == {
         "ticket_key": "AGENT-123",
         "reason": "already_locked",
         "component_id": "orchestrator-test",
@@ -73,8 +97,13 @@ def test_graph_failure_still_releases_lock():
     assert state.workflow_status == "escalated"
     assert state.error == "graph exploded"
     assert state.errors == ["graph exploded"]
-    assert events.names == ["ticket_started", "ticket_failed"]
-    assert events.payloads["ticket_failed"] == {
+    assert events.names == [
+        EVENT_LOCK_ACQUIRED,
+        EVENT_TICKET_STARTED,
+        EVENT_TICKET_FAILED,
+        EVENT_LOCK_RELEASED,
+    ]
+    assert events.payloads[EVENT_TICKET_FAILED] == {
         "ticket_key": "AGENT-123",
         "component_id": "orchestrator-test",
         "error": "graph exploded",
@@ -99,11 +128,12 @@ def test_release_failure_after_graph_success_is_emitted_and_raised():
     assert graph.invocations == 1
     assert lock_manager.releases == [lock_manager.lock]
     assert events.names == [
-        "ticket_started",
-        "ticket_completed",
-        "lock_release_failed",
+        EVENT_LOCK_ACQUIRED,
+        EVENT_TICKET_STARTED,
+        EVENT_TICKET_COMPLETED,
+        EVENT_LOCK_RELEASE_FAILED,
     ]
-    assert events.payloads["lock_release_failed"] == {
+    assert events.payloads[EVENT_LOCK_RELEASE_FAILED] == {
         "ticket_key": "AGENT-123",
         "component_id": "orchestrator-test",
         "lock_id": "lock-123",
@@ -128,11 +158,12 @@ def test_release_failure_after_graph_failure_preserves_graph_exception():
     assert graph.invocations == 1
     assert lock_manager.releases == [lock_manager.lock]
     assert events.names == [
-        "ticket_started",
-        "ticket_failed",
-        "lock_release_failed",
+        EVENT_LOCK_ACQUIRED,
+        EVENT_TICKET_STARTED,
+        EVENT_TICKET_FAILED,
+        EVENT_LOCK_RELEASE_FAILED,
     ]
-    assert events.payloads["lock_release_failed"] == {
+    assert events.payloads[EVENT_LOCK_RELEASE_FAILED] == {
         "ticket_key": "AGENT-123",
         "component_id": "orchestrator-test",
         "lock_id": "lock-123",
@@ -199,17 +230,65 @@ def test_lock_id_is_copied_into_state_when_available():
     assert state.lock_id == "run-456"
 
 
+def test_claim_failure_releases_lock_without_running_graph():
+    graph = _Graph({"workflow_status": "completed"})
+    lock_manager = _LockManager(lock=_Lock("AGENT-123", lock_id="lock-123"))
+    events = _EventRecorder()
+    claim_error = RuntimeError("claim exploded")
+    runner = _runner(
+        graph,
+        lock_manager,
+        event_emitter=events,
+        claim_ticket=lambda ticket_key: (_raise(claim_error)),
+    )
+
+    with pytest.raises(TicketClaimFailedError, match="claim exploded"):
+        asyncio.run(runner.run_ticket(_work_item()))
+
+    assert graph.invocations == 0
+    assert lock_manager.releases == [lock_manager.lock]
+    assert events.names == [EVENT_LOCK_ACQUIRED, EVENT_LOCK_RELEASED]
+
+
+def test_claim_failure_releases_sqlite_lock(tmp_path):
+    manager = SQLiteLockManager(
+        tmp_path / "locks.sqlite3",
+        component_id="orchestrator-test",
+        lock_id_factory=lambda: "lock-123",
+    )
+    graph = _Graph({"workflow_status": "completed"})
+    claim_error = RuntimeError("claim exploded")
+    runner = OrchestratorRunner(
+        graph=graph,
+        lock_manager=manager,
+        component_id="orchestrator-test",
+        claim_ticket=lambda ticket_key: (_raise(claim_error)),
+    )
+
+    try:
+        with pytest.raises(TicketClaimFailedError):
+            asyncio.run(runner.run_ticket(_work_item()))
+
+        assert graph.invocations == 0
+        assert manager.has_active_lock("AGENT-123") is False
+        assert manager.acquire("AGENT-123", ttl_s=60) is not None
+    finally:
+        manager.close()
+
+
 def _runner(
     graph: _Graph,
     lock_manager: _LockManager,
     *,
     event_emitter: _EventRecorder | None = None,
+    claim_ticket=None,
 ) -> OrchestratorRunner:
     return OrchestratorRunner(
         graph=graph,
         lock_manager=lock_manager,
         component_id="orchestrator-test",
         event_emitter=event_emitter,
+        claim_ticket=claim_ticket,
     )
 
 
@@ -293,3 +372,7 @@ class _EventRecorder:
     @property
     def payloads(self) -> dict[str, dict[str, Any]]:
         return dict(self.events)
+
+
+def _raise(error: BaseException) -> None:
+    raise error

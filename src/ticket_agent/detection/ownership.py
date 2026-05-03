@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from ticket_agent.jira.constants import (
@@ -16,8 +16,8 @@ from ticket_agent.jira.constants import (
 from ticket_agent.jira.models import JiraTicket
 
 
-LockLookup = Callable[[str], object | None]
-"""Callable returning a current lock for a ticket key, or None."""
+LockLookup = Callable[[str], object | bool | None]
+"""Callable returning a current lock truthy marker for a ticket key, or None."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +37,8 @@ class OwnershipChecker:
         component_id: str,
         lock_lookup: LockLookup,
         max_retries: int = 3,
+        known_agent_account_ids: Iterable[str] | None = None,
+        known_agent_assignees: Iterable[str] | None = None,
     ) -> None:
         if not component_id or not component_id.strip():
             raise ValueError("component_id must be a non-empty string")
@@ -46,6 +48,10 @@ class OwnershipChecker:
         self._component_id = component_id.strip()
         self._lock_lookup = lock_lookup
         self._max_retries = int(max_retries)
+        self._known_agent_identities = _identity_set(
+            known_agent_account_ids,
+            known_agent_assignees,
+        )
 
     def check(self, ticket: JiraTicket) -> OwnershipDecision:
         labels = _ticket_labels(ticket)
@@ -54,8 +60,9 @@ class OwnershipChecker:
         if LABEL_DO_NOT_AUTOMATE in labels:
             return OwnershipDecision(eligible=False, reason="")
 
-        # R1: human assignee set → skip.
-        if _has_human_assignee(ticket):
+        # R1: human assignee set → skip. Known agent identities may keep
+        # ownership and continue a claimed ticket.
+        if _has_human_assignee(ticket, self._known_agent_identities):
             return OwnershipDecision(eligible=False, reason="human_assigned")
 
         # R2: agent component mismatch → skip.
@@ -82,9 +89,12 @@ class OwnershipChecker:
         # R5: active SQLite lock exists → skip.
         try:
             current_lock = self._lock_lookup(ticket.key)
-        except Exception:  # noqa: BLE001 - defensive: skip on lock lookup error
-            current_lock = None
-        if current_lock is not None:
+        except Exception:  # noqa: BLE001 - fail closed on lock lookup error
+            return OwnershipDecision(
+                eligible=False,
+                reason="lock_lookup_failed",
+            )
+        if _active_lock_marker(current_lock):
             return OwnershipDecision(eligible=False, reason="active_lock")
 
         # R6: unresolved blocking issue exists → skip.
@@ -113,11 +123,54 @@ def _ticket_labels(ticket: JiraTicket) -> set[str]:
     return {label for label in labels if isinstance(label, str)}
 
 
-def _has_human_assignee(ticket: JiraTicket) -> bool:
+def _has_human_assignee(ticket: JiraTicket, known_agent_identities: set[str]) -> bool:
     assignee = ticket.assignee
     if not isinstance(assignee, str):
         return False
-    return bool(assignee.strip())
+    if not assignee.strip():
+        return False
+    identities = _assignee_identity_values(ticket)
+    return not any(identity in known_agent_identities for identity in identities)
+
+
+def _active_lock_marker(value: object | bool | None) -> bool:
+    if value is None or value is False:
+        return False
+    return True
+
+
+def _identity_set(*groups: Iterable[str] | None) -> set[str]:
+    identities: set[str] = set()
+    for group in groups:
+        if group is None:
+            continue
+        for value in group:
+            normalized = _normalize_identity(value)
+            if normalized:
+                identities.add(normalized)
+    return identities
+
+
+def _assignee_identity_values(ticket: JiraTicket) -> set[str]:
+    values: set[str] = set()
+    for candidate in (
+        ticket.assignee,
+        ticket.fields.get("assignee"),
+        ticket.fields.get("assignee_account_id"),
+        ticket.fields.get("assignee_email"),
+        ticket.fields.get("assignee_display_name"),
+        ticket.fields.get("assignee_name"),
+    ):
+        normalized = _normalize_identity(candidate)
+        if normalized:
+            values.add(normalized)
+    return values
+
+
+def _normalize_identity(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip().lower()
 
 
 def _first_blocking_issue(ticket: JiraTicket) -> str | None:

@@ -15,7 +15,7 @@ from ticket_agent.jira.constants import (
 )
 from ticket_agent.jira.execution_coordinator import JiraExecutionCoordinator
 from ticket_agent.jira.models import JiraExecutionError
-from ticket_agent.orchestrator.runner import TicketWorkItem
+from ticket_agent.orchestrator.runner import TicketClaimFailedError, TicketWorkItem
 from ticket_agent.orchestrator.state import TicketState
 
 
@@ -38,7 +38,6 @@ def test_run_ticket_success_with_pr_marks_in_review_and_returns_state():
     assert result is final_state
     assert loader.calls == ["AGENT-123"]
     assert execution_service.calls == [
-        ("mark_claimed", "AGENT-123", None),
         (
             "mark_in_review",
             "AGENT-123",
@@ -75,7 +74,6 @@ def test_run_ticket_success_without_pr_releases_claim_and_returns_state():
 
     assert result is final_state
     assert execution_service.calls == [
-        ("mark_claimed", "AGENT-123", None),
         ("mark_released", "AGENT-123", None),
     ]
     assert runner.calls == [work_item]
@@ -116,11 +114,11 @@ def test_loader_failure_does_not_claim_or_run_and_reraises_original_error():
     }
 
 
-def test_mark_claimed_failure_does_not_run_and_reraises_original_error():
-    error = JiraExecutionError("claim exploded")
+def test_runner_claim_failure_does_not_mark_failed():
+    error = TicketClaimFailedError("AGENT-123", JiraExecutionError("claim exploded"))
     loader = _FakeLoader(_work_item())
-    execution_service = _FakeExecutionService(fail_on={"mark_claimed": error})
-    runner = _FakeRunner(_state())
+    execution_service = _FakeExecutionService()
+    runner = _FakeRunner(error)
     events = _EventRecorder()
     coordinator = JiraExecutionCoordinator(
         loader,
@@ -129,19 +127,19 @@ def test_mark_claimed_failure_does_not_run_and_reraises_original_error():
         emit=events,
     )
 
-    with pytest.raises(JiraExecutionError) as exc_info:
+    with pytest.raises(TicketClaimFailedError) as exc_info:
         asyncio.run(coordinator.run_ticket("AGENT-123"))
 
     assert exc_info.value is error
-    assert execution_service.calls == [("mark_claimed", "AGENT-123", None)]
-    assert runner.calls == []
+    assert execution_service.calls == []
+    assert runner.calls == [_work_item()]
     assert events.names == [
         EVENT_JIRA_EXECUTION_STARTED,
         EVENT_JIRA_EXECUTION_FAILED,
     ]
     assert events.payloads[EVENT_JIRA_EXECUTION_FAILED] == {
         "ticket_key": "AGENT-123",
-        "error": "claim exploded",
+        "error": "ticket claim failed for AGENT-123: claim exploded",
     }
 
 
@@ -163,7 +161,6 @@ def test_runner_failure_marks_failed_and_reraises_original_error():
 
     assert exc_info.value is error
     assert execution_service.calls == [
-        ("mark_claimed", "AGENT-123", None),
         ("mark_failed", "AGENT-123", "runner exploded"),
     ]
     assert events.names == [
@@ -197,7 +194,6 @@ def test_runner_failure_plus_mark_failed_failure_reraises_runner_error():
 
     assert exc_info.value is runner_error
     assert execution_service.calls == [
-        ("mark_claimed", "AGENT-123", None),
         ("mark_failed", "AGENT-123", "runner exploded"),
     ]
     assert events.names == [
@@ -231,7 +227,6 @@ def test_runner_success_but_mark_in_review_failure_raises_jira_error():
 
     assert exc_info.value is error
     assert execution_service.calls == [
-        ("mark_claimed", "AGENT-123", None),
         (
             "mark_in_review",
             "AGENT-123",
@@ -266,7 +261,6 @@ def test_runner_success_without_pr_but_mark_released_failure_raises_jira_error()
 
     assert exc_info.value is error
     assert execution_service.calls == [
-        ("mark_claimed", "AGENT-123", None),
         ("mark_released", "AGENT-123", None),
     ]
     assert events.names == [
@@ -294,7 +288,7 @@ def test_runner_cancelled_error_propagates_without_marking_failed():
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(coordinator.run_ticket("AGENT-123"))
 
-    assert execution_service.calls == [("mark_claimed", "AGENT-123", None)]
+    assert execution_service.calls == []
     assert events.names == [EVENT_JIRA_EXECUTION_STARTED]
 
 

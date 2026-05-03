@@ -16,9 +16,17 @@ from ticket_agent.orchestrator.jira_services import (
 )
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.runner import (
+    EVENT_LOCK_ACQUIRED,
+    EVENT_LOCK_RELEASED,
+    EVENT_LOCK_RELEASE_FAILED,
+    EVENT_TICKET_COMPLETED,
+    EVENT_TICKET_FAILED,
+    EVENT_TICKET_SKIPPED,
+    EVENT_TICKET_STARTED,
     LockManager,
     OrchestratorRunner,
     TicketAlreadyLockedError,
+    TicketClaimFailedError,
     TicketWorkItem,
 )
 from ticket_agent.orchestrator.local_services import (
@@ -51,6 +59,13 @@ __all__ = [
     "Coordinator",
     "EscalationService",
     "ExecutionWorker",
+    "EVENT_LOCK_ACQUIRED",
+    "EVENT_LOCK_RELEASED",
+    "EVENT_LOCK_RELEASE_FAILED",
+    "EVENT_TICKET_COMPLETED",
+    "EVENT_TICKET_FAILED",
+    "EVENT_TICKET_SKIPPED",
+    "EVENT_TICKET_STARTED",
     "GitService",
     "JiraEscalationService",
     "JiraLabelApprovalService",
@@ -68,6 +83,7 @@ __all__ = [
     "ReviewService",
     "TestService",
     "TicketAlreadyLockedError",
+    "TicketClaimFailedError",
     "TicketExecutionCoordinator",
     "TicketState",
     "TicketNodeRunner",

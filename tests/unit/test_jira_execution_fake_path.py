@@ -12,7 +12,6 @@ from ticket_agent.jira.constants import (
     LABEL_AI_CLAIMED,
     LABEL_AI_FAILED,
     LABEL_AI_READY,
-    STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
     STATUS_TODO,
 )
@@ -21,7 +20,7 @@ from ticket_agent.jira.execution_service import JiraExecutionService
 from ticket_agent.jira.fake_client import FakeJiraClient
 from ticket_agent.jira.models import JiraExecutionError, JiraTicket
 from ticket_agent.jira.work_item_loader import JiraWorkItemLoader
-from ticket_agent.orchestrator.runner import TicketWorkItem
+from ticket_agent.orchestrator.runner import TicketClaimFailedError, TicketWorkItem
 from ticket_agent.orchestrator.state import TicketState
 
 
@@ -54,7 +53,7 @@ def test_fake_jira_execution_path_without_pr_releases_claim():
 
     ticket = client.ticket("AGENT-123")
     assert result.pull_request_url is None
-    assert ticket.status == STATUS_IN_PROGRESS
+    assert ticket.status == STATUS_TODO
     assert ticket.labels == [LABEL_AI_READY]
     assert ticket.fields[FIELD_AGENT_ASSIGNED_COMPONENT] is None
     assert client.comments_for("AGENT-123") == []
@@ -71,7 +70,7 @@ def test_fake_jira_execution_path_runner_failure_marks_failed_and_clears_claim()
 
     ticket = client.ticket("AGENT-123")
     assert exc_info.value is error
-    assert ticket.status == STATUS_IN_PROGRESS
+    assert ticket.status == STATUS_TODO
     assert ticket.labels == [LABEL_AI_READY, LABEL_AI_FAILED]
     assert ticket.fields[FIELD_AGENT_ASSIGNED_COMPONENT] is None
     assert client.comments_for("AGENT-123") == [
@@ -79,29 +78,25 @@ def test_fake_jira_execution_path_runner_failure_marks_failed_and_clears_claim()
     ]
 
 
-def test_fake_jira_execution_path_claim_failure_compensates_back_to_todo():
-    client = FakeJiraClient(
-        _ticket(),
-        fail_on={"update_fields": [RuntimeError("update exploded"), None]},
+def test_fake_jira_execution_path_runner_claim_failure_does_not_mark_failed():
+    error = TicketClaimFailedError(
+        "AGENT-123",
+        JiraExecutionError("claim exploded"),
     )
-    runner = _FakeRunner(_state(pull_request_url="https://github.test/pr/1"))
+    client = FakeJiraClient(_ticket())
+    runner = _FakeRunner(error)
     coordinator = _coordinator(client, runner)
 
-    with pytest.raises(JiraExecutionError) as exc_info:
+    with pytest.raises(TicketClaimFailedError) as exc_info:
         asyncio.run(coordinator.run_ticket("AGENT-123"))
 
     ticket = client.ticket("AGENT-123")
-    assert str(exc_info.value) == (
-        "mark_claimed failed for AGENT-123: update exploded"
-    )
-    assert runner.calls == []
+    assert exc_info.value is error
+    assert runner.calls != []
     assert ticket.status == STATUS_TODO
     assert ticket.labels == [LABEL_AI_READY]
-    assert ticket.fields[FIELD_AGENT_ASSIGNED_COMPONENT] is None
-    assert len(client.comments_for("AGENT-123")) == 1
-    assert "AI execution could not claim this ticket cleanly." in client.comments_for(
-        "AGENT-123"
-    )[0]
+    assert FIELD_AGENT_ASSIGNED_COMPONENT not in ticket.fields
+    assert client.comments_for("AGENT-123") == []
 
 
 def _coordinator(

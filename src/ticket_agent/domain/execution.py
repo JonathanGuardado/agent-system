@@ -15,3 +15,4 @@ class TicketLock:
     acquired_at: datetime
     heartbeat_at: datetime
     expires_at: datetime
+    lock_id: str | None = None
