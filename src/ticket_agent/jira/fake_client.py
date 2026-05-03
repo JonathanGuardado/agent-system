@@ -16,16 +16,18 @@ class FakeJiraClient:
 
     def __init__(
         self,
-        tickets: JiraTicket | Iterable[JiraTicket] | Mapping[str, JiraTicket],
+        tickets: JiraTicket | Iterable[JiraTicket] | Mapping[str, JiraTicket] | None = None,
         *,
         fail_on: Mapping[str, JiraOperationFailure] | None = None,
     ) -> None:
-        self.tickets = _coerce_tickets(tickets)
+        self.tickets = _coerce_tickets(tickets if tickets is not None else [])
         self.fail_on = _coerce_failures(fail_on)
         self.calls: list[JiraClientCall] = []
         self.comments: dict[str, list[str]] = {
             ticket_key: [] for ticket_key in self.tickets
         }
+        self._next_issue_index: dict[str, int] = {}
+        self.created_keys: list[str] = []
 
     async def get_ticket(self, ticket_key: str) -> JiraTicket:
         """Return a stored ticket by key."""
@@ -96,6 +98,49 @@ class FakeJiraClient:
         self.calls.append(("add_comment", ticket_key, body))
         self._raise_if_configured("add_comment")
         self.comments.setdefault(ticket_key, []).append(body)
+
+    async def create_issue(
+        self,
+        project_key: str,
+        *,
+        summary: str,
+        description: str = "",
+        issue_type: str = "Task",
+        priority: str | None = None,
+        labels: list[str] | None = None,
+        fields: dict[str, object] | None = None,
+        parent_key: str | None = None,
+    ) -> JiraTicket:
+        """Create a fake issue under ``project_key`` and return it."""
+
+        payload = {
+            "summary": summary,
+            "description": description,
+            "issue_type": issue_type,
+            "priority": priority,
+            "labels": list(labels) if labels is not None else [],
+            "fields": dict(fields) if fields is not None else {},
+            "parent_key": parent_key,
+        }
+        self.calls.append(("create_issue", project_key, payload))
+        self._raise_if_configured("create_issue")
+
+        index = self._next_issue_index.get(project_key, 0) + 1
+        self._next_issue_index[project_key] = index
+        ticket_key = f"{project_key}-{index}"
+        ticket = JiraTicket(
+            key=ticket_key,
+            summary=summary,
+            description=description,
+            status="To Do",
+            labels=list(labels) if labels is not None else [],
+            assignee=None,
+            fields=dict(fields) if fields is not None else {},
+        )
+        self.tickets[ticket_key] = ticket
+        self.comments.setdefault(ticket_key, [])
+        self.created_keys.append(ticket_key)
+        return ticket
 
     def ticket(self, ticket_key: str) -> JiraTicket:
         """Return the mutable ticket stored under ``ticket_key``."""

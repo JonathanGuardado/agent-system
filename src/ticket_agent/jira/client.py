@@ -37,5 +37,19 @@ class JiraClient(Protocol):
     async def add_comment(self, ticket_key: str, body: str) -> None:
         """Add a comment to a Jira ticket."""
 
+    async def create_issue(
+        self,
+        project_key: str,
+        *,
+        summary: str,
+        description: str = "",
+        issue_type: str = "Task",
+        priority: str | None = None,
+        labels: list[str] | None = None,
+        fields: dict[str, object] | None = None,
+        parent_key: str | None = None,
+    ) -> JiraTicket:
+        """Create a new Jira issue and return the created ticket."""
+
 
 __all__ = ["JiraClient"]
