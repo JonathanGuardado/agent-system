@@ -9,8 +9,10 @@ import pytest
 from ticket_agent.locking.sqlite_store import SQLiteLockManager
 from ticket_agent.orchestrator.runner import (
     EVENT_LOCK_ACQUIRED,
+    EVENT_LOCK_HEARTBEAT_FAILED,
     EVENT_LOCK_RELEASED,
     EVENT_LOCK_RELEASE_FAILED,
+    EVENT_RUNNER_CLAIM_FAILED,
     EVENT_TICKET_COMPLETED,
     EVENT_TICKET_FAILED,
     EVENT_TICKET_SKIPPED,
@@ -247,7 +249,17 @@ def test_claim_failure_releases_lock_without_running_graph():
 
     assert graph.invocations == 0
     assert lock_manager.releases == [lock_manager.lock]
-    assert events.names == [EVENT_LOCK_ACQUIRED, EVENT_LOCK_RELEASED]
+    assert events.names == [
+        EVENT_LOCK_ACQUIRED,
+        EVENT_RUNNER_CLAIM_FAILED,
+        EVENT_LOCK_RELEASED,
+    ]
+    assert events.payloads[EVENT_RUNNER_CLAIM_FAILED] == {
+        "ticket_key": "AGENT-123",
+        "component_id": "orchestrator-test",
+        "lock_id": "lock-123",
+        "error": "claim exploded",
+    }
 
 
 def test_claim_failure_releases_sqlite_lock(tmp_path):
@@ -276,12 +288,91 @@ def test_claim_failure_releases_sqlite_lock(tmp_path):
         manager.close()
 
 
+def test_heartbeat_runs_while_graph_is_active_and_stops_after_success():
+    async def scenario() -> tuple[TicketState, _BlockingGraph, _LockManager]:
+        graph = _BlockingGraph()
+        lock_manager = _LockManager(lock=_Lock("AGENT-123", lock_id="lock-123"))
+        runner = _runner(
+            graph,
+            lock_manager,
+            heartbeat_interval_s=0.001,
+        )
+
+        task = asyncio.create_task(runner.run_ticket(_work_item()))
+        await graph.started.wait()
+        while not lock_manager.heartbeats:
+            await asyncio.sleep(0.001)
+        graph.release_graph.set()
+        state = await task
+        return state, graph, lock_manager
+
+    state, graph, lock_manager = asyncio.run(scenario())
+
+    assert state.workflow_status == "completed"
+    assert graph.invocations == 1
+    assert lock_manager.heartbeats == [lock_manager.lock]
+    assert lock_manager.releases == [lock_manager.lock]
+
+
+def test_heartbeat_false_cancels_graph_and_returns_escalated_state():
+    async def scenario() -> tuple[TicketState, _BlockingGraph, _LockManager, _EventRecorder]:
+        graph = _BlockingGraph()
+        lock_manager = _LockManager(
+            lock=_Lock("AGENT-123", lock_id="lock-123"),
+            heartbeat_results=[False],
+        )
+        events = _EventRecorder()
+        runner = _runner(
+            graph,
+            lock_manager,
+            event_emitter=events,
+            heartbeat_interval_s=0.001,
+        )
+
+        task = asyncio.create_task(runner.run_ticket(_work_item()))
+        await graph.started.wait()
+        state = await task
+        return state, graph, lock_manager, events
+
+    state, graph, lock_manager, events = asyncio.run(scenario())
+
+    assert graph.invocations == 1
+    assert graph.cancelled is True
+    assert lock_manager.heartbeats == [lock_manager.lock]
+    assert lock_manager.releases == [lock_manager.lock]
+    assert state.workflow_status == "escalated"
+    assert state.error == "ticket lock heartbeat failed for AGENT-123"
+    assert events.names == [
+        EVENT_LOCK_ACQUIRED,
+        EVENT_TICKET_STARTED,
+        EVENT_LOCK_HEARTBEAT_FAILED,
+        EVENT_TICKET_FAILED,
+        EVENT_LOCK_RELEASED,
+    ]
+    assert events.payloads[EVENT_LOCK_HEARTBEAT_FAILED] == {
+        "ticket_key": "AGENT-123",
+        "component_id": "orchestrator-test",
+        "lock_id": "lock-123",
+        "error": "ticket lock heartbeat failed for AGENT-123",
+    }
+
+
+def test_heartbeat_interval_must_be_positive():
+    with pytest.raises(ValueError, match="heartbeat_interval_s must be positive"):
+        _runner(
+            _Graph({}),
+            _LockManager(lock=_Lock("AGENT-123", lock_id="lock-123")),
+            heartbeat_interval_s=0,
+        )
+
+
 def _runner(
-    graph: _Graph,
+    graph: _Graph | _BlockingGraph,
     lock_manager: _LockManager,
     *,
     event_emitter: _EventRecorder | None = None,
     claim_ticket=None,
+    heartbeat_interval_s: float = 600.0,
 ) -> OrchestratorRunner:
     return OrchestratorRunner(
         graph=graph,
@@ -289,6 +380,7 @@ def _runner(
         component_id="orchestrator-test",
         event_emitter=event_emitter,
         claim_ticket=claim_ticket,
+        heartbeat_interval_s=heartbeat_interval_s,
     )
 
 
@@ -323,9 +415,11 @@ class _LockManager:
         *,
         lock: _Lock | None,
         release_error: Exception | None = None,
+        heartbeat_results: list[bool] | None = None,
     ) -> None:
         self.lock = lock
         self.release_error = release_error
+        self.heartbeat_results = [] if heartbeat_results is None else heartbeat_results
         self.acquires: list[str] = []
         self.heartbeats: list[_Lock] = []
         self.releases: list[_Lock] = []
@@ -336,6 +430,8 @@ class _LockManager:
 
     def heartbeat(self, lock: _Lock) -> bool:
         self.heartbeats.append(lock)
+        if self.heartbeat_results:
+            return self.heartbeat_results.pop(0)
         return True
 
     def release(self, lock: _Lock) -> None:
@@ -356,6 +452,26 @@ class _Graph:
         if isinstance(self.result, Exception):
             raise self.result
         return state.model_copy(update=self.result)
+
+
+class _BlockingGraph:
+    def __init__(self) -> None:
+        self.invocations = 0
+        self.last_state: TicketState | None = None
+        self.started = asyncio.Event()
+        self.release_graph = asyncio.Event()
+        self.cancelled = False
+
+    async def ainvoke(self, state: TicketState) -> TicketState:
+        self.invocations += 1
+        self.last_state = state
+        self.started.set()
+        try:
+            await self.release_graph.wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        return state.model_copy(update={"workflow_status": "completed"})
 
 
 class _EventRecorder:

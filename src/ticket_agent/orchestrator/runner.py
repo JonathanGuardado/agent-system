@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from inspect import isawaitable
@@ -17,8 +18,10 @@ EventEmitter = Callable[[str, Mapping[str, Any]], Any]
 ClaimTicket = Callable[[str], Any]
 
 EVENT_LOCK_ACQUIRED = "lock.acquired"
+EVENT_LOCK_HEARTBEAT_FAILED = "lock.heartbeat_failed"
 EVENT_LOCK_RELEASED = "lock.released"
 EVENT_LOCK_RELEASE_FAILED = "lock.release_failed"
+EVENT_RUNNER_CLAIM_FAILED = "runner.claim_failed"
 EVENT_TICKET_STARTED = "ticket_started"
 EVENT_TICKET_COMPLETED = "ticket_completed"
 EVENT_TICKET_FAILED = "ticket_failed"
@@ -76,6 +79,14 @@ class TicketClaimFailedError(TicketLockError):
         self.original_error = error
 
 
+class TicketHeartbeatLostError(TicketLockError):
+    """Raised when a running graph loses ownership of its SQLite lock."""
+
+    def __init__(self, ticket_key: str) -> None:
+        super().__init__(f"ticket lock heartbeat failed for {ticket_key}")
+        self.ticket_key = ticket_key
+
+
 class OrchestratorRunner:
     """Acquire a ticket lock, run the graph, and release the lock."""
 
@@ -88,13 +99,18 @@ class OrchestratorRunner:
         logger: Logger | None = None,
         event_emitter: EventEmitter | None = None,
         claim_ticket: ClaimTicket | None = None,
+        heartbeat_interval_s: float = 600.0,
     ) -> None:
+        if heartbeat_interval_s <= 0:
+            raise ValueError("heartbeat_interval_s must be positive")
+
         self._graph = graph
         self._lock_manager = lock_manager
         self._component_id = component_id
         self._logger = logger
         self._event_emitter = event_emitter
         self._claim_ticket = claim_ticket
+        self._heartbeat_interval_s = float(heartbeat_interval_s)
 
     async def run_ticket(self, work_item: TicketWorkItem) -> TicketState:
         """Run one ticket through the graph when its lock can be acquired."""
@@ -116,7 +132,13 @@ class OrchestratorRunner:
         graph_exception: Exception | None = None
         graph_traceback = None
         try:
-            await self._claim_jira_ticket(work_item.ticket_key)
+            try:
+                await self._claim_jira_ticket(work_item.ticket_key)
+            except TicketClaimFailedError as exc:
+                graph_exception = exc
+                graph_traceback = exc.__traceback__
+                await self._emit_claim_failed(work_item, lock, exc)
+                raise
             state = self._build_initial_state(work_item, lock)
             await self._emit(
                 EVENT_TICKET_STARTED,
@@ -124,7 +146,7 @@ class OrchestratorRunner:
                 component_id=self._component_id,
                 lock_id=state.lock_id,
             )
-            result = await self._graph.ainvoke(state)
+            result = await self._run_graph_with_heartbeat(work_item, state, lock)
             final_state = _coerce_graph_result(state, result)
             await self._emit(
                 EVENT_TICKET_COMPLETED,
@@ -208,6 +230,87 @@ class OrchestratorRunner:
         except Exception as exc:
             raise TicketClaimFailedError(ticket_key, exc) from exc
 
+    async def _run_graph_with_heartbeat(
+        self,
+        work_item: TicketWorkItem,
+        state: TicketState,
+        lock: Lock,
+    ) -> Any:
+        heartbeat_task = asyncio.create_task(
+            self._heartbeat_until_cancelled(work_item, lock),
+            name=f"ticket-heartbeat:{work_item.ticket_key}",
+        )
+        graph_task = asyncio.create_task(
+            self._graph.ainvoke(state),
+            name=f"ticket-graph:{work_item.ticket_key}",
+        )
+
+        try:
+            done, _ = await asyncio.wait(
+                {graph_task, heartbeat_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if heartbeat_task in done:
+                heartbeat_error = _task_error(
+                    heartbeat_task,
+                    fallback=TicketHeartbeatLostError(work_item.ticket_key),
+                )
+                await _cancel_and_await(graph_task)
+                raise heartbeat_error
+            return await graph_task
+        finally:
+            await _cancel_and_await(heartbeat_task)
+
+    async def _heartbeat_until_cancelled(
+        self,
+        work_item: TicketWorkItem,
+        lock: Lock,
+    ) -> None:
+        while True:
+            await asyncio.sleep(self._heartbeat_interval_s)
+            try:
+                result = self._lock_manager.heartbeat(lock)
+                if isawaitable(result):
+                    result = await result
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await self._emit_heartbeat_failed(work_item, lock, exc)
+                raise
+
+            if not result:
+                exc = TicketHeartbeatLostError(work_item.ticket_key)
+                await self._emit_heartbeat_failed(work_item, lock, exc)
+                raise exc
+
+    async def _emit_claim_failed(
+        self,
+        work_item: TicketWorkItem,
+        lock: Lock,
+        exc: TicketClaimFailedError,
+    ) -> None:
+        await self._emit(
+            EVENT_RUNNER_CLAIM_FAILED,
+            ticket_key=work_item.ticket_key,
+            component_id=self._component_id,
+            lock_id=_lock_id(lock),
+            error=_error_message(exc.original_error),
+        )
+
+    async def _emit_heartbeat_failed(
+        self,
+        work_item: TicketWorkItem,
+        lock: Lock,
+        exc: BaseException,
+    ) -> None:
+        await self._emit(
+            EVENT_LOCK_HEARTBEAT_FAILED,
+            ticket_key=work_item.ticket_key,
+            component_id=self._component_id,
+            lock_id=_lock_id(lock),
+            error=_error_message(exc),
+        )
+
     async def _emit_lock_event(
         self,
         event_name: str,
@@ -261,7 +364,7 @@ def _coerce_graph_result(initial_state: TicketState, result: Any) -> TicketState
 
 
 def _mark_failed(state: TicketState, exc: Exception) -> TicketState:
-    error = str(exc) or exc.__class__.__name__
+    error = _error_message(exc)
     return state.model_copy(
         update={
             "workflow_status": "escalated",
@@ -289,3 +392,28 @@ def _branch_name(ticket_key: str, lock: Lock) -> str:
         short_id = "".join(c for c in owner if c.isalnum() or c == "-") or "run"
     safe_key = ticket_key.replace("/", "-")
     return f"agent/{safe_key}/{short_id}"
+
+
+def _error_message(exc: BaseException) -> str:
+    return str(exc) or exc.__class__.__name__
+
+
+def _task_error(task: asyncio.Task[Any], *, fallback: Exception) -> Exception:
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        return fallback
+    if isinstance(exc, Exception):
+        return exc
+    return fallback
+
+
+async def _cancel_and_await(task: asyncio.Task[Any]) -> None:
+    if not task.done():
+        task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        return

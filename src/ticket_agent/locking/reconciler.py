@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable, Mapping
 from inspect import isawaitable
 from typing import Any, Protocol
@@ -20,8 +21,10 @@ from ticket_agent.jira.models import JiraTicket
 
 
 EVENT_LOCK_RECONCILED = "lock.reconciled"
+EVENT_LOCK_RECONCILE_FAILED = "lock.reconcile_failed"
 
 EventEmitter = Callable[[str, Mapping[str, Any]], Any]
+_LOGGER = logging.getLogger(__name__)
 
 
 class ExpiredLockManager(Protocol):
@@ -56,7 +59,8 @@ async def reconcile_expired_locks(
                 await _emit_reconciled(emit, lock, jira_cleaned=jira_cleaned)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
+            await _emit_reconcile_failed(emit, lock, exc)
             continue
     return reconciled
 
@@ -106,7 +110,8 @@ async def _emit_reconciled(
 ) -> None:
     if emit is None:
         return
-    result = emit(
+    await _safe_emit(
+        emit,
         EVENT_LOCK_RECONCILED,
         {
             "ticket_key": lock.ticket_key,
@@ -115,11 +120,57 @@ async def _emit_reconciled(
             "jira_cleaned": jira_cleaned,
         },
     )
-    if isawaitable(result):
-        await result
+
+
+async def _emit_reconcile_failed(
+    emit: EventEmitter | None,
+    lock: TicketLock,
+    exc: BaseException,
+) -> None:
+    payload = {
+        "ticket_key": lock.ticket_key,
+        "component_id": lock.owner,
+        "lock_id": lock.lock_id,
+        **_error_payload(exc),
+    }
+    _LOGGER.warning(
+        "lock_reconcile_failed",
+        extra=payload,
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
+    if emit is None:
+        return
+    await _safe_emit(emit, EVENT_LOCK_RECONCILE_FAILED, payload)
+
+
+async def _safe_emit(
+    emit: EventEmitter,
+    event_name: str,
+    payload: Mapping[str, Any],
+) -> None:
+    try:
+        result = emit(event_name, payload)
+        if isawaitable(result):
+            await result
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        _LOGGER.warning(
+            "lock_reconcile_event_emit_failed",
+            extra={"event_name": event_name},
+            exc_info=True,
+        )
+
+
+def _error_payload(exc: BaseException) -> dict[str, str]:
+    return {
+        "error_type": exc.__class__.__name__,
+        "error": str(exc) or exc.__class__.__name__,
+    }
 
 
 __all__ = [
+    "EVENT_LOCK_RECONCILE_FAILED",
     "EVENT_LOCK_RECONCILED",
     "ExpiredLockManager",
     "reconcile_expired_locks",

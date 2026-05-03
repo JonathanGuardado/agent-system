@@ -62,16 +62,6 @@ class JiraExecutionService:
                 failed_step,
                 lambda: self._client.add_labels(ticket_key, list(_CLAIMED_LABELS)),
             )
-            failed_step = _STEP_TRANSITION_TICKET
-            await self._call_jira(
-                _MARK_CLAIMED_OPERATION,
-                ticket_key,
-                failed_step,
-                lambda: self._client.transition_ticket(
-                    ticket_key,
-                    STATUS_IN_PROGRESS,
-                ),
-            )
             failed_step = _STEP_UPDATE_FIELDS
             await self._call_jira(
                 _MARK_CLAIMED_OPERATION,
@@ -80,6 +70,16 @@ class JiraExecutionService:
                 lambda: self._client.update_fields(
                     ticket_key,
                     {FIELD_AGENT_ASSIGNED_COMPONENT: self._component_id},
+                ),
+            )
+            failed_step = _STEP_TRANSITION_TICKET
+            await self._call_jira(
+                _MARK_CLAIMED_OPERATION,
+                ticket_key,
+                failed_step,
+                lambda: self._client.transition_ticket(
+                    ticket_key,
+                    STATUS_IN_PROGRESS,
                 ),
             )
         except JiraExecutionError as exc:

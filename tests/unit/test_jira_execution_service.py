@@ -30,12 +30,12 @@ def test_mark_claimed_updates_jira_execution_state():
 
     assert client.calls == [
         ("add_labels", "AGENT-123", [LABEL_AI_CLAIMED]),
-        ("transition_ticket", "AGENT-123", STATUS_IN_PROGRESS),
         (
             "update_fields",
             "AGENT-123",
             {FIELD_AGENT_ASSIGNED_COMPONENT: "runner-1"},
         ),
+        ("transition_ticket", "AGENT-123", STATUS_IN_PROGRESS),
     ]
     assert client.ticket.status == STATUS_IN_PROGRESS
     assert client.ticket.labels == [LABEL_AI_READY, LABEL_AI_CLAIMED]
@@ -189,6 +189,11 @@ def test_mark_claimed_transition_failure_compensates_claim_and_comments():
     assert isinstance(exc_info.value.__cause__, RuntimeError)
     assert client.calls == [
         ("add_labels", "AGENT-123", [LABEL_AI_CLAIMED]),
+        (
+            "update_fields",
+            "AGENT-123",
+            {FIELD_AGENT_ASSIGNED_COMPONENT: "runner-1"},
+        ),
         ("transition_ticket", "AGENT-123", STATUS_IN_PROGRESS),
         ("remove_labels", "AGENT-123", [LABEL_AI_CLAIMED]),
         (
@@ -231,7 +236,6 @@ def test_mark_claimed_update_fields_failure_compensates_claim_and_component():
     assert isinstance(exc_info.value.__cause__, RuntimeError)
     assert client.calls == [
         ("add_labels", "AGENT-123", [LABEL_AI_CLAIMED]),
-        ("transition_ticket", "AGENT-123", STATUS_IN_PROGRESS),
         (
             "update_fields",
             "AGENT-123",
@@ -268,7 +272,7 @@ def test_mark_claimed_transition_back_failure_preserves_original_error():
     client = _FakeJiraClient(
         _ticket(labels=[LABEL_AI_READY]),
         fail_on={
-            "transition_ticket": [None, RuntimeError("transition back exploded")],
+            "transition_ticket": [RuntimeError("transition back exploded")],
             "update_fields": [RuntimeError("update exploded")],
         },
     )
@@ -282,7 +286,6 @@ def test_mark_claimed_transition_back_failure_preserves_original_error():
     assert isinstance(exc_info.value.__cause__, RuntimeError)
     assert client.calls == [
         ("add_labels", "AGENT-123", [LABEL_AI_CLAIMED]),
-        ("transition_ticket", "AGENT-123", STATUS_IN_PROGRESS),
         (
             "update_fields",
             "AGENT-123",
@@ -318,7 +321,7 @@ def test_mark_claimed_transition_back_failure_preserves_original_error():
             "error": "transition back exploded",
         },
     )
-    assert client.ticket.status == STATUS_IN_PROGRESS
+    assert client.ticket.status == STATUS_TODO
     assert client.ticket.labels == [LABEL_AI_READY]
     assert client.ticket.fields[FIELD_AGENT_ASSIGNED_COMPONENT] is None
     assert client.comments == [

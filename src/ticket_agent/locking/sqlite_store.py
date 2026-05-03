@@ -214,7 +214,14 @@ class SQLiteLockManager:
 
 
 class SQLiteTicketLockStore:
-    """Backward-compatible low-level lock store."""
+    """Deprecated compatibility/test-only lock store.
+
+    Production pickup uses :class:`SQLiteLockManager`, which never deletes expired
+    rows on acquire/current-lock checks. This store preserves the historical API
+    for legacy unit coverage and should not be used on the active runner path.
+    """
+
+    deprecated = True
 
     def __init__(self, db_path: str | Path, *, busy_timeout_ms: int = 5000) -> None:
         self._connection_lock = RLock()

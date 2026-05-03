@@ -12,6 +12,7 @@ from ticket_agent.jira.constants import (
     LABEL_AI_CLAIMED,
     LABEL_AI_FAILED,
     LABEL_AI_READY,
+    STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
     STATUS_TODO,
 )
@@ -22,6 +23,19 @@ from ticket_agent.jira.models import JiraExecutionError, JiraTicket
 from ticket_agent.jira.work_item_loader import JiraWorkItemLoader
 from ticket_agent.orchestrator.runner import TicketClaimFailedError, TicketWorkItem
 from ticket_agent.orchestrator.state import TicketState
+
+
+def test_fake_jira_transition_ticket_uses_status_names():
+    client = FakeJiraClient(_ticket())
+
+    asyncio.run(client.transition_ticket("AGENT-123", STATUS_IN_PROGRESS))
+    asyncio.run(client.transition_ticket("AGENT-123", STATUS_TODO))
+
+    assert client.ticket("AGENT-123").status == STATUS_TODO
+    assert client.calls == [
+        ("transition_ticket", "AGENT-123", STATUS_IN_PROGRESS),
+        ("transition_ticket", "AGENT-123", STATUS_TODO),
+    ]
 
 
 def test_fake_jira_execution_path_with_pr_marks_in_review_and_comments():

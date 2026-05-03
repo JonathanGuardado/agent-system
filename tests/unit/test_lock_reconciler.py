@@ -15,6 +15,7 @@ from ticket_agent.jira.constants import (
 from ticket_agent.jira.fake_client import FakeJiraClient
 from ticket_agent.jira.models import JiraTicket
 from ticket_agent.locking.reconciler import (
+    EVENT_LOCK_RECONCILE_FAILED,
     EVENT_LOCK_RECONCILED,
     reconcile_expired_locks,
 )
@@ -75,15 +76,63 @@ def test_reconcile_expired_locks_keeps_row_when_jira_unreachable(tmp_path):
         _ticket(),
         fail_on={"get_ticket": RuntimeError("jira unavailable")},
     )
+    events = _EventRecorder()
 
     try:
         assert manager.acquire("AGENT-123", ttl_s=1) is not None
         clock.now = datetime(2026, 1, 1, 12, 1, tzinfo=timezone.utc)
 
-        reconciled = asyncio.run(reconcile_expired_locks(manager, client))
+        reconciled = asyncio.run(
+            reconcile_expired_locks(manager, client, emit=events)
+        )
 
         assert reconciled == 0
         assert len(manager.expired_locks()) == 1
+        assert events.names == [EVENT_LOCK_RECONCILE_FAILED]
+        assert events.payloads[EVENT_LOCK_RECONCILE_FAILED] == {
+            "ticket_key": "AGENT-123",
+            "component_id": "runner-1",
+            "lock_id": "lock-1",
+            "error_type": "RuntimeError",
+            "error": "jira unavailable",
+        }
+    finally:
+        manager.close()
+
+
+def test_reconcile_expired_locks_continues_after_one_ticket_fails(tmp_path):
+    clock = _MutableClock()
+    lock_ids = iter(["lock-1", "lock-2"])
+    manager = SQLiteLockManager(
+        tmp_path / "locks.sqlite3",
+        component_id="runner-1",
+        lock_id_factory=lambda: next(lock_ids),
+        clock=clock,
+    )
+    client = FakeJiraClient(
+        [
+            _ticket(key="AGENT-123"),
+            _ticket(key="AGENT-456"),
+        ],
+        fail_on={"remove_labels": [RuntimeError("remove exploded"), None]},
+    )
+    events = _EventRecorder()
+
+    try:
+        assert manager.acquire("AGENT-123", ttl_s=1) is not None
+        assert manager.acquire("AGENT-456", ttl_s=1) is not None
+        clock.now = datetime(2026, 1, 1, 12, 1, tzinfo=timezone.utc)
+
+        reconciled = asyncio.run(
+            reconcile_expired_locks(manager, client, emit=events)
+        )
+
+        remaining = manager.expired_locks()
+        assert reconciled == 1
+        assert [lock.ticket_key for lock in remaining] == ["AGENT-123"]
+        assert events.names == [EVENT_LOCK_RECONCILE_FAILED, EVENT_LOCK_RECONCILED]
+        assert events.events[0][1]["ticket_key"] == "AGENT-123"
+        assert events.events[1][1]["ticket_key"] == "AGENT-456"
     finally:
         manager.close()
 
