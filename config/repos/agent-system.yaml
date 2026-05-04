@@ -1,0 +1,38 @@
+repo:
+  name: agent-system
+  root: ~/repos/agent-system
+  default_branch: main
+
+language:
+  primary: python
+  package_manager: setuptools
+
+commands:
+  test:
+    command: ["python", "-m", "pytest", "tests/", "-x", "-q"]
+    timeout_seconds: 120
+    working_directory: "."
+  lint:
+    command: ["python", "-m", "ruff", "check", "src/"]
+    timeout_seconds: 60
+    working_directory: "."
+  install: null
+
+policy:
+  dependency_install_allowed: false
+  config_paths_allowed:
+    - config/repos/
+  protected_paths:
+    - .github/
+    - Dockerfile
+    - docker-compose.yml
+    - docker-compose.yaml
+    - .env
+    - secrets/
+    - ~/config/
+
+source_dirs:
+  - src/
+
+test_dirs:
+  - tests/
