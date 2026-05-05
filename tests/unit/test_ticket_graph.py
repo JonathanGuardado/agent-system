@@ -85,6 +85,207 @@ def test_ticket_graph_retries_implementation_while_attempts_remain():
     assert state.workflow_status == "completed"
 
 
+def test_ticket_graph_failed_implementation_retries_without_running_tests():
+    graph = build_ticket_graph(
+        TicketWorkflowNodes(
+            plan=_stub("plan"),
+            request_execution_approval=_stub(
+                "request_execution_approval",
+                execution_approved=True,
+            ),
+            implement=_implementation_results(
+                [
+                    {
+                        "status": "failed",
+                        "error_code": "invalid_tool_call",
+                        "error": "model response could not be parsed",
+                    },
+                    {"status": "success", "changed_files": ["src/feature.py"]},
+                ]
+            ),
+            run_tests=_stub("run_tests", tests_passed=True),
+            review=_stub("review", review_passed=True),
+            open_pull_request=_stub("open_pull_request"),
+            escalate=_must_not_run("escalate"),
+            report=_stub("report", workflow_status="completed"),
+        )
+    )
+
+    result = asyncio.run(graph.ainvoke(_initial_state(max_attempts=3)))
+    state = TicketState.model_validate(result)
+
+    assert state.visited_nodes == [
+        "plan",
+        "request_execution_approval",
+        "implement",
+        "implement",
+        "run_tests",
+        "review",
+        "open_pull_request",
+        "report",
+    ]
+    assert state.implementation_attempts == 2
+    assert state.tests_passed is True
+    assert state.workflow_status == "completed"
+
+
+def test_ticket_graph_max_turns_exhausted_escalates_at_max_attempts():
+    graph = build_ticket_graph(
+        TicketWorkflowNodes(
+            plan=_stub("plan"),
+            request_execution_approval=_stub(
+                "request_execution_approval",
+                execution_approved=True,
+            ),
+            implement=_implementation_results(
+                [
+                    {
+                        "status": "failed",
+                        "error_code": "max_turns_exhausted",
+                        "error": "max_turns exhausted after 12 turns",
+                    }
+                ]
+            ),
+            run_tests=_must_not_run("run_tests"),
+            review=_must_not_run("review"),
+            open_pull_request=_must_not_run("open_pull_request"),
+            escalate=_stub(
+                "escalate",
+                workflow_status="escalated",
+                escalation_reason="implementation failed",
+            ),
+            report=_stub("report", workflow_status="escalated"),
+        )
+    )
+
+    result = asyncio.run(graph.ainvoke(_initial_state(max_attempts=1)))
+    state = TicketState.model_validate(result)
+
+    assert state.visited_nodes == [
+        "plan",
+        "request_execution_approval",
+        "implement",
+        "escalate",
+        "report",
+    ]
+    assert state.implementation_attempts == 1
+    assert state.workflow_status == "escalated"
+
+
+def test_ticket_graph_policy_violation_escalates_without_retry_or_tests():
+    graph = build_ticket_graph(
+        TicketWorkflowNodes(
+            plan=_stub("plan"),
+            request_execution_approval=_stub(
+                "request_execution_approval",
+                execution_approved=True,
+            ),
+            implement=_implementation_results(
+                [
+                    {
+                        "status": "failed",
+                        "error_code": "policy_violation",
+                        "error": "policy violation for .github/workflows/ci.yml",
+                    }
+                ]
+            ),
+            run_tests=_must_not_run("run_tests"),
+            review=_must_not_run("review"),
+            open_pull_request=_must_not_run("open_pull_request"),
+            escalate=_stub(
+                "escalate",
+                workflow_status="escalated",
+                escalation_reason="implementation policy violation",
+            ),
+            report=_stub("report", workflow_status="escalated"),
+        )
+    )
+
+    result = asyncio.run(graph.ainvoke(_initial_state(max_attempts=3)))
+    state = TicketState.model_validate(result)
+
+    assert state.visited_nodes == [
+        "plan",
+        "request_execution_approval",
+        "implement",
+        "escalate",
+        "report",
+    ]
+    assert state.implementation_attempts == 1
+    assert state.tests_passed is None
+    assert state.workflow_status == "escalated"
+
+
+def test_ticket_graph_unclassified_implementation_failure_escalates():
+    graph = build_ticket_graph(
+        TicketWorkflowNodes(
+            plan=_stub("plan"),
+            request_execution_approval=_stub(
+                "request_execution_approval",
+                execution_approved=True,
+            ),
+            implement=_implementation_results(
+                [
+                    {
+                        "status": "failed",
+                        "error_code": "implementation_setup_failed",
+                        "error": "repo contract missing",
+                    }
+                ]
+            ),
+            run_tests=_must_not_run("run_tests"),
+            review=_must_not_run("review"),
+            open_pull_request=_must_not_run("open_pull_request"),
+            escalate=_stub(
+                "escalate",
+                workflow_status="escalated",
+                escalation_reason="implementation failed",
+            ),
+            report=_stub("report", workflow_status="escalated"),
+        )
+    )
+
+    result = asyncio.run(graph.ainvoke(_initial_state(max_attempts=3)))
+    state = TicketState.model_validate(result)
+
+    assert state.visited_nodes == [
+        "plan",
+        "request_execution_approval",
+        "implement",
+        "escalate",
+        "report",
+    ]
+    assert state.implementation_attempts == 1
+    assert state.workflow_status == "escalated"
+
+
+def test_ticket_graph_successful_implementation_calls_test_node():
+    graph = build_ticket_graph(
+        TicketWorkflowNodes(
+            plan=_stub("plan"),
+            request_execution_approval=_stub(
+                "request_execution_approval",
+                execution_approved=True,
+            ),
+            implement=_implementation_results(
+                [{"status": "success", "changed_files": ["src/feature.py"]}]
+            ),
+            run_tests=_stub("run_tests", tests_passed=True),
+            review=_stub("review", review_passed=True),
+            open_pull_request=_stub("open_pull_request"),
+            escalate=_must_not_run("escalate"),
+            report=_stub("report", workflow_status="completed"),
+        )
+    )
+
+    result = asyncio.run(graph.ainvoke(_initial_state()))
+    state = TicketState.model_validate(result)
+
+    assert "run_tests" in state.visited_nodes
+    assert state.tests_passed is True
+    assert state.workflow_status == "completed"
+
+
 def test_ticket_graph_escalates_failed_tests_when_max_attempts_is_reached():
     graph = build_ticket_graph(
         TicketWorkflowNodes(
@@ -232,6 +433,24 @@ def _pass_after_attempt(minimum_attempt: int):
             "visited_nodes": [*state.visited_nodes, "run_tests"],
             "tests_passed": tests_passed,
             "test_result": {"status": "passed" if tests_passed else "failed"},
+        }
+
+    return node
+
+
+def _implementation_results(results: list[dict[str, Any]]):
+    remaining = list(results)
+
+    async def node(state: TicketState) -> Mapping[str, Any]:
+        if not remaining:
+            raise AssertionError("no implementation results left")
+        implementation_result = remaining.pop(0)
+        return {
+            "current_node": "implement",
+            "visited_nodes": [*state.visited_nodes, "implement"],
+            "workflow_status": "implementing",
+            "implementation_attempts": state.implementation_attempts + 1,
+            "implementation_result": implementation_result,
         }
 
     return node

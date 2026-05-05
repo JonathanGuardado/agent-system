@@ -775,7 +775,7 @@ def test_iterative_implementation_returns_failed_result_for_path_escape(tmp_path
     implementation_result = result["implementation_result"]
     assert implementation_result["status"] == "failed"
     assert implementation_result["changed_files"] == []
-    assert implementation_result["error_code"] == "tool_execution_failed"
+    assert implementation_result["error_code"] == "path_boundary_violation"
     assert "outside" in implementation_result["error"]
 
 
@@ -805,7 +805,7 @@ def test_iterative_implementation_returns_failed_result_for_protected_write(
     implementation_result = result["implementation_result"]
     assert implementation_result["status"] == "failed"
     assert implementation_result["changed_files"] == []
-    assert implementation_result["error_code"] == "tool_execution_failed"
+    assert implementation_result["error_code"] == "policy_violation"
     assert "policy violation" in implementation_result["error"]
 
 

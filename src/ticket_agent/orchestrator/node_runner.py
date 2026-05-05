@@ -206,6 +206,9 @@ def _escalation_reason(state: TicketState) -> str:
         return state.escalation_reason
     if state.execution_approved is False:
         return "execution approval rejected"
+    implementation_reason = _implementation_failure_reason(state)
+    if implementation_reason is not None:
+        return implementation_reason
     if state.tests_passed is False:
         return "tests failed"
     if state.review_passed is False:
@@ -213,3 +216,31 @@ def _escalation_reason(state: TicketState) -> str:
     if state.error:
         return state.error
     return "workflow escalated"
+
+
+def _implementation_failure_reason(state: TicketState) -> str | None:
+    result = state.implementation_result
+    if not isinstance(result, dict):
+        return None
+
+    status = result.get("status")
+    if not isinstance(status, str) or status.lower() not in {
+        "failed",
+        "failure",
+        "error",
+    }:
+        return None
+
+    error = result.get("error")
+    if isinstance(error, str) and error.strip():
+        return error
+
+    summary = result.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        return summary
+
+    error_code = result.get("error_code")
+    if isinstance(error_code, str) and error_code.strip():
+        return f"implementation failed: {error_code}"
+
+    return "implementation failed"

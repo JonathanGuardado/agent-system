@@ -83,7 +83,15 @@ def build_ticket_graph(
             "blocked": ESCALATE,
         },
     )
-    graph.add_edge(IMPLEMENT, RUN_TESTS)
+    graph.add_conditional_edges(
+        IMPLEMENT,
+        route_after_implementation,
+        {
+            "implemented": RUN_TESTS,
+            "retry": IMPLEMENT,
+            "failed": ESCALATE,
+        },
+    )
     graph.add_conditional_edges(
         RUN_TESTS,
         route_after_tests,
@@ -136,6 +144,33 @@ def route_after_execution_approval(
     return "approved" if state.execution_approved is True else "blocked"
 
 
+def route_after_implementation(
+    state: TicketState,
+) -> Literal["implemented", "retry", "failed"]:
+    result = state.implementation_result
+    if not isinstance(result, Mapping):
+        return "implemented"
+
+    status = result.get("status")
+    if isinstance(status, str):
+        normalized_status = status.lower()
+        if normalized_status in {"success", "implemented", "prepared"}:
+            return "implemented"
+        if normalized_status in {"failed", "failure", "error"}:
+            if _implementation_failure_escalates_immediately(result):
+                return "failed"
+            if (
+                _implementation_failure_is_retryable(result)
+                and state.implementation_attempts < state.max_attempts
+            ):
+                return "retry"
+            return "failed"
+
+    if result.get("error") or result.get("error_code"):
+        return "failed"
+    return "implemented"
+
+
 def route_after_tests(state: TicketState) -> Literal["passed", "retry", "failed"]:
     if state.tests_passed is True:
         return "passed"
@@ -149,3 +184,30 @@ def route_after_tests(state: TicketState) -> Literal["passed", "retry", "failed"
 
 def route_after_review(state: TicketState) -> Literal["accepted", "rejected"]:
     return "accepted" if state.review_passed is True else "rejected"
+
+
+def _implementation_failure_escalates_immediately(
+    result: Mapping[str, Any],
+) -> bool:
+    error_code = result.get("error_code")
+    if error_code in {"policy_violation", "path_boundary_violation"}:
+        return True
+
+    error = result.get("error")
+    if not isinstance(error, str):
+        return False
+    normalized_error = error.lower()
+    return (
+        "policy violation" in normalized_error
+        or "path escapes worktree boundary" in normalized_error
+    )
+
+
+def _implementation_failure_is_retryable(result: Mapping[str, Any]) -> bool:
+    return result.get("error_code") in {
+        "invalid_tool_call",
+        "unknown_action",
+        "max_turns_exhausted",
+        "model_invoke_failed",
+        "tool_execution_failed",
+    }

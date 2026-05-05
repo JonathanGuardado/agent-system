@@ -11,7 +11,11 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ticket_agent.adapters.local.file_adapter import LocalFileAdapter
-from ticket_agent.domain.errors import AgentSystemError
+from ticket_agent.domain.errors import (
+    AgentSystemError,
+    PathBoundaryError,
+    PolicyViolationError,
+)
 from ticket_agent.orchestrator.repo_context import (
     RepoContext,
     RepoContextBuilder,
@@ -326,6 +330,20 @@ class IterativeImplementationService:
                 "ok": True,
                 "action": "write_file",
                 "path": path,
+            }
+        except PolicyViolationError as exc:
+            return {
+                "ok": False,
+                "action": tool_call.action,
+                "error": _truncate_text(str(exc), self._tool_result_max_chars),
+                "error_code": "policy_violation",
+            }
+        except PathBoundaryError as exc:
+            return {
+                "ok": False,
+                "action": tool_call.action,
+                "error": _truncate_text(str(exc), self._tool_result_max_chars),
+                "error_code": "path_boundary_violation",
             }
         except (AgentSystemError, OSError, ValueError, RuntimeError) as exc:
             return {
