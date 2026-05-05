@@ -60,7 +60,10 @@ def test_ticket_graph_retries_implementation_while_attempts_remain():
             implement=implement_ticket,
             run_tests=_pass_after_attempt(2),
             review=_stub("review", review_passed=True),
-            open_pull_request=_stub("open_pull_request"),
+            open_pull_request=_stub(
+                "open_pull_request",
+                pull_request_url="https://github.test/pr/1",
+            ),
             escalate=_must_not_run("escalate"),
             report=_stub("report", workflow_status="completed"),
         )
@@ -105,7 +108,10 @@ def test_ticket_graph_failed_implementation_retries_without_running_tests():
             ),
             run_tests=_stub("run_tests", tests_passed=True),
             review=_stub("review", review_passed=True),
-            open_pull_request=_stub("open_pull_request"),
+            open_pull_request=_stub(
+                "open_pull_request",
+                pull_request_url="https://github.test/pr/1",
+            ),
             escalate=_must_not_run("escalate"),
             report=_stub("report", workflow_status="completed"),
         )
@@ -272,7 +278,10 @@ def test_ticket_graph_successful_implementation_calls_test_node():
             ),
             run_tests=_stub("run_tests", tests_passed=True),
             review=_stub("review", review_passed=True),
-            open_pull_request=_stub("open_pull_request"),
+            open_pull_request=_stub(
+                "open_pull_request",
+                pull_request_url="https://github.test/pr/1",
+            ),
             escalate=_must_not_run("escalate"),
             report=_stub("report", workflow_status="completed"),
         )
@@ -362,6 +371,44 @@ def test_ticket_graph_rejected_approval_escalates():
     ]
     assert state.workflow_status == "escalated"
     assert state.escalation_reason == "approval missing"
+
+
+def test_ticket_graph_open_pr_without_url_escalates():
+    graph = build_ticket_graph(
+        TicketWorkflowNodes(
+            plan=_stub("plan"),
+            request_execution_approval=_stub(
+                "request_execution_approval",
+                execution_approved=True,
+            ),
+            implement=implement_ticket,
+            run_tests=_stub("run_tests", tests_passed=True),
+            review=_stub("review", review_passed=True),
+            open_pull_request=_stub("open_pull_request"),  # no pull_request_url
+            escalate=_stub(
+                "escalate",
+                workflow_status="escalated",
+                escalation_reason="pull request URL missing",
+            ),
+            report=_stub("report", workflow_status="escalated"),
+        )
+    )
+
+    result = asyncio.run(graph.ainvoke(_initial_state()))
+    state = TicketState.model_validate(result)
+
+    assert state.visited_nodes == [
+        "plan",
+        "request_execution_approval",
+        "implement",
+        "run_tests",
+        "review",
+        "open_pull_request",
+        "escalate",
+        "report",
+    ]
+    assert state.pull_request_url is None
+    assert state.workflow_status == "escalated"
 
 
 def test_ticket_graph_failed_review_escalates():

@@ -174,6 +174,50 @@ def test_escalated_final_state_marks_failed_posts_slack_and_cleans_worktree():
     ]
 
 
+def test_missing_pr_url_final_state_marks_failed_posts_slack_and_cleans_worktree():
+    work_item = _work_item(slack_thread_ts="thread-2")
+    final_state = _state(
+        workflow_status="escalated",
+        escalation_reason="pull request service did not return a PR URL",
+        repo_path="/repos/agent-system",
+        worktree_path="/repos/agent-system/.worktrees/AGENT-123/abcdef12",
+        slack_thread_ts="thread-2",
+    )
+    execution_service = _FakeExecutionService()
+    slack = _FakeSlack()
+    cleaner = _FakeCleaner()
+    events = _EventRecorder()
+    coordinator = JiraExecutionCoordinator(
+        _FakeLoader(work_item),
+        execution_service,
+        _FakeRunner(final_state),
+        emit=events,
+        slack=slack,
+        worktree_cleaner=cleaner,
+    )
+
+    result = asyncio.run(coordinator.run_ticket("AGENT-123"))
+
+    assert result is final_state
+    assert execution_service.calls == [
+        ("mark_failed", "AGENT-123", "pull request service did not return a PR URL")
+    ]
+    assert slack.messages == [
+        (
+            None,
+            "thread-2",
+            "ticket-agent",
+            "AI execution escalated AGENT-123:\n\n"
+            "pull request service did not return a PR URL",
+        )
+    ]
+    assert cleaner.states == [final_state]
+    assert events.names == [
+        EVENT_JIRA_EXECUTION_STARTED,
+        EVENT_JIRA_EXECUTION_FAILED,
+    ]
+
+
 def test_slack_notification_failure_does_not_corrupt_jira_finalization():
     final_state = _state(
         pull_request_url="https://github.com/example/repo/pull/1",
