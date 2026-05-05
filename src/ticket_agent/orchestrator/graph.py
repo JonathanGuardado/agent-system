@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal, TYPE_CHECKING
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from ticket_agent.locking.checkpointer import SQLiteCheckpointer
 from ticket_agent.orchestrator.nodes import (
     escalate_ticket,
     implement_ticket,
@@ -33,6 +36,7 @@ REVIEW = "review"
 OPEN_PULL_REQUEST = "open_pull_request"
 ESCALATE = "escalate"
 REPORT = "report"
+DEFAULT_CHECKPOINT_DB_PATH = Path("data/ticket_graph_checkpoints.sqlite3")
 
 TicketNode = Callable[[TicketState], Awaitable[Mapping[str, Any]]]
 
@@ -51,6 +55,8 @@ class TicketWorkflowNodes:
 
 def build_ticket_graph(
     nodes: TicketWorkflowNodes | TicketNodeRunner | None = None,
+    *,
+    checkpointer: BaseCheckpointSaver | None = None,
 ) -> CompiledStateGraph:
     workflow_nodes = _coerce_workflow_nodes(nodes)
     graph = StateGraph(TicketState)
@@ -99,7 +105,19 @@ def build_ticket_graph(
     graph.add_edge(ESCALATE, REPORT)
     graph.add_edge(REPORT, END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
+
+
+def build_persistent_ticket_graph(
+    nodes: TicketWorkflowNodes | TicketNodeRunner | None = None,
+    *,
+    checkpoint_db_path: str | Path = DEFAULT_CHECKPOINT_DB_PATH,
+    checkpointer: BaseCheckpointSaver | None = None,
+) -> CompiledStateGraph:
+    """Build the production graph with SQLite-backed checkpoint persistence."""
+
+    saver = checkpointer or SQLiteCheckpointer(checkpoint_db_path)
+    return build_ticket_graph(nodes, checkpointer=saver)
 
 
 def _coerce_workflow_nodes(

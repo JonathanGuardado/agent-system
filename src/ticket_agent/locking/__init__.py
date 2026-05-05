@@ -1,5 +1,6 @@
 """Locking implementations."""
 
+from ticket_agent.locking.checkpointer import SQLiteCheckpointer
 from ticket_agent.locking.sqlite_store import (
     EVENT_LOCK_ACQUIRED,
     EVENT_LOCK_HEARTBEAT,
@@ -24,6 +25,7 @@ __all__ = [
     # Protocols
     "ExpiredLockManager",
     # Classes
+    "SQLiteCheckpointer",
     "SQLiteLockManager",
     "SQLiteTicketLockStore",
     # Functions

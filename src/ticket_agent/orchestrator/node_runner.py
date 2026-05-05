@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ticket_agent.orchestrator.services import (
+    ApprovalDecision,
     ApprovalService,
     EscalationService,
     ImplementationService,
@@ -56,12 +57,20 @@ class TicketNodeRunner:
         self,
         state: TicketState,
     ) -> TicketStateUpdate:
-        approved = await self._approval.request_approval(state)
+        decision = _normalize_approval_decision(
+            await self._approval.request_approval(state)
+        )
+        updates: dict[str, Any] = {
+            "execution_approved": decision.approved,
+            "execution_approval_status": decision.status,
+        }
+        if decision.approved is False and decision.reason:
+            updates["escalation_reason"] = decision.reason
         return _mark_node(
             state,
             "request_execution_approval",
             workflow_status="waiting_for_approval",
-            execution_approved=approved,
+            **updates,
         )
 
     async def implement(self, state: TicketState) -> TicketStateUpdate:
@@ -178,6 +187,18 @@ def _result_passed(
     if normalized_status in negative_statuses:
         return False
     return None
+
+
+def _normalize_approval_decision(
+    decision: bool | ApprovalDecision,
+) -> ApprovalDecision:
+    if isinstance(decision, ApprovalDecision):
+        return decision
+    return ApprovalDecision(
+        approved=decision,
+        status="approved" if decision else "rejected",
+        reason=None if decision else "execution approval rejected",
+    )
 
 
 def _escalation_reason(state: TicketState) -> str:

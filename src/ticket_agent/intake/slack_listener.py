@@ -52,6 +52,21 @@ class SlackClient(Protocol):
     ) -> None: ...
 
 
+class ExecutionApprovalHandler(Protocol):
+    """Optional handler for execution approval commands."""
+
+    def matches(self, text: str) -> bool: ...
+
+    async def handle_message(
+        self,
+        *,
+        text: str,
+        channel: str | None = None,
+        thread_ts: str | None = None,
+        user_id: str | None = None,
+    ) -> object: ...
+
+
 class SlackIntakeListener:
     """Route Slack messages to :class:`ApprovalFlow`.
 
@@ -66,11 +81,13 @@ class SlackIntakeListener:
         approval_flow: ApprovalFlow,
         store: ProposalStore,
         intake_channel: str | None = None,
+        execution_approval_handler: ExecutionApprovalHandler | None = None,
         emit: Callable[[str, dict[str, object]], None] | None = None,
     ) -> None:
         self._approval_flow = approval_flow
         self._store = store
         self._intake_channel = intake_channel
+        self._execution_approval_handler = execution_approval_handler
         self._emit = emit
 
     async def handle_event(self, event: SlackEvent) -> ApprovalResult | None:
@@ -93,6 +110,22 @@ class SlackIntakeListener:
             self._emit_event(
                 "intake.slack_ignored",
                 {"reason": "wrong_channel", "channel": event.channel},
+            )
+            return None
+
+        if (
+            self._execution_approval_handler is not None
+            and self._execution_approval_handler.matches(event.text)
+        ):
+            await self._execution_approval_handler.handle_message(
+                text=event.text,
+                channel=event.channel,
+                thread_ts=event.thread_ts,
+                user_id=event.user_id,
+            )
+            self._emit_event(
+                "execution_approval.slack_command_handled",
+                {"thread_ts": event.thread_ts},
             )
             return None
 
@@ -233,6 +266,7 @@ def _required_env(name: str) -> str:
 
 __all__ = [
     "SlackClient",
+    "ExecutionApprovalHandler",
     "SlackEvent",
     "SlackIntakeListener",
     "SlackPoster",

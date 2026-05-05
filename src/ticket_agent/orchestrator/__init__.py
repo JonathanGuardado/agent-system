@@ -3,6 +3,14 @@
 from ticket_agent.orchestrator.graph import (
     TicketWorkflowNodes,
     build_ticket_graph,
+    build_persistent_ticket_graph,
+)
+from ticket_agent.orchestrator.execution_approval import (
+    ExecutionApproval,
+    ExecutionApprovalCommandHandler,
+    ExecutionApprovalCommandResult,
+    SQLiteExecutionApprovalStore,
+    SlackExecutionApprovalService,
 )
 from ticket_agent.orchestrator.execution_worker import (
     Coordinator,
@@ -19,6 +27,7 @@ from ticket_agent.orchestrator.runner import (
     EVENT_LOCK_ACQUIRED,
     EVENT_LOCK_RELEASED,
     EVENT_LOCK_RELEASE_FAILED,
+    EVENT_GRAPH_CHECKPOINT_CLEARED,
     EVENT_TICKET_COMPLETED,
     EVENT_TICKET_FAILED,
     EVENT_TICKET_SKIPPED,
@@ -42,6 +51,7 @@ from ticket_agent.orchestrator.model_services import (
     ModelServiceError,
 )
 from ticket_agent.orchestrator.services import (
+    ApprovalDecision,
     ApprovalService,
     EscalationService,
     ImplementationService,
@@ -55,10 +65,15 @@ from ticket_agent.orchestrator.state import TicketState
 __all__ = [
     "AdapterTestService",
     "ApprovalService",
+    "ApprovalDecision",
     "AutoApprovalService",
     "Coordinator",
     "EscalationService",
+    "ExecutionApproval",
+    "ExecutionApprovalCommandHandler",
+    "ExecutionApprovalCommandResult",
     "ExecutionWorker",
+    "EVENT_GRAPH_CHECKPOINT_CLEARED",
     "EVENT_LOCK_ACQUIRED",
     "EVENT_LOCK_RELEASED",
     "EVENT_LOCK_RELEASE_FAILED",
@@ -81,6 +96,8 @@ __all__ = [
     "PlannerService",
     "PullRequestService",
     "ReviewService",
+    "SQLiteExecutionApprovalStore",
+    "SlackExecutionApprovalService",
     "TestService",
     "TicketAlreadyLockedError",
     "TicketClaimFailedError",
@@ -90,4 +107,5 @@ __all__ = [
     "TicketWorkItem",
     "TicketWorkflowNodes",
     "build_ticket_graph",
+    "build_persistent_ticket_graph",
 ]

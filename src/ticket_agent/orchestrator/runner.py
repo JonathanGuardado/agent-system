@@ -22,10 +22,12 @@ EVENT_LOCK_HEARTBEAT_FAILED = "lock.heartbeat_failed"
 EVENT_LOCK_RELEASED = "lock.released"
 EVENT_LOCK_RELEASE_FAILED = "lock.release_failed"
 EVENT_RUNNER_CLAIM_FAILED = "runner.claim_failed"
+EVENT_GRAPH_CHECKPOINT_CLEARED = "graph.checkpoint_cleared"
 EVENT_TICKET_STARTED = "ticket_started"
 EVENT_TICKET_COMPLETED = "ticket_completed"
 EVENT_TICKET_FAILED = "ticket_failed"
 EVENT_TICKET_SKIPPED = "ticket_skipped"
+INTERRUPT_RESULT_KEY = "__interrupt__"
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +40,8 @@ class TicketWorkItem:
     repository: str
     repo_path: str | None = None
     worktree_path: str | None = None
+    slack_channel: str | None = None
+    slack_thread_ts: str | None = None
     max_attempts: int = 3
 
 
@@ -57,8 +61,19 @@ class LockManager(Protocol):
 class TicketGraph(Protocol):
     """Compiled graph boundary used by the runner."""
 
-    def ainvoke(self, state: TicketState) -> Awaitable[Any]:
+    def ainvoke(
+        self,
+        state: TicketState,
+        config: Mapping[str, Any],
+    ) -> Awaitable[Any]:
         """Run the workflow graph for a ticket state."""
+
+
+class CheckpointCleaner(Protocol):
+    """Minimal checkpoint store boundary used by the runner."""
+
+    def delete_thread(self, thread_id: str) -> None:
+        """Delete persisted graph state for a thread."""
 
 
 class TicketAlreadyLockedError(TicketLockError):
@@ -99,6 +114,7 @@ class OrchestratorRunner:
         logger: Logger | None = None,
         event_emitter: EventEmitter | None = None,
         claim_ticket: ClaimTicket | None = None,
+        checkpointer: CheckpointCleaner | None = None,
         heartbeat_interval_s: float = 600.0,
     ) -> None:
         if heartbeat_interval_s <= 0:
@@ -110,6 +126,7 @@ class OrchestratorRunner:
         self._logger = logger
         self._event_emitter = event_emitter
         self._claim_ticket = claim_ticket
+        self._checkpointer = checkpointer
         self._heartbeat_interval_s = float(heartbeat_interval_s)
 
     async def run_ticket(self, work_item: TicketWorkItem) -> TicketState:
@@ -128,6 +145,7 @@ class OrchestratorRunner:
             raise TicketAlreadyLockedError(work_item.ticket_key)
 
         await self._emit_lock_event(EVENT_LOCK_ACQUIRED, work_item, lock)
+        await self._clear_stale_checkpoint(work_item, lock)
         state: TicketState | None = None
         graph_exception: Exception | None = None
         graph_traceback = None
@@ -209,6 +227,8 @@ class OrchestratorRunner:
             repository=work_item.repository,
             repo_path=work_item.repo_path,
             worktree_path=work_item.worktree_path,
+            slack_channel=work_item.slack_channel,
+            slack_thread_ts=work_item.slack_thread_ts,
             max_attempts=work_item.max_attempts,
             **updates,
         )
@@ -241,7 +261,7 @@ class OrchestratorRunner:
             name=f"ticket-heartbeat:{work_item.ticket_key}",
         )
         graph_task = asyncio.create_task(
-            self._graph.ainvoke(state),
+            self._graph.ainvoke(state, config=_graph_config(work_item.ticket_key)),
             name=f"ticket-graph:{work_item.ticket_key}",
         )
 
@@ -295,6 +315,21 @@ class OrchestratorRunner:
             component_id=self._component_id,
             lock_id=_lock_id(lock),
             error=_error_message(exc.original_error),
+        )
+
+    async def _clear_stale_checkpoint(
+        self,
+        work_item: TicketWorkItem,
+        lock: Lock,
+    ) -> None:
+        if self._checkpointer is None:
+            return
+        self._checkpointer.delete_thread(work_item.ticket_key)
+        await self._emit(
+            EVENT_GRAPH_CHECKPOINT_CLEARED,
+            ticket_key=work_item.ticket_key,
+            component_id=self._component_id,
+            lock_id=_lock_id(lock),
         )
 
     async def _emit_heartbeat_failed(
@@ -358,9 +393,20 @@ def _coerce_graph_result(initial_state: TicketState, result: Any) -> TicketState
         return result
     if isinstance(result, Mapping):
         payload = initial_state.model_dump()
-        payload.update(result)
+        payload.update(
+            {key: value for key, value in result.items() if key != INTERRUPT_RESULT_KEY}
+        )
+        if INTERRUPT_RESULT_KEY in result:
+            payload["workflow_status"] = "waiting_for_approval"
+            payload["current_node"] = (
+                payload.get("current_node") or "request_execution_approval"
+            )
         return TicketState.model_validate(payload)
     return TicketState.model_validate(result)
+
+
+def _graph_config(ticket_key: str) -> dict[str, dict[str, str]]:
+    return {"configurable": {"thread_id": ticket_key}}
 
 
 def _mark_failed(state: TicketState, exc: Exception) -> TicketState:

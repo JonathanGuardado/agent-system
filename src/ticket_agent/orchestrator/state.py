@@ -28,10 +28,13 @@ class TicketState(BaseModel):
     repository: str | None = None
     repo_path: str | None = None
     worktree_path: str | None = None
+    slack_channel: str | None = None
+    slack_thread_ts: str | None = None
     decomposition: dict | None = None
     current_node: str | None = None
     workflow_status: WorkflowStatus = "new"
     execution_approved: bool | None = None
+    execution_approval_status: str | None = None
     implementation_attempts: int = 0
     max_attempts: int = 3
     implementation_result: dict | None = None

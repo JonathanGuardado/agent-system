@@ -12,6 +12,7 @@ from ticket_agent.orchestrator.runner import (
     EVENT_LOCK_HEARTBEAT_FAILED,
     EVENT_LOCK_RELEASED,
     EVENT_LOCK_RELEASE_FAILED,
+    EVENT_GRAPH_CHECKPOINT_CLEARED,
     EVENT_RUNNER_CLAIM_FAILED,
     EVENT_TICKET_COMPLETED,
     EVENT_TICKET_FAILED,
@@ -84,6 +85,49 @@ def test_lock_unavailable_skips_graph_execution():
         "reason": "already_locked",
         "component_id": "orchestrator-test",
     }
+
+
+def test_runner_clears_stale_checkpoint_after_lock_is_acquired():
+    graph = _Graph({"workflow_status": "completed"})
+    lock_manager = _LockManager(lock=_Lock("AGENT-123", lock_id="lock-123"))
+    checkpointer = _CheckpointCleaner()
+    events = _EventRecorder()
+    runner = _runner(
+        graph,
+        lock_manager,
+        event_emitter=events,
+        checkpointer=checkpointer,
+    )
+
+    asyncio.run(runner.run_ticket(_work_item()))
+
+    assert checkpointer.deleted_threads == ["AGENT-123"]
+    assert graph.invocations == 1
+    assert events.names == [
+        EVENT_LOCK_ACQUIRED,
+        EVENT_GRAPH_CHECKPOINT_CLEARED,
+        EVENT_TICKET_STARTED,
+        EVENT_TICKET_COMPLETED,
+        EVENT_LOCK_RELEASED,
+    ]
+    assert events.payloads[EVENT_GRAPH_CHECKPOINT_CLEARED] == {
+        "ticket_key": "AGENT-123",
+        "component_id": "orchestrator-test",
+        "lock_id": "lock-123",
+    }
+
+
+def test_runner_does_not_clear_checkpoint_when_lock_acquisition_fails():
+    graph = _Graph({"workflow_status": "completed"})
+    lock_manager = _LockManager(lock=None)
+    checkpointer = _CheckpointCleaner()
+    runner = _runner(graph, lock_manager, checkpointer=checkpointer)
+
+    with pytest.raises(TicketAlreadyLockedError):
+        asyncio.run(runner.run_ticket(_work_item()))
+
+    assert checkpointer.deleted_threads == []
+    assert graph.invocations == 0
 
 
 def test_graph_failure_still_releases_lock():
@@ -372,6 +416,7 @@ def _runner(
     *,
     event_emitter: _EventRecorder | None = None,
     claim_ticket=None,
+    checkpointer=None,
     heartbeat_interval_s: float = 600.0,
 ) -> OrchestratorRunner:
     return OrchestratorRunner(
@@ -380,6 +425,7 @@ def _runner(
         component_id="orchestrator-test",
         event_emitter=event_emitter,
         claim_ticket=claim_ticket,
+        checkpointer=checkpointer,
         heartbeat_interval_s=heartbeat_interval_s,
     )
 
@@ -446,7 +492,12 @@ class _Graph:
         self.invocations = 0
         self.last_state: TicketState | None = None
 
-    async def ainvoke(self, state: TicketState) -> TicketState:
+    async def ainvoke(
+        self,
+        state: TicketState,
+        config: dict[str, Any] | None = None,
+    ) -> TicketState:
+        del config
         self.invocations += 1
         self.last_state = state
         if isinstance(self.result, Exception):
@@ -462,7 +513,12 @@ class _BlockingGraph:
         self.release_graph = asyncio.Event()
         self.cancelled = False
 
-    async def ainvoke(self, state: TicketState) -> TicketState:
+    async def ainvoke(
+        self,
+        state: TicketState,
+        config: dict[str, Any] | None = None,
+    ) -> TicketState:
+        del config
         self.invocations += 1
         self.last_state = state
         self.started.set()
@@ -492,3 +548,11 @@ class _EventRecorder:
 
 def _raise(error: BaseException) -> None:
     raise error
+
+
+class _CheckpointCleaner:
+    def __init__(self) -> None:
+        self.deleted_threads: list[str] = []
+
+    def delete_thread(self, thread_id: str) -> None:
+        self.deleted_threads.append(thread_id)

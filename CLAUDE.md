@@ -29,9 +29,9 @@ Current phase:
 
 Current active task:
 
-Wire the full end-to-end pipeline: SqliteSaver checkpointing, Slack-driven
-execution-approval interrupt, the real coding-agent loop, and the process
-entrypoint that boots Slack intake + Detection + ExecutionWorker together.
+Wire the remaining full end-to-end pipeline pieces: the real coding-agent loop
+and the process entrypoint that boots Slack intake + Detection +
+ExecutionWorker together.
 
 P5 work already done:
 - LangGraph StateGraph (graph.py) with full node sequence and routing
@@ -42,17 +42,18 @@ P5 work already done:
 - JiraEscalationService, JiraLabelApprovalService, AutoApprovalService
 - OrchestratorRunner (lock+heartbeat+claim+graph+release)
 - ExecutionWorker + JiraExecutionCoordinator
-- 341 unit tests passing
+- config/repos/agent-system.yaml repo contract
+- SQLiteCheckpointer wired into persistent graph compilation
+- OrchestratorRunner stale-checkpoint guard after fresh lock acquisition
+- Slack-driven execution-approval interrupt + SQLite approval persistence
+- 352 unit tests passing
 
 P5 remaining gaps (in priority order):
-1. config/repos/ — no repo contracts authored yet (required before any real run)
-2. SqliteSaver checkpointing — graph.compile() has no checkpointer; stale-checkpoint guard not wired
-3. Slack execution-approval interrupt — approval is auto or sync; real LangGraph interrupt() not yet wired
-4. Coding-agent loop — LocalImplementationService defaults to _prepare_only_step (no writes); ModelRouterImplementationService is single-shot, no tool-use iteration
-5. Process entrypoint — no app.py that boots Slack listener + Detection + ExecutionWorker together
+1. Coding-agent loop — LocalImplementationService defaults to _prepare_only_step (no writes); ModelRouterImplementationService is single-shot, no tool-use iteration
+2. Process entrypoint — no app.py that boots Slack listener + Detection + ExecutionWorker together
 
 Do not claim Slack, Jira, the full orchestrator, or the coding-agent loop are
-done until items 3 and 4 above are implemented.
+done until the coding-agent loop is implemented.
 
 ## Runtime model
 

@@ -351,7 +351,12 @@ class _RecordingGraph:
         self.invocations = 0
         self.last_state: TicketState | None = None
 
-    async def ainvoke(self, state: TicketState) -> TicketState:
+    async def ainvoke(
+        self,
+        state: TicketState,
+        config: dict[str, Any] | None = None,
+    ) -> TicketState:
+        del config
         self.invocations += 1
         self.last_state = state
         if self.snapshot is not None:
@@ -365,7 +370,12 @@ class _BlockingGraph(_RecordingGraph):
         self.started = asyncio.Event()
         self.release_graph = asyncio.Event()
 
-    async def ainvoke(self, state: TicketState) -> TicketState:
+    async def ainvoke(
+        self,
+        state: TicketState,
+        config: dict[str, Any] | None = None,
+    ) -> TicketState:
+        del config
         self.invocations += 1
         self.last_state = state
         self.started.set()

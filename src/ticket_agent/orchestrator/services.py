@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ticket_agent.orchestrator.state import TicketState
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalDecision:
+    approved: bool
+    status: str | None = None
+    reason: str | None = None
 
 
 class PlannerService(Protocol):
@@ -12,7 +20,7 @@ class PlannerService(Protocol):
 
 
 class ApprovalService(Protocol):
-    async def request_approval(self, state: TicketState) -> bool: ...
+    async def request_approval(self, state: TicketState) -> bool | ApprovalDecision: ...
 
 
 class ImplementationService(Protocol):
