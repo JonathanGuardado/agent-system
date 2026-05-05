@@ -30,7 +30,10 @@ def test_execution_approval_posts_to_slack_and_pauses_before_implement(tmp_path)
         assert approval.slack_thread_ts == "thr-1"
         assert "Approve the generated plan" in approval.plan_summary
         assert scenario.slack.messages
-        assert "approve AGENT-123" in scenario.slack.messages[0][3]
+        message = scenario.slack.messages[0][3]
+        assert "approve AGENT-123" in message
+        assert "src/approval.py" in message
+        assert "Implementation must wait for Slack approval" in message
         assert scenario.implementation.calls == []
     finally:
         scenario.close()
@@ -139,6 +142,83 @@ def test_late_approve_does_not_resume_expired_approval(tmp_path):
         scenario.close()
 
 
+def test_execution_approval_store_public_repository_methods(tmp_path):
+    clock = _MutableClock()
+    store = SQLiteExecutionApprovalStore(tmp_path / "approvals.sqlite3", clock=clock)
+
+    try:
+        pending = store.create_pending(
+            ticket_key="AGENT-123",
+            slack_channel="C-EXEC",
+            slack_thread_ts="thr-1",
+            plan_summary="Review the implementation plan.",
+            timeout=timedelta(seconds=5),
+        )
+        assert pending.status == "pending"
+        assert store.is_approved("AGENT-123") is False
+
+        approved = store.approve("AGENT-123")
+        assert approved is not None
+        assert approved.status == "approved"
+        assert store.is_approved("AGENT-123") is True
+
+        store.create_pending(
+            ticket_key="AGENT-456",
+            slack_channel="C-EXEC",
+            slack_thread_ts="thr-2",
+            plan_summary="Reject this plan.",
+        )
+        rejected = store.reject("AGENT-456")
+        assert rejected is not None
+        assert rejected.status == "rejected"
+
+        store.create_pending(
+            ticket_key="AGENT-789",
+            slack_channel="C-EXEC",
+            slack_thread_ts="thr-3",
+            plan_summary="This plan expires.",
+            timeout=timedelta(seconds=5),
+        )
+        clock.now += timedelta(seconds=6)
+        assert store.expire_pending(clock.now) == 1
+        expired = store.get("AGENT-789")
+        assert expired is not None
+        assert expired.status == "expired"
+    finally:
+        store.close()
+
+
+def test_execution_approval_store_does_not_reuse_terminal_approval(tmp_path):
+    clock = _MutableClock()
+    store = SQLiteExecutionApprovalStore(tmp_path / "approvals.sqlite3", clock=clock)
+
+    try:
+        store.create_pending(
+            ticket_key="AGENT-123",
+            slack_channel="C-OLD",
+            slack_thread_ts="old-thread",
+            plan_summary="Old plan.",
+        )
+        assert store.approve("AGENT-123") is not None
+
+        clock.now += timedelta(minutes=1)
+        pending = store.ensure_pending(
+            ticket_key="AGENT-123",
+            slack_channel="C-NEW",
+            slack_thread_ts="new-thread",
+            plan_summary="New plan.",
+        )
+
+        assert pending.created is True
+        assert pending.approval.status == "pending"
+        assert pending.approval.slack_channel == "C-NEW"
+        assert pending.approval.slack_thread_ts == "new-thread"
+        assert pending.approval.plan_summary == "New plan."
+        assert store.is_approved("AGENT-123") is False
+    finally:
+        store.close()
+
+
 class _Scenario:
     def __init__(
         self,
@@ -209,7 +289,11 @@ class _FakeSlack:
 
 class _Planner:
     async def plan(self, state: TicketState) -> dict[str, Any]:
-        return {"summary": "Approve the generated plan before writing code."}
+        return {
+            "summary": "Approve the generated plan before writing code.",
+            "files_to_modify": ["src/approval.py"],
+            "risks": ["Implementation must wait for Slack approval"],
+        }
 
 
 class _Implementation:

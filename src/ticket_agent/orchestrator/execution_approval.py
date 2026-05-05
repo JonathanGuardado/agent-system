@@ -96,6 +96,30 @@ class SQLiteExecutionApprovalStore:
             return None
         return _row_to_approval(row)
 
+    def create_pending(
+        self,
+        *,
+        ticket_key: str,
+        slack_channel: str,
+        slack_thread_ts: str,
+        plan_summary: str,
+        timeout: timedelta = _DEFAULT_TIMEOUT,
+    ) -> ExecutionApproval:
+        """Create a fresh pending approval for a ticket."""
+
+        now = _ensure_aware(self._clock())
+        approval = _pending_approval(
+            ticket_key=ticket_key,
+            slack_channel=slack_channel,
+            slack_thread_ts=slack_thread_ts,
+            plan_summary=plan_summary,
+            now=now,
+            timeout=timeout,
+        )
+        with self._conn_lock, _write_transaction(self._conn):
+            self._upsert_approval_locked(approval)
+        return approval
+
     def ensure_pending(
         self,
         *,
@@ -119,18 +143,29 @@ class SQLiteExecutionApprovalStore:
             ).fetchone()
             if row is not None:
                 approval = _row_to_approval(row)
-                if approval.status == "pending" and approval.expires_at <= now:
-                    approval = self._mark_status_locked(ticket_key, "expired")
-                return PendingApprovalResult(approval=approval, created=False)
+                if approval.status == "pending":
+                    if approval.expires_at <= now:
+                        approval = self._mark_status_locked(ticket_key, "expired")
+                    return PendingApprovalResult(approval=approval, created=False)
 
-            approval = ExecutionApproval(
+                approval = _pending_approval(
+                    ticket_key=ticket_key,
+                    slack_channel=slack_channel,
+                    slack_thread_ts=slack_thread_ts,
+                    plan_summary=plan_summary,
+                    now=now,
+                    timeout=timeout,
+                )
+                self._upsert_approval_locked(approval)
+                return PendingApprovalResult(approval=approval, created=True)
+
+            approval = _pending_approval(
                 ticket_key=ticket_key,
                 slack_channel=slack_channel,
                 slack_thread_ts=slack_thread_ts,
                 plan_summary=plan_summary,
-                status="pending",
-                created_at=now,
-                expires_at=now + timeout,
+                now=now,
+                timeout=timeout,
             )
             self._conn.execute(
                 """
@@ -144,11 +179,17 @@ class SQLiteExecutionApprovalStore:
             )
         return PendingApprovalResult(approval=approval, created=True)
 
+    def approve(self, ticket_key: str) -> ExecutionApproval | None:
+        return self.mark_approved(ticket_key)
+
     def mark_approved(self, ticket_key: str) -> ExecutionApproval | None:
         approval = self._mark_status(ticket_key, "approved", require_pending=True)
         if approval is not None and approval.status == "approved":
             return approval
         return None
+
+    def reject(self, ticket_key: str) -> ExecutionApproval | None:
+        return self.mark_rejected(ticket_key)
 
     def mark_rejected(self, ticket_key: str) -> ExecutionApproval | None:
         approval = self._mark_status(ticket_key, "rejected", require_pending=True)
@@ -156,14 +197,18 @@ class SQLiteExecutionApprovalStore:
             return approval
         return None
 
+    def is_approved(self, ticket_key: str) -> bool:
+        approval = self.get(ticket_key)
+        return approval is not None and approval.status == "approved"
+
     def mark_expired(self, ticket_key: str) -> ExecutionApproval | None:
         approval = self._mark_status(ticket_key, "expired", require_pending=True)
         if approval is not None and approval.status == "expired":
             return approval
         return None
 
-    def expire_due(self) -> int:
-        now = _ensure_aware(self._clock())
+    def expire_pending(self, now: datetime) -> int:
+        now = _ensure_aware(now)
         with self._conn_lock, _write_transaction(self._conn):
             cursor = self._conn.execute(
                 """
@@ -174,6 +219,9 @@ class SQLiteExecutionApprovalStore:
                 (_datetime_text(now),),
             )
         return cursor.rowcount
+
+    def expire_due(self) -> int:
+        return self.expire_pending(self._clock())
 
     def _mark_status(
         self,
@@ -222,6 +270,25 @@ class SQLiteExecutionApprovalStore:
         ).fetchone()
         assert row is not None
         return _row_to_approval(row)
+
+    def _upsert_approval_locked(self, approval: ExecutionApproval) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO execution_approvals (
+                ticket_key, slack_channel, slack_thread_ts, plan_summary,
+                status, created_at, expires_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(ticket_key) DO UPDATE SET
+                slack_channel = excluded.slack_channel,
+                slack_thread_ts = excluded.slack_thread_ts,
+                plan_summary = excluded.plan_summary,
+                status = excluded.status,
+                created_at = excluded.created_at,
+                expires_at = excluded.expires_at
+            """,
+            _approval_values(approval),
+        )
 
     def _initialize(self) -> None:
         with self._conn_lock, _write_transaction(self._conn):
@@ -285,7 +352,7 @@ class SlackExecutionApprovalService:
                 approval.slack_channel,
                 approval.slack_thread_ts,
                 self._poster_user_id,
-                _format_approval_message(approval),
+                _format_approval_message(approval, state),
             )
 
         resume_value = interrupt(
@@ -464,6 +531,9 @@ def _plan_summary(state: TicketState) -> str:
         summary = state.decomposition.get("summary")
         if isinstance(summary, str) and summary.strip():
             return summary.strip()
+        plan = state.decomposition.get("plan")
+        if isinstance(plan, str) and plan.strip():
+            return plan.strip()
         try:
             return json.dumps(state.decomposition, sort_keys=True)
         except TypeError:
@@ -473,18 +543,51 @@ def _plan_summary(state: TicketState) -> str:
     return state.summary
 
 
-def _format_approval_message(approval: ExecutionApproval) -> str:
-    return "\n".join(
+def _format_approval_message(
+    approval: ExecutionApproval,
+    state: TicketState | None = None,
+) -> str:
+    lines = [
+        f"Execution approval requested for {approval.ticket_key}.",
+        "",
+        "Plan:",
+        approval.plan_summary,
+    ]
+    details = _plan_details(state)
+    if details:
+        lines.extend(["", *details])
+    lines.extend(
         [
-            f"Execution approval requested for {approval.ticket_key}.",
             "",
-            "Plan:",
-            approval.plan_summary,
-            "",
-            f"Reply `approve {approval.ticket_key}` to continue or "
-            f"`reject {approval.ticket_key}` to stop.",
+            "Command examples:",
+            f"approve {approval.ticket_key}",
+            f"reject {approval.ticket_key}",
         ]
     )
+    return "\n".join(lines)
+
+
+def _plan_details(state: TicketState | None) -> list[str]:
+    if state is None or not isinstance(state.decomposition, Mapping):
+        return []
+
+    details: list[str] = []
+    files = _string_list(state.decomposition.get("files_to_modify"))
+    if files:
+        details.append("Files:")
+        details.extend(f"- {path}" for path in files)
+
+    risks = _string_list(state.decomposition.get("risks"))
+    if risks:
+        details.append("Risks:")
+        details.extend(f"- {risk}" for risk in risks)
+    return details
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
 
 def _connect(db_path: str | Path, busy_timeout_ms: int) -> sqlite3.Connection:
@@ -535,6 +638,26 @@ def _approval_values(approval: ExecutionApproval) -> tuple[str, ...]:
         approval.status,
         _datetime_text(approval.created_at),
         _datetime_text(approval.expires_at),
+    )
+
+
+def _pending_approval(
+    *,
+    ticket_key: str,
+    slack_channel: str,
+    slack_thread_ts: str,
+    plan_summary: str,
+    now: datetime,
+    timeout: timedelta,
+) -> ExecutionApproval:
+    return ExecutionApproval(
+        ticket_key=ticket_key,
+        slack_channel=slack_channel,
+        slack_thread_ts=slack_thread_ts,
+        plan_summary=plan_summary,
+        status="pending",
+        created_at=now,
+        expires_at=now + timeout,
     )
 
 
