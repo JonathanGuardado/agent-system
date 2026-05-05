@@ -15,7 +15,6 @@ from typing import Any, Literal, Protocol
 
 from langgraph.types import Command, interrupt
 
-from ticket_agent.intake.approval_flow import SlackPoster
 from ticket_agent.orchestrator.services import ApprovalDecision
 from ticket_agent.orchestrator.state import TicketState
 
@@ -60,6 +59,17 @@ class ResumableGraph(Protocol):
         config: Mapping[str, Any],
     ) -> Awaitable[Any]:
         """Resume a checkpointed graph thread."""
+
+
+class SlackPoster(Protocol):
+    async def post_thread_reply(
+        self,
+        channel: str | None,
+        thread_ts: str,
+        user_id: str,
+        text: str,
+    ) -> None:
+        """Post a plain-text reply to a Slack thread."""
 
 
 class SQLiteExecutionApprovalStore:
