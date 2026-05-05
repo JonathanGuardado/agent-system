@@ -42,6 +42,7 @@ from ticket_agent.orchestrator.local_services import (
     LocalImplementationService,
 )
 from ticket_agent.orchestrator.model_services import (
+    IterativeImplementationService,
     ModelRouterPlannerService,
     ModelRouterProtocol,
     ModelRouterReviewService,
@@ -155,8 +156,11 @@ def build_runtime(
     )
 
     router = model_router
-    if planner is None or review is None:
+    if planner is None or implementation is None or review is None:
         router = router or create_model_router()
+    implementation_loop = (
+        None if implementation is not None else IterativeImplementationService(router)
+    )
 
     execution_service = JiraExecutionService(
         jira_client,
@@ -171,7 +175,10 @@ def build_runtime(
             default_channel=approval_channel,
         ),
         implementation=implementation
-        or LocalImplementationService(contract_dir=runtime_config.contract_dir),
+        or LocalImplementationService(
+            contract_dir=runtime_config.contract_dir,
+            implementation_step=implementation_loop.implement_context,
+        ),
         tests=tests or AdapterTestService(contract_dir=runtime_config.contract_dir),
         review=review or ModelRouterReviewService(router),
         pull_request=pull_request

@@ -44,6 +44,7 @@ from ticket_agent.orchestrator.local_services import (
     LocalImplementationService,
 )
 from ticket_agent.orchestrator.model_services import (
+    IterativeImplementationService,
     ModelRouterImplementationService,
     ModelRouterPlannerService,
     ModelRouterProtocol,
@@ -85,6 +86,7 @@ __all__ = [
     "JiraEscalationService",
     "JiraLabelApprovalService",
     "ImplementationService",
+    "IterativeImplementationService",
     "LocalImplementationService",
     "LockManager",
     "ModelRouterImplementationService",

@@ -9,6 +9,7 @@ import pytest
 
 from ticket_agent.orchestrator.graph import build_ticket_graph
 from ticket_agent.orchestrator.model_services import (
+    IterativeImplementationService,
     ModelRouterImplementationService,
     ModelRouterPlannerService,
     ModelRouterReviewService,
@@ -672,6 +673,335 @@ def test_implementation_includes_failed_test_excerpt_on_retry(tmp_path):
     assert "implementation_attempts: 1" in user_message
 
 
+def test_iterative_implementation_reads_writes_and_finishes_through_adapter(tmp_path):
+    adapter = _LoopFileAdapter(reads={"src/users.py": "VALUE = 1\n"})
+    router = _SequenceRouter(
+        {
+            "code.implement": [
+                {
+                    "action": "read_file",
+                    "args": {"path": "src/users.py"},
+                },
+                {
+                    "action": "write_file",
+                    "args": {
+                        "path": "src/users.py",
+                        "content": "VALUE = 2\n",
+                    },
+                },
+                {
+                    "action": "finish",
+                    "args": {
+                        "summary": "Updated user pagination value.",
+                        "notes": ["Touched one file"],
+                    },
+                },
+            ]
+        }
+    )
+    factory = _AdapterFactory(adapter)
+
+    result = asyncio.run(
+        IterativeImplementationService(router, factory).implement(
+            _state(worktree_path=str(tmp_path))
+        )
+    )
+
+    assert factory.calls == [str(tmp_path)]
+    assert adapter.reads == ["src/users.py"]
+    assert adapter.writes == [("src/users.py", "VALUE = 2\n")]
+    assert result == {
+        "implementation_result": {
+            "status": "success",
+            "summary": "Updated user pagination value.",
+            "changed_files": ["src/users.py"],
+            "notes": ["Touched one file"],
+            "errors": [],
+        }
+    }
+    assert any(
+        "tool_result" in message["content"]
+        for message in router.calls[1].messages
+    )
+
+
+def test_iterative_implementation_lists_directory_through_adapter(tmp_path):
+    adapter = _LoopFileAdapter(files=("src/users.py", "src/orders.py"))
+    router = _SequenceRouter(
+        {
+            "code.implement": [
+                {"action": "list_dir", "args": {"path": "src"}},
+                {
+                    "action": "finish",
+                    "args": {"summary": "Inspected source files."},
+                },
+            ]
+        }
+    )
+
+    result = asyncio.run(
+        IterativeImplementationService(
+            router,
+            _AdapterFactory(adapter),
+        ).implement(_state(worktree_path=str(tmp_path)))
+    )
+
+    assert adapter.lists == ["src"]
+    assert result["implementation_result"]["status"] == "success"
+    assert any(
+        "src/users.py" in message["content"]
+        for message in router.calls[1].messages
+    )
+
+
+def test_iterative_implementation_returns_failed_result_for_path_escape(tmp_path):
+    router = _SequenceRouter(
+        {
+            "code.implement": [
+                {
+                    "action": "write_file",
+                    "args": {"path": "../outside.py", "content": "nope\n"},
+                }
+            ]
+        }
+    )
+
+    result = asyncio.run(
+        IterativeImplementationService(router).implement(
+            _state(worktree_path=str(tmp_path))
+        )
+    )
+
+    implementation_result = result["implementation_result"]
+    assert implementation_result["status"] == "failed"
+    assert implementation_result["changed_files"] == []
+    assert implementation_result["error_code"] == "tool_execution_failed"
+    assert "outside" in implementation_result["error"]
+
+
+def test_iterative_implementation_returns_failed_result_for_protected_write(
+    tmp_path,
+):
+    router = _SequenceRouter(
+        {
+            "code.implement": [
+                {
+                    "action": "write_file",
+                    "args": {
+                        "path": ".github/workflows/ci.yml",
+                        "content": "name: ci\n",
+                    },
+                }
+            ]
+        }
+    )
+
+    result = asyncio.run(
+        IterativeImplementationService(router).implement(
+            _state(worktree_path=str(tmp_path))
+        )
+    )
+
+    implementation_result = result["implementation_result"]
+    assert implementation_result["status"] == "failed"
+    assert implementation_result["changed_files"] == []
+    assert implementation_result["error_code"] == "tool_execution_failed"
+    assert "policy violation" in implementation_result["error"]
+
+
+def test_iterative_implementation_malformed_json_fails_cleanly(tmp_path):
+    router = _SequenceRouter({"code.implement": ["not json"]})
+
+    result = asyncio.run(
+        IterativeImplementationService(router).implement(
+            _state(worktree_path=str(tmp_path))
+        )
+    )
+
+    implementation_result = result["implementation_result"]
+    assert implementation_result["status"] == "failed"
+    assert implementation_result["error_code"] == "invalid_tool_call"
+    assert "could not be parsed" in implementation_result["error"]
+
+
+def test_iterative_implementation_unknown_action_fails_cleanly(tmp_path):
+    router = _SequenceRouter(
+        {
+            "code.implement": [
+                {
+                    "action": "delete_file",
+                    "args": {"path": "src/users.py"},
+                }
+            ]
+        }
+    )
+
+    result = asyncio.run(
+        IterativeImplementationService(router).implement(
+            _state(worktree_path=str(tmp_path))
+        )
+    )
+
+    implementation_result = result["implementation_result"]
+    assert implementation_result["status"] == "failed"
+    assert implementation_result["error_code"] == "unknown_action"
+    assert "delete_file" in implementation_result["error"]
+
+
+def test_iterative_implementation_max_turns_exhausted_fails_without_hanging(
+    tmp_path,
+):
+    adapter = _LoopFileAdapter(reads={"src/users.py": "VALUE = 1\n"})
+    router = _SequenceRouter(
+        {
+            "code.implement": [
+                {"action": "read_file", "args": {"path": "src/users.py"}},
+                {"action": "read_file", "args": {"path": "src/users.py"}},
+            ]
+        }
+    )
+
+    result = asyncio.run(
+        IterativeImplementationService(
+            router,
+            _AdapterFactory(adapter),
+            max_turns=2,
+        ).implement(_state(worktree_path=str(tmp_path)))
+    )
+
+    implementation_result = result["implementation_result"]
+    assert len(router.calls) == 2
+    assert implementation_result["status"] == "failed"
+    assert implementation_result["error_code"] == "max_turns_exhausted"
+
+
+def test_iterative_implementation_includes_failed_test_excerpt_on_retry(tmp_path):
+    router = _SequenceRouter(
+        {
+            "code.implement": [
+                {
+                    "action": "finish",
+                    "args": {"summary": "No more edits needed."},
+                }
+            ]
+        }
+    )
+
+    asyncio.run(
+        IterativeImplementationService(
+            router,
+            _AdapterFactory(_LoopFileAdapter()),
+        ).implement(
+            _state(
+                worktree_path=str(tmp_path),
+                implementation_attempts=1,
+                test_result={
+                    "status": "failed",
+                    "tests_passed": False,
+                    "stdout": "FAILED tests/test_users.py::test_pagination",
+                    "stderr": "AssertionError: page_size ignored",
+                },
+            )
+        )
+    )
+
+    user_message = router.calls[0].messages[1]["content"]
+    assert "previous_test_failure" in user_message
+    assert "AssertionError: page_size ignored" in user_message
+    assert "current_implementation_attempt: 2" in user_message
+
+
+def test_iterative_graph_retry_uses_failed_test_excerpt_then_opens_pr(tmp_path):
+    adapter = _LoopFileAdapter()
+    router = _SequenceRouter(
+        {
+            "code.implement": [
+                {
+                    "action": "write_file",
+                    "args": {"path": "src/feature.py", "content": "VALUE = 1\n"},
+                },
+                {"action": "finish", "args": {"summary": "First attempt."}},
+                {
+                    "action": "write_file",
+                    "args": {"path": "src/feature.py", "content": "VALUE = 2\n"},
+                },
+                {"action": "finish", "args": {"summary": "Retry fixed tests."}},
+            ],
+            "code.verify": {"approved": True, "reasoning": "Looks good."},
+        }
+    )
+    runner = TicketNodeRunner(
+        planner=_Planner(),
+        approval=_Approval(),
+        implementation=IterativeImplementationService(
+            router,
+            _AdapterFactory(adapter),
+        ),
+        tests=_SequencedTests([False, True]),
+        review=ModelRouterReviewService(router),
+        pull_request=_PullRequest(),
+        escalation=_Escalation(),
+    )
+    graph = build_ticket_graph(runner)
+
+    result = asyncio.run(graph.ainvoke(_state(worktree_path=str(tmp_path))))
+    state = TicketState.model_validate(result)
+
+    assert state.workflow_status == "completed"
+    assert state.pull_request_url == "https://github.test/acme/repo/pull/1"
+    assert state.visited_nodes == [
+        "plan",
+        "request_execution_approval",
+        "implement",
+        "run_tests",
+        "implement",
+        "run_tests",
+        "review",
+        "open_pull_request",
+        "report",
+    ]
+    assert adapter.writes == [
+        ("src/feature.py", "VALUE = 1\n"),
+        ("src/feature.py", "VALUE = 2\n"),
+    ]
+    assert "previous_test_failure" in router.calls[2].messages[1]["content"]
+    assert "AssertionError: still broken" in router.calls[2].messages[1]["content"]
+
+
+def test_iterative_graph_retry_exhaustion_escalates(tmp_path):
+    router = _SequenceRouter(
+        {
+            "code.implement": [
+                {"action": "finish", "args": {"summary": "Attempt one."}},
+                {"action": "finish", "args": {"summary": "Attempt two."}},
+            ]
+        }
+    )
+    escalation = _CapturingEscalation()
+    runner = TicketNodeRunner(
+        planner=_Planner(),
+        approval=_Approval(),
+        implementation=IterativeImplementationService(
+            router,
+            _AdapterFactory(_LoopFileAdapter()),
+        ),
+        tests=_SequencedTests([False, False]),
+        review=ModelRouterReviewService(router),
+        pull_request=_PullRequest(),
+        escalation=escalation,
+    )
+    graph = build_ticket_graph(runner)
+
+    result = asyncio.run(
+        graph.ainvoke(_state(worktree_path=str(tmp_path), max_attempts=2))
+    )
+    state = TicketState.model_validate(result)
+
+    assert state.workflow_status == "escalated"
+    assert state.implementation_attempts == 2
+    assert escalation.calls == [("AGENT-123", "tests failed")]
+
+
 def test_service_backed_graph_completes_with_model_services():
     adapter = _FakeFileAdapter()
     router = _FakeRouter(
@@ -765,6 +1095,29 @@ class _FakeRouter:
         return self._responses[capability]
 
 
+class _SequenceRouter:
+    def __init__(self, responses: dict[str, list[Any] | Any]) -> None:
+        self._responses = {
+            capability: list(response) if isinstance(response, list) else response
+            for capability, response in responses.items()
+        }
+        self.calls: list[_RouterCall] = []
+
+    async def invoke(
+        self,
+        capability: str,
+        messages: list[dict[str, str]],
+        **kwargs: Any,
+    ) -> Any:
+        self.calls.append(_RouterCall(capability, messages, kwargs))
+        response = self._responses[capability]
+        if isinstance(response, list):
+            if not response:
+                raise AssertionError(f"no response left for {capability}")
+            return response.pop(0)
+        return response
+
+
 class _FakeFileAdapter:
     def __init__(self, error: Exception | None = None) -> None:
         self._error = error
@@ -777,14 +1130,54 @@ class _FakeFileAdapter:
         self.writes.append((path, content))
 
 
+class _LoopFileAdapter:
+    def __init__(
+        self,
+        *,
+        reads: dict[str, str] | None = None,
+        files: tuple[str, ...] = (),
+        error: Exception | None = None,
+    ) -> None:
+        self._read_values = reads or {}
+        self._files = files
+        self._error = error
+        self.reads: list[str] = []
+        self.lists: list[str] = []
+        self.writes: list[tuple[str, str]] = []
+
+    def read_text(self, path: str, *, encoding: str = "utf-8") -> str:
+        del encoding
+        if self._error is not None:
+            raise self._error
+        self.reads.append(path)
+        return self._read_values.get(path, "")
+
+    def list_files(self, path: str = ".") -> tuple[str, ...]:
+        if self._error is not None:
+            raise self._error
+        self.lists.append(path)
+        return self._files
+
+    def write_text(self, path: str, content: str, *, encoding: str = "utf-8") -> None:
+        del encoding
+        if self._error is not None:
+            raise self._error
+        self.writes.append((path, content))
+
+
 class _AdapterFactory:
-    def __init__(self, adapter: _FakeFileAdapter | None = None) -> None:
+    def __init__(self, adapter: Any | None = None) -> None:
         self._adapter = adapter or _FakeFileAdapter()
         self.calls: list[str] = []
 
-    def __call__(self, worktree_path: str) -> _FakeFileAdapter:
+    def __call__(self, worktree_path: str) -> Any:
         self.calls.append(worktree_path)
         return self._adapter
+
+
+class _Planner:
+    async def plan(self, state: TicketState) -> dict[str, Any]:
+        return {"plan": "Edit the requested files."}
 
 
 class _Approval:
@@ -797,6 +1190,20 @@ class _Tests:
         return {"status": "passed", "tests_passed": True}
 
 
+class _SequencedTests:
+    def __init__(self, results: list[bool]) -> None:
+        self._results = results
+
+    async def run_tests(self, state: TicketState) -> dict[str, Any]:
+        passed = self._results.pop(0)
+        return {
+            "status": "passed" if passed else "failed",
+            "tests_passed": passed,
+            "stdout": "ok" if passed else "FAILED tests/test_feature.py::test_feature",
+            "stderr": "" if passed else "AssertionError: still broken",
+        }
+
+
 class _PullRequest:
     async def open_pull_request(self, state: TicketState) -> str:
         return "https://github.test/acme/repo/pull/1"
@@ -805,3 +1212,11 @@ class _PullRequest:
 class _Escalation:
     async def escalate(self, state: TicketState, reason: str) -> None:
         raise AssertionError(f"should not escalate: {reason}")
+
+
+class _CapturingEscalation:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def escalate(self, state: TicketState, reason: str) -> None:
+        self.calls.append((state.ticket_key, reason))

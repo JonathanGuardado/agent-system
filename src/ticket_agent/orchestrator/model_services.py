@@ -6,9 +6,12 @@ import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PureWindowsPath
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ticket_agent.adapters.local.file_adapter import LocalFileAdapter
+from ticket_agent.domain.errors import AgentSystemError
 from ticket_agent.orchestrator.repo_context import (
     RepoContext,
     RepoContextBuilder,
@@ -30,6 +33,7 @@ class ModelRouterProtocol(Protocol):
 
 
 FileAdapterFactory = Callable[[str], Any]
+ToolAction = Literal["read_file", "write_file", "list_dir", "finish"]
 
 _MODEL_ENVELOPE_FIELDS = ("content", "text", "message", "data")
 _MODEL_ENVELOPE_METADATA_FIELDS = frozenset(
@@ -45,6 +49,47 @@ _MODEL_ENVELOPE_METADATA_FIELDS = frozenset(
     }
 )
 _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
+_TOOL_ACTIONS = frozenset({"read_file", "write_file", "list_dir", "finish"})
+_DEFAULT_MAX_TOOL_RESULT_CHARS = 6000
+
+
+class ToolCallValidationError(ValueError):
+    """Raised when a model response is not a valid implementation tool call."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class ToolCall(BaseModel):
+    """Provider-agnostic JSON tool call used by iterative implementation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: ToolAction
+    args: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_args_for_action(self) -> "ToolCall":
+        if self.action not in _TOOL_ACTIONS:
+            raise ValueError(f"unknown action: {self.action!r}")
+
+        if self.action in {"read_file", "write_file", "list_dir"}:
+            _tool_arg_string(self.args, "path", self.action)
+        if self.action == "write_file":
+            _tool_arg_string(
+                self.args,
+                "content",
+                self.action,
+                allow_empty=True,
+            )
+        if self.action == "finish":
+            _tool_arg_string(self.args, "summary", self.action)
+            notes = self.args.get("notes")
+            if notes is not None:
+                _tool_arg_string_list(notes, "notes", self.action)
+        return self
 
 
 class ModelRouterPlannerService:
@@ -121,6 +166,174 @@ class ModelRouterImplementationService:
             "notes": _optional_string_list(payload.get("notes"), "notes"),
         }
         return {"implementation_result": result}
+
+
+class IterativeImplementationService:
+    """Run a provider-agnostic JSON tool-call implementation loop."""
+
+    def __init__(
+        self,
+        model_router: ModelRouterProtocol,
+        file_adapter_factory: FileAdapterFactory | None = None,
+        repo_context_builder: RepoContextBuilder | None = None,
+        *,
+        max_turns: int = 12,
+        tool_result_max_chars: int = _DEFAULT_MAX_TOOL_RESULT_CHARS,
+    ) -> None:
+        if max_turns < 1:
+            raise ValueError("max_turns must be at least 1")
+        if tool_result_max_chars < 256:
+            raise ValueError("tool_result_max_chars must be at least 256")
+
+        self._model_router = model_router
+        self._file_adapter_factory = file_adapter_factory or LocalFileAdapter
+        self._repo_context_builder = repo_context_builder or RepoContextBuilder()
+        self._max_turns = max_turns
+        self._tool_result_max_chars = tool_result_max_chars
+
+    async def implement(self, state: TicketState) -> dict[str, Any]:
+        if not state.worktree_path:
+            return {
+                "implementation_result": _failed_implementation_result(
+                    "Implementation could not start.",
+                    ["worktree_path is required to apply file writes"],
+                    changed_files=[],
+                )
+            }
+
+        files = self._file_adapter_factory(state.worktree_path)
+        result = await self._run_loop(state, files)
+        return {"implementation_result": result}
+
+    async def implement_context(self, context: Any) -> dict[str, Any]:
+        """Run against a prepared LocalImplementationService context."""
+
+        return await self._run_loop(context.state, context.files)
+
+    async def _run_loop(self, state: TicketState, files: Any) -> dict[str, Any]:
+        repo_context = self._repo_context_builder.build(state)
+        messages = _implementation_loop_messages(state, repo_context)
+        changed_files: list[str] = []
+
+        for turn_index in range(self._max_turns):
+            try:
+                response = await self._model_router.invoke(
+                    capability="code.implement",
+                    messages=messages,
+                    ticket_id=state.ticket_key,
+                    metadata={
+                        "workflow_node": "implement",
+                        "implementation_turn": turn_index + 1,
+                    },
+                )
+                payload = _coerce_model_payload(response)
+                tool_call = _tool_call_from_payload(payload)
+            except (ModelServiceError, ToolCallValidationError) as exc:
+                return _failed_implementation_result(
+                    "Implementation stopped because the model returned an invalid "
+                    "tool call.",
+                    [str(exc)],
+                    changed_files=changed_files,
+                    code=getattr(exc, "code", "invalid_tool_call"),
+                )
+            except Exception as exc:
+                return _failed_implementation_result(
+                    "Implementation stopped because the model call failed.",
+                    [f"{type(exc).__name__}: {exc}"],
+                    changed_files=changed_files,
+                    code="model_invoke_failed",
+                )
+
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": _json_for_prompt(tool_call.model_dump()),
+                }
+            )
+
+            if tool_call.action == "finish":
+                return _successful_implementation_result(
+                    tool_call.args["summary"],
+                    changed_files,
+                    _optional_tool_notes(tool_call.args),
+                )
+
+            tool_result = self._execute_tool_call(files, tool_call, changed_files)
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "tool_result: "
+                        f"{_json_for_prompt(tool_result)}"
+                    ),
+                }
+            )
+
+            if tool_result.get("ok") is False:
+                return _failed_implementation_result(
+                    "Implementation stopped because a tool call failed.",
+                    [_optional_string(tool_result.get("error"), "tool call failed")],
+                    changed_files=changed_files,
+                    code=_optional_string(
+                        tool_result.get("error_code"),
+                        "tool_failed",
+                    ),
+                )
+
+        return _failed_implementation_result(
+            "Implementation stopped before the model called finish.",
+            [f"max_turns exhausted after {self._max_turns} turns"],
+            changed_files=changed_files,
+            code="max_turns_exhausted",
+        )
+
+    def _execute_tool_call(
+        self,
+        files: Any,
+        tool_call: ToolCall,
+        changed_files: list[str],
+    ) -> dict[str, Any]:
+        try:
+            if tool_call.action == "read_file":
+                path = tool_call.args["path"]
+                content = files.read_text(path)
+                return {
+                    "ok": True,
+                    "action": "read_file",
+                    "path": path,
+                    **_truncated_content(content, self._tool_result_max_chars),
+                }
+
+            if tool_call.action == "list_dir":
+                path = tool_call.args["path"]
+                listed_files = list(files.list_files(path))
+                return {
+                    "ok": True,
+                    "action": "list_dir",
+                    "path": path,
+                    **_truncated_file_list(
+                        listed_files,
+                        self._tool_result_max_chars,
+                    ),
+                }
+
+            path = tool_call.args["path"]
+            content = tool_call.args["content"]
+            files.write_text(path, content)
+            if path not in changed_files:
+                changed_files.append(path)
+            return {
+                "ok": True,
+                "action": "write_file",
+                "path": path,
+            }
+        except (AgentSystemError, OSError, ValueError, RuntimeError) as exc:
+            return {
+                "ok": False,
+                "action": tool_call.action,
+                "error": _truncate_text(str(exc), self._tool_result_max_chars),
+                "error_code": "tool_execution_failed",
+            }
 
 
 class ModelRouterReviewService:
@@ -302,6 +515,139 @@ def _balanced_json_object(text: str, start_index: int) -> str | None:
     return None
 
 
+def _tool_call_from_payload(payload: Mapping[str, Any]) -> ToolCall:
+    action = payload.get("action")
+    if not isinstance(action, str) or not action.strip():
+        raise ToolCallValidationError(
+            "invalid_tool_call",
+            "tool call must include action as a string",
+        )
+    if action not in _TOOL_ACTIONS:
+        raise ToolCallValidationError(
+            "unknown_action",
+            f"unknown tool action: {action!r}",
+        )
+    if "args" not in payload:
+        raise ToolCallValidationError(
+            "invalid_tool_call",
+            "tool call must include args as an object",
+        )
+    if not isinstance(payload["args"], Mapping):
+        raise ToolCallValidationError(
+            "invalid_tool_call",
+            "tool call args must be an object",
+        )
+
+    try:
+        return ToolCall.model_validate(payload)
+    except ValidationError as exc:
+        raise ToolCallValidationError(
+            "invalid_tool_call",
+            f"invalid tool call: {exc.errors()[0]['msg']}",
+        ) from exc
+
+
+def _tool_arg_string(
+    args: Mapping[str, Any],
+    name: str,
+    action: str,
+    *,
+    allow_empty: bool = False,
+) -> str:
+    value = args.get(name)
+    valid = isinstance(value, str) and (allow_empty or bool(value.strip()))
+    if not valid:
+        raise ValueError(f"{action}.args.{name} must be a string")
+    return value
+
+
+def _tool_arg_string_list(value: Any, name: str, action: str) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ValueError(f"{action}.args.{name} must be a list of strings")
+    result: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            raise ValueError(
+                f"{action}.args.{name}[{index}] must be a string"
+            )
+        result.append(item)
+    return result
+
+
+def _successful_implementation_result(
+    summary: str,
+    changed_files: Sequence[str],
+    notes: Sequence[str],
+) -> dict[str, Any]:
+    return {
+        "status": "success",
+        "summary": summary,
+        "changed_files": list(changed_files),
+        "notes": list(notes),
+        "errors": [],
+    }
+
+
+def _failed_implementation_result(
+    summary: str,
+    errors: Sequence[str],
+    *,
+    changed_files: Sequence[str],
+    code: str = "implementation_failed",
+) -> dict[str, Any]:
+    error_list = [error for error in errors if error]
+    result: dict[str, Any] = {
+        "status": "failed",
+        "summary": summary,
+        "changed_files": list(changed_files),
+        "notes": [],
+        "errors": error_list,
+        "error_code": code,
+    }
+    if error_list:
+        result["error"] = error_list[0]
+    return result
+
+
+def _optional_tool_notes(args: Mapping[str, Any]) -> list[str]:
+    notes = args.get("notes")
+    if notes is None:
+        return []
+    return [note for note in notes if isinstance(note, str)]
+
+
+def _truncated_content(content: str, max_chars: int) -> dict[str, Any]:
+    truncated = _truncate_text(content, max_chars)
+    return {
+        "content": truncated,
+        "truncated": len(truncated) != len(content),
+        "original_chars": len(content),
+    }
+
+
+def _truncated_file_list(paths: Sequence[str], max_chars: int) -> dict[str, Any]:
+    kept: list[str] = []
+    used_chars = 2
+    for path in paths:
+        path_chars = len(path) + 4
+        if kept and used_chars + path_chars > max_chars:
+            break
+        kept.append(path)
+        used_chars += path_chars
+    return {
+        "files": kept,
+        "truncated": len(kept) != len(paths),
+        "total_files": len(paths),
+    }
+
+
+def _truncate_text(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    suffix = f"\n...[truncated {len(text) - max_chars} chars]"
+    return text[: max(0, max_chars - len(suffix))] + suffix
+
+
 def _planning_messages(state: TicketState) -> list[dict[str, str]]:
     return [
         {
@@ -386,6 +732,67 @@ def _implementation_messages(
                 "You produce explicit repository file write plans for a "
                 "software implementation agent. Return exactly one strict JSON "
                 "object. Do not include markdown fences or prose."
+            ),
+        },
+        {
+            "role": "user",
+            "content": "\n".join(user_lines),
+        },
+    ]
+
+
+def _implementation_loop_messages(
+    state: TicketState,
+    repo_context: RepoContext,
+) -> list[dict[str, str]]:
+    failed_test_excerpt = _failed_test_excerpt(state.test_result)
+    user_lines = [
+        "Implement this ticket by returning one JSON tool call at a time.",
+        f"ticket_key: {state.ticket_key}",
+        f"summary: {state.summary}",
+        f"description: {state.description}",
+        f"decomposition_plan: {_json_for_prompt(state.decomposition)}",
+        f"repo_context: {_json_for_prompt(repo_context.to_prompt_dict())}",
+        f"current_implementation_attempt: {state.implementation_attempts + 1}",
+        f"implementation_attempts_completed: {state.implementation_attempts}",
+        f"max_attempts: {state.max_attempts}",
+        f"repository: {state.repository or ''}",
+        f"repo_path: {state.repo_path or ''}",
+        f"worktree_path: {state.worktree_path or ''}",
+    ]
+    if failed_test_excerpt is not None:
+        user_lines.append(f"previous_test_failure: {failed_test_excerpt}")
+    user_lines.extend(
+        [
+            "Tool call schema:",
+            '{"action": "read_file", "args": {"path": "relative/path.py"}}',
+            '{"action": "list_dir", "args": {"path": "src"}}',
+            (
+                '{"action": "write_file", "args": '
+                '{"path": "relative/path.py", "content": "complete file content"}}'
+            ),
+            (
+                '{"action": "finish", "args": '
+                '{"summary": "string", "notes": ["optional string"]}}'
+            ),
+            "Available actions are read_file, list_dir, write_file, and finish.",
+            "Use read_file and list_dir when you need more context.",
+            "Use write_file with the complete replacement content for that file.",
+            "Call finish only after all required file edits have been written.",
+            "Do not run tests. The graph test node runs tests after finish.",
+            "Return exactly one strict JSON object per response.",
+            "No markdown fences. No prose before or after JSON.",
+        ]
+    )
+
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are a software implementation agent controlled through "
+                "provider-agnostic JSON-over-text tool calls. You do not have "
+                "native tool use. Return exactly one JSON object matching the "
+                "Tool call schema each turn."
             ),
         },
         {
@@ -560,9 +967,11 @@ def _float_field(value: Any, field_name: str) -> float:
 
 
 __all__ = [
+    "IterativeImplementationService",
     "ModelRouterImplementationService",
     "ModelRouterPlannerService",
     "ModelRouterProtocol",
     "ModelRouterReviewService",
     "ModelServiceError",
+    "ToolCall",
 ]

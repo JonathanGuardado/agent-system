@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Awaitable, Protocol
 from uuid import uuid4
 
 from yaml import YAMLError
@@ -36,7 +37,10 @@ ContractLoader = Callable[[Path], RepoContract]
 FileAdapterFactory = Callable[[Path, RepoContract], FilePort]
 ShellFactory = Callable[[Path, RepoContract], ShellPort]
 TestAdapterFactory = Callable[[ShellPort, RepoContract], TestPort]
-ImplementationStep = Callable[["ImplementationContext"], ImplementationResult]
+ImplementationStep = Callable[
+    ["ImplementationContext"],
+    ImplementationResult | Awaitable[ImplementationResult],
+]
 LockIdFactory = Callable[[TicketState], str]
 
 
@@ -130,6 +134,8 @@ class LocalImplementationService:
                 files=files,
             )
             implementation_result = self._implementation_step(context)
+            if inspect.isawaitable(implementation_result):
+                implementation_result = await implementation_result
         except (AgentSystemError, OSError, ValueError) as exc:
             return _failed_implementation_update(f"implementation failed: {exc}")
 
