@@ -13,9 +13,11 @@ dependencies = [
   "langgraph>=1.0.0,<2.0.0",
   "pydantic>=2.7.4",
   "PyYAML>=6.0.1",
+  "slack_sdk>=3.27.0",
 ]
 
 [project.scripts]
+ticket-agent = "ticket_agent.app:run"
 ticket-agent-smoke-model-router = "ticket_agent.router.smoke:main"
 
 [project.optional-dependencies]

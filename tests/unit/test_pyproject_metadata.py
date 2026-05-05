@@ -10,6 +10,7 @@ PYPROJECT_PATH = Path(__file__).resolve().parents[2] / "pyproject.toml"
 def test_pyproject_exposes_internal_router_smoke_script():
     pyproject = _load_pyproject()
 
+    assert pyproject["project"]["scripts"]["ticket-agent"] == "ticket_agent.app:run"
     assert pyproject["project"]["scripts"]["ticket-agent-smoke-model-router"] == (
         "ticket_agent.router.smoke:main"
     )

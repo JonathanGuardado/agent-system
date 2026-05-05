@@ -16,6 +16,8 @@ adapter) and feed messages directly via :meth:`handle_event`.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -27,6 +29,8 @@ from ticket_agent.intake.approval_flow import (
     SlackPoster,
 )
 from ticket_agent.intake.proposal_store import ProposalStore
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -190,11 +194,85 @@ class SlackSDKPoster:
             raise ValueError("post_thread_reply requires a channel")
         # slack_sdk's WebClient methods are sync; offload off the event loop
         # in real deployments. Tests use a fake poster instead.
-        self._client.chat_postMessage(
+        await asyncio.to_thread(
+            self._client.chat_postMessage,
             channel=target,
             thread_ts=thread_ts,
             text=text,
         )
+
+
+class SlackSocketModeService:
+    """Async wrapper around Slack Socket Mode for the production runtime."""
+
+    def __init__(
+        self,
+        listener: SlackIntakeListener,
+        *,
+        bot_token: str,
+        app_token: str,
+    ) -> None:
+        self._listener = listener
+        self._bot_token = bot_token
+        self._app_token = app_token
+
+    async def run_forever(self) -> None:  # pragma: no cover - requires Slack network
+        """Connect Socket Mode and dispatch message events until cancelled."""
+
+        try:
+            from slack_sdk.socket_mode import SocketModeClient
+            from slack_sdk.socket_mode.request import SocketModeRequest
+            from slack_sdk.socket_mode.response import SocketModeResponse
+            from slack_sdk.web import WebClient
+        except ImportError as exc:
+            raise RuntimeError(
+                "slack_sdk is required to run socket mode; install slack_sdk"
+            ) from exc
+
+        loop = asyncio.get_running_loop()
+        web_client = WebClient(token=self._bot_token)
+        socket_client = SocketModeClient(
+            app_token=self._app_token,
+            web_client=web_client,
+        )
+        pending: set[Any] = set()
+
+        def _on_request(client: SocketModeClient, req: SocketModeRequest) -> None:
+            client.send_socket_mode_response(
+                SocketModeResponse(envelope_id=req.envelope_id)
+            )
+            if req.type != "events_api":
+                return
+            payload = (req.payload or {}).get("event") or {}
+            if payload.get("type") != "message":
+                return
+
+            event = event_from_slack_payload(payload)
+            future = asyncio.run_coroutine_threadsafe(
+                self._listener.handle_event(event),
+                loop,
+            )
+            pending.add(future)
+
+            def _discard(done: Any) -> None:
+                pending.discard(done)
+                try:
+                    done.result()
+                except asyncio.CancelledError:
+                    return
+                except Exception:
+                    _LOGGER.exception("slack_event_dispatch_failed")
+
+            future.add_done_callback(_discard)
+
+        socket_client.socket_mode_request_listeners.append(_on_request)
+        await asyncio.to_thread(socket_client.connect)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            for future in tuple(pending):
+                future.cancel()
+            await asyncio.to_thread(socket_client.close)
 
 
 def load_slack_env() -> tuple[str, str, str]:
@@ -217,44 +295,14 @@ def run_socket_mode(
     Imports ``slack_sdk`` lazily so unit tests don't need the dependency.
     """
 
-    try:
-        from slack_sdk.socket_mode import SocketModeClient
-        from slack_sdk.socket_mode.request import SocketModeRequest
-        from slack_sdk.socket_mode.response import SocketModeResponse
-        from slack_sdk.web import WebClient
-    except ImportError as exc:
-        raise RuntimeError(
-            "slack_sdk is required to run socket mode; install slack_sdk"
-        ) from exc
-
-    import asyncio
-
     bot_token = bot_token or _required_env("SLACK_BOT_TOKEN")
     app_token = app_token or _required_env("SLACK_APP_TOKEN")
-
-    web_client = WebClient(token=bot_token)
-    socket_client = SocketModeClient(app_token=app_token, web_client=web_client)
-
-    def _on_request(client: SocketModeClient, req: SocketModeRequest) -> None:
-        if req.type != "events_api":
-            client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
-            return
-        client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
-        payload = (req.payload or {}).get("event") or {}
-        if payload.get("type") != "message":
-            return
-        event = event_from_slack_payload(payload)
-        asyncio.run(listener.handle_event(event))
-
-    socket_client.socket_mode_request_listeners.append(_on_request)
-    socket_client.connect()
-    try:
-        import time as _time
-
-        while True:
-            _time.sleep(1)
-    finally:
-        socket_client.close()
+    service = SlackSocketModeService(
+        listener,
+        bot_token=bot_token,
+        app_token=app_token,
+    )
+    asyncio.run(service.run_forever())
 
 
 def _required_env(name: str) -> str:
@@ -271,6 +319,7 @@ __all__ = [
     "SlackIntakeListener",
     "SlackPoster",
     "SlackSDKPoster",
+    "SlackSocketModeService",
     "event_from_slack_payload",
     "load_slack_env",
     "run_socket_mode",

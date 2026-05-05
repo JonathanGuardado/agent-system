@@ -1,6 +1,6 @@
 """Jira execution boundary for ticket-agent."""
 
-from ticket_agent.jira.client import JiraClient
+from ticket_agent.jira.client import JiraClient, JiraClientError, JiraRestClient
 from ticket_agent.jira.execution_coordinator import (
     JiraExecutionCoordinator,
     TicketRunner,
@@ -21,11 +21,13 @@ from ticket_agent.jira.work_item_loader import JiraWorkItemLoader
 __all__ = [
     "FakeJiraClient",
     "JiraClient",
+    "JiraClientError",
     "JiraClientCall",
     "JiraExecutionCoordinator",
     "JiraExecutionError",
     "JiraExecutionService",
     "JiraOperationFailure",
+    "JiraRestClient",
     "JiraTicket",
     "TicketRunner",
     "JiraWorkItemLoader",

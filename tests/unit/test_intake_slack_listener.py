@@ -18,6 +18,7 @@ from ticket_agent.intake.proposal_store import PROPOSAL_TTL_SECONDS, ProposalSto
 from ticket_agent.intake.slack_listener import (
     SlackEvent,
     SlackIntakeListener,
+    SlackSDKPoster,
     event_from_slack_payload,
 )
 from ticket_agent.jira.fake_client import FakeJiraClient
@@ -320,6 +321,49 @@ def test_event_from_slack_payload_uses_thread_ts_when_present():
 
     assert event.thread_ts == "1700000000.0001"
     assert event.is_bot is False
+
+
+def test_slack_sdk_poster_offloads_sync_web_client(monkeypatch):
+    offloaded: list[tuple[str, dict[str, str]]] = []
+    posted: list[dict[str, str]] = []
+
+    async def fake_to_thread(func, /, *args, **kwargs):
+        offloaded.append((func.__name__, dict(kwargs)))
+        return func(*args, **kwargs)
+
+    class _WebClient:
+        def chat_postMessage(self, **kwargs):
+            posted.append(dict(kwargs))
+
+    monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+    poster = SlackSDKPoster(_WebClient(), default_channel="C-DEFAULT")
+
+    asyncio.run(
+        poster.post_thread_reply(
+            channel=None,
+            thread_ts="thread-1",
+            user_id="U1",
+            text="hello",
+        )
+    )
+
+    assert offloaded == [
+        (
+            "chat_postMessage",
+            {
+                "channel": "C-DEFAULT",
+                "thread_ts": "thread-1",
+                "text": "hello",
+            },
+        )
+    ]
+    assert posted == [
+        {
+            "channel": "C-DEFAULT",
+            "thread_ts": "thread-1",
+            "text": "hello",
+        }
+    ]
 
 
 class _ListenerExecutionScenario:
