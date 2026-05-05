@@ -10,6 +10,8 @@ from ticket_agent.jira.constants import (
     FIELD_MAX_ATTEMPTS,
     FIELD_REPOSITORY,
     FIELD_REPO_PATH,
+    FIELD_SLACK_CHANNEL,
+    FIELD_SLACK_THREAD_TS,
 )
 from ticket_agent.jira.models import JiraTicket, JiraWorkItemLoadError
 from ticket_agent.orchestrator.runner import TicketWorkItem
@@ -34,6 +36,8 @@ class JiraWorkItemLoader:
             description=ticket.description,
             repository=repository,
             repo_path=repo_path,
+            slack_channel=_optional_string(ticket, FIELD_SLACK_CHANNEL),
+            slack_thread_ts=_optional_string(ticket, FIELD_SLACK_THREAD_TS),
             max_attempts=_max_attempts(ticket),
         )
 
@@ -44,6 +48,13 @@ def _required_string(ticket: JiraTicket, field_name: str) -> str:
         raise JiraWorkItemLoadError(
             f"Jira ticket {ticket.key} is missing required field: {field_name}"
         )
+    return value
+
+
+def _optional_string(ticket: JiraTicket, field_name: str) -> str | None:
+    value = ticket.fields.get(field_name)
+    if not isinstance(value, str) or value.strip() == "":
+        return None
     return value
 
 

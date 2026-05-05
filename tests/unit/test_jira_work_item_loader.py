@@ -9,6 +9,8 @@ from ticket_agent.jira.constants import (
     FIELD_MAX_ATTEMPTS,
     FIELD_REPOSITORY,
     FIELD_REPO_PATH,
+    FIELD_SLACK_CHANNEL,
+    FIELD_SLACK_THREAD_TS,
 )
 from ticket_agent.jira.models import JiraTicket, JiraWorkItemLoadError
 from ticket_agent.jira.work_item_loader import JiraWorkItemLoader
@@ -21,6 +23,8 @@ def test_load_converts_jira_ticket_to_work_item():
             FIELD_REPOSITORY: "agent-system",
             FIELD_REPO_PATH: "/repos/agent-system",
             FIELD_MAX_ATTEMPTS: 5,
+            FIELD_SLACK_CHANNEL: "C-EXEC",
+            FIELD_SLACK_THREAD_TS: "thread-1",
         }
     )
     client = _FakeJiraClient(ticket)
@@ -35,6 +39,8 @@ def test_load_converts_jira_ticket_to_work_item():
         description="Wire execution state to Jira.",
         repository="agent-system",
         repo_path="/repos/agent-system",
+        slack_channel="C-EXEC",
+        slack_thread_ts="thread-1",
         max_attempts=5,
     )
 

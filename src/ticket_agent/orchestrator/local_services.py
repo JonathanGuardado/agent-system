@@ -6,6 +6,7 @@ import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any, Awaitable, Protocol
 from uuid import uuid4
 
@@ -74,6 +75,7 @@ class _PreparedWorktree:
 
 
 _DEFAULT_CONTRACT_DIR = Path("config/repos")
+_SAFE_LOCK_ID_CHARS = re.compile(r"[^A-Za-z0-9_-]+")
 
 
 class LocalImplementationService:
@@ -227,7 +229,7 @@ def _worktree_info(
         worktree_path=created.worktree_path,
         branch_name=created.branch_name,
         ticket_key=created.ticket_key,
-        lock_id=created.lock_id,
+        lock_id=state.lock_id or created.lock_id,
     )
 
 
@@ -269,7 +271,16 @@ def _prepare_only_step(context: ImplementationContext) -> ImplementationResult:
 
 
 def _new_short_lock_id(state: TicketState) -> str:
+    if state.lock_id:
+        shortened = _short_safe_id(state.lock_id)
+        if shortened:
+            return shortened
     return uuid4().hex[:8]
+
+
+def _short_safe_id(value: str) -> str:
+    cleaned = _SAFE_LOCK_ID_CHARS.sub("-", value).strip("-_")
+    return cleaned[:8]
 
 
 def _command_result_to_test_result(result: CommandResult) -> TestResult:

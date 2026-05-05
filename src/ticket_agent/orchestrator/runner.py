@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from inspect import isawaitable
 from logging import Logger
+import re
 from typing import Any, Protocol
 
 from ticket_agent.domain.errors import TicketLockError
@@ -28,6 +29,7 @@ EVENT_TICKET_COMPLETED = "ticket_completed"
 EVENT_TICKET_FAILED = "ticket_failed"
 EVENT_TICKET_SKIPPED = "ticket_skipped"
 INTERRUPT_RESULT_KEY = "__interrupt__"
+_SAFE_BRANCH_COMPONENT_CHARS = re.compile(r"[^A-Za-z0-9_-]+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -431,13 +433,22 @@ def _lock_id(lock: Lock) -> str | None:
 
 def _branch_name(ticket_key: str, lock: Lock) -> str:
     """Build branch name following agent/{TICKET-KEY}/{short-lock-id} convention."""
-    short_id = _lock_id(lock)
-    if short_id is None:
+    lock_id = _lock_id(lock)
+    short_id = _short_safe_component(lock_id) if lock_id is not None else ""
+    if not short_id:
         # Derive a short, stable ID from the lock owner when no lock_id is present.
         owner = str(getattr(lock, "owner", "") or "")
-        short_id = "".join(c for c in owner if c.isalnum() or c == "-") or "run"
-    safe_key = ticket_key.replace("/", "-")
+        short_id = _safe_branch_component(owner) or "run"
+    safe_key = _safe_branch_component(ticket_key)
     return f"agent/{safe_key}/{short_id}"
+
+
+def _short_safe_component(value: str) -> str:
+    return _safe_branch_component(value)[:8]
+
+
+def _safe_branch_component(value: str) -> str:
+    return _SAFE_BRANCH_COMPONENT_CHARS.sub("-", value).strip("-_")
 
 
 def _error_message(exc: BaseException) -> str:

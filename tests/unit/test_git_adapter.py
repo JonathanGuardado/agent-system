@@ -22,7 +22,7 @@ def test_worktree_creation_creates_expected_branch_and_path(tmp_path):
     info = adapter.create_worktree(repo, "ABC-123", "12345678")
 
     assert info.repo_path == repo.resolve()
-    assert info.worktree_path == repo / ".worktrees" / "ABC-123"
+    assert info.worktree_path == repo / ".worktrees" / "ABC-123" / "12345678"
     assert info.branch_name == "agent/ABC-123/12345678"
     assert info.ticket_key == "ABC-123"
     assert info.lock_id == "12345678"
@@ -44,13 +44,23 @@ def test_worktree_creation_rejects_unsafe_short_lock_id(tmp_path):
         GitAdapter().create_worktree(repo, "ABC-123", "../12345678")
 
 
-def test_worktree_creation_does_not_reuse_existing_worktree(tmp_path):
+def test_worktree_creation_isolates_worktrees_by_lock_id(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    adapter = GitAdapter()
+    first = adapter.create_worktree(repo, "ABC-123", "12345678")
+    second = adapter.create_worktree(repo, "ABC-123", "abcdef12")
+
+    assert first.worktree_path == repo / ".worktrees" / "ABC-123" / "12345678"
+    assert second.worktree_path == repo / ".worktrees" / "ABC-123" / "abcdef12"
+
+
+def test_worktree_creation_does_not_reuse_existing_worktree_for_same_lock(tmp_path):
     repo = _init_repo(tmp_path / "repo")
     adapter = GitAdapter()
     adapter.create_worktree(repo, "ABC-123", "12345678")
 
     with pytest.raises(WorktreeCreationError, match="already exists"):
-        adapter.create_worktree(repo, "ABC-123", "abcdef12")
+        adapter.create_worktree(repo, "ABC-123", "12345678")
 
 
 def test_commit_returns_valid_sha_when_files_changed(tmp_path):

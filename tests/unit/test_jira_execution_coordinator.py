@@ -11,7 +11,9 @@ from ticket_agent.jira.constants import (
     EVENT_JIRA_EXECUTION_FAILURE_REPORT_FAILED,
     EVENT_JIRA_EXECUTION_IN_REVIEW,
     EVENT_JIRA_EXECUTION_RELEASED_WITHOUT_PR,
+    EVENT_JIRA_EXECUTION_SLACK_NOTIFICATION_FAILED,
     EVENT_JIRA_EXECUTION_STARTED,
+    EVENT_JIRA_EXECUTION_WORKTREE_CLEANUP_FAILED,
 )
 from ticket_agent.jira.execution_coordinator import JiraExecutionCoordinator
 from ticket_agent.jira.models import JiraExecutionError
@@ -82,6 +84,182 @@ def test_run_ticket_success_without_pr_releases_claim_and_returns_state():
         EVENT_JIRA_EXECUTION_RELEASED_WITHOUT_PR,
         EVENT_JIRA_EXECUTION_COMPLETED,
     ]
+
+
+def test_run_ticket_success_with_pr_posts_slack_and_cleans_terminal_resources():
+    work_item = _work_item(slack_channel="C-EXEC", slack_thread_ts="thread-1")
+    final_state = _state(
+        pull_request_url="https://github.com/example/repo/pull/1",
+        repo_path="/repos/agent-system",
+        worktree_path="/repos/agent-system/.worktrees/AGENT-123/12345678",
+        slack_channel="C-EXEC",
+        slack_thread_ts="thread-1",
+    )
+    execution_service = _FakeExecutionService()
+    slack = _FakeSlack()
+    cleaner = _FakeCleaner()
+    checkpointer = _FakeCheckpointer()
+    coordinator = JiraExecutionCoordinator(
+        _FakeLoader(work_item),
+        execution_service,
+        _FakeRunner(final_state),
+        slack=slack,
+        worktree_cleaner=cleaner,
+        checkpointer=checkpointer,
+    )
+
+    result = asyncio.run(coordinator.run_ticket("AGENT-123"))
+
+    assert result is final_state
+    assert execution_service.calls == [
+        (
+            "mark_in_review",
+            "AGENT-123",
+            "https://github.com/example/repo/pull/1",
+        ),
+    ]
+    assert slack.messages == [
+        (
+            "C-EXEC",
+            "thread-1",
+            "ticket-agent",
+            "AI execution opened a pull request for AGENT-123:\n\n"
+            "https://github.com/example/repo/pull/1",
+        )
+    ]
+    assert cleaner.states == [final_state]
+    assert checkpointer.deleted_threads == ["AGENT-123"]
+
+
+def test_escalated_final_state_marks_failed_posts_slack_and_cleans_worktree():
+    work_item = _work_item(slack_thread_ts="thread-1")
+    final_state = _state(
+        workflow_status="escalated",
+        escalation_reason="no changes to commit",
+        repo_path="/repos/agent-system",
+        worktree_path="/repos/agent-system/.worktrees/AGENT-123/12345678",
+        slack_thread_ts="thread-1",
+    )
+    execution_service = _FakeExecutionService()
+    slack = _FakeSlack()
+    cleaner = _FakeCleaner()
+    events = _EventRecorder()
+    coordinator = JiraExecutionCoordinator(
+        _FakeLoader(work_item),
+        execution_service,
+        _FakeRunner(final_state),
+        emit=events,
+        slack=slack,
+        worktree_cleaner=cleaner,
+    )
+
+    result = asyncio.run(coordinator.run_ticket("AGENT-123"))
+
+    assert result is final_state
+    assert execution_service.calls == [
+        ("mark_failed", "AGENT-123", "no changes to commit")
+    ]
+    assert slack.messages == [
+        (
+            None,
+            "thread-1",
+            "ticket-agent",
+            "AI execution escalated AGENT-123:\n\nno changes to commit",
+        )
+    ]
+    assert cleaner.states == [final_state]
+    assert events.names == [
+        EVENT_JIRA_EXECUTION_STARTED,
+        EVENT_JIRA_EXECUTION_FAILED,
+    ]
+
+
+def test_slack_notification_failure_does_not_corrupt_jira_finalization():
+    final_state = _state(
+        pull_request_url="https://github.com/example/repo/pull/1",
+        slack_thread_ts="thread-1",
+    )
+    execution_service = _FakeExecutionService()
+    events = _EventRecorder()
+    coordinator = JiraExecutionCoordinator(
+        _FakeLoader(_work_item(slack_thread_ts="thread-1")),
+        execution_service,
+        _FakeRunner(final_state),
+        emit=events,
+        slack=_FakeSlack(error=RuntimeError("slack exploded")),
+    )
+
+    result = asyncio.run(coordinator.run_ticket("AGENT-123"))
+
+    assert result is final_state
+    assert execution_service.calls == [
+        (
+            "mark_in_review",
+            "AGENT-123",
+            "https://github.com/example/repo/pull/1",
+        ),
+    ]
+    assert events.names == [
+        EVENT_JIRA_EXECUTION_STARTED,
+        EVENT_JIRA_EXECUTION_SLACK_NOTIFICATION_FAILED,
+        EVENT_JIRA_EXECUTION_IN_REVIEW,
+        EVENT_JIRA_EXECUTION_COMPLETED,
+    ]
+    assert events.payloads[EVENT_JIRA_EXECUTION_SLACK_NOTIFICATION_FAILED] == {
+        "ticket_key": "AGENT-123",
+        "error": "slack exploded",
+    }
+
+
+def test_worktree_cleanup_failure_is_reported_without_masking_success():
+    final_state = _state(
+        pull_request_url="https://github.com/example/repo/pull/1",
+        repo_path="/repos/agent-system",
+        worktree_path="/repos/agent-system/.worktrees/AGENT-123/12345678",
+    )
+    events = _EventRecorder()
+    coordinator = JiraExecutionCoordinator(
+        _FakeLoader(_work_item()),
+        _FakeExecutionService(),
+        _FakeRunner(final_state),
+        emit=events,
+        worktree_cleaner=_FakeCleaner(error=RuntimeError("cleanup exploded")),
+    )
+
+    result = asyncio.run(coordinator.run_ticket("AGENT-123"))
+
+    assert result is final_state
+    assert events.names == [
+        EVENT_JIRA_EXECUTION_STARTED,
+        EVENT_JIRA_EXECUTION_IN_REVIEW,
+        EVENT_JIRA_EXECUTION_WORKTREE_CLEANUP_FAILED,
+        EVENT_JIRA_EXECUTION_COMPLETED,
+    ]
+    assert events.payloads[EVENT_JIRA_EXECUTION_WORKTREE_CLEANUP_FAILED] == {
+        "ticket_key": "AGENT-123",
+        "error": "cleanup exploded",
+    }
+
+
+def test_worktree_cleanup_runs_when_final_jira_update_fails():
+    error = JiraExecutionError("review update exploded")
+    final_state = _state(
+        pull_request_url="https://github.com/example/repo/pull/1",
+        repo_path="/repos/agent-system",
+        worktree_path="/repos/agent-system/.worktrees/AGENT-123/12345678",
+    )
+    cleaner = _FakeCleaner()
+    coordinator = JiraExecutionCoordinator(
+        _FakeLoader(_work_item()),
+        _FakeExecutionService(fail_on={"mark_in_review": error}),
+        _FakeRunner(final_state),
+        worktree_cleaner=cleaner,
+    )
+
+    with pytest.raises(JiraExecutionError):
+        asyncio.run(coordinator.run_ticket("AGENT-123"))
+
+    assert cleaner.states == [final_state]
 
 
 def test_loader_failure_does_not_claim_or_run_and_reraises_original_error():
@@ -232,6 +410,7 @@ def test_runner_success_but_mark_in_review_failure_raises_jira_error():
             "AGENT-123",
             "https://github.com/example/repo/pull/1",
         ),
+        ("mark_failed", "AGENT-123", "review update exploded"),
     ]
     assert events.names == [
         EVENT_JIRA_EXECUTION_STARTED,
@@ -262,6 +441,7 @@ def test_runner_success_without_pr_but_mark_released_failure_raises_jira_error()
     assert exc_info.value is error
     assert execution_service.calls == [
         ("mark_released", "AGENT-123", None),
+        ("mark_failed", "AGENT-123", "release exploded"),
     ]
     assert events.names == [
         EVENT_JIRA_EXECUTION_STARTED,
@@ -364,6 +544,42 @@ class _FakeRunner:
         if isinstance(self.result, BaseException):
             raise self.result
         return self.result
+
+
+class _FakeSlack:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.messages: list[tuple[str | None, str, str, str]] = []
+
+    async def post_thread_reply(
+        self,
+        channel: str | None,
+        thread_ts: str,
+        user_id: str,
+        text: str,
+    ) -> None:
+        if self.error is not None:
+            raise self.error
+        self.messages.append((channel, thread_ts, user_id, text))
+
+
+class _FakeCleaner:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.states: list[TicketState] = []
+
+    def cleanup(self, state: TicketState) -> None:
+        self.states.append(state)
+        if self.error is not None:
+            raise self.error
+
+
+class _FakeCheckpointer:
+    def __init__(self) -> None:
+        self.deleted_threads: list[str] = []
+
+    def delete_thread(self, thread_id: str) -> None:
+        self.deleted_threads.append(thread_id)
 
 
 class _EventRecorder:

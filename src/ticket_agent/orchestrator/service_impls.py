@@ -5,6 +5,7 @@ from ticket_agent.orchestrator.git_services import (
     GitPullRequestPort,
     GitService,
     PullRequestOpener,
+    WorktreeCleanupService,
 )
 from ticket_agent.orchestrator.local_services import (
     AdapterTestService,
@@ -20,4 +21,5 @@ __all__ = [
     "ImplementationContext",
     "LocalImplementationService",
     "PullRequestOpener",
+    "WorktreeCleanupService",
 ]

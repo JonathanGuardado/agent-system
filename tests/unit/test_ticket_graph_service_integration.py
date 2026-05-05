@@ -3,6 +3,13 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
+
+from ticket_agent.domain.errors import (
+    NoChangesToCommitError,
+    PullRequestCreationError,
+    PushError,
+)
 from ticket_agent.orchestrator.graph import TicketWorkflowNodes, build_ticket_graph
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.nodes import service_backed_ticket_nodes
@@ -106,6 +113,42 @@ def test_service_backed_graph_retries_implementation_when_tests_fail_with_attemp
     assert state.implementation_attempts == 2
     assert state.tests_passed is True
     assert state.workflow_status == "completed"
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        (NoChangesToCommitError("no changes to commit"), "no changes to commit"),
+        (PushError("remote rejected branch"), "remote rejected branch"),
+        (PullRequestCreationError("gh pr create failed"), "gh pr create failed"),
+    ],
+)
+def test_service_backed_graph_escalates_pull_request_failures(
+    error: Exception,
+    reason: str,
+):
+    services = _Services(pull_request=_FailingPullRequest(error))
+    graph = build_ticket_graph(services.runner())
+
+    result = asyncio.run(graph.ainvoke(_initial_state()))
+    state = TicketState.model_validate(result)
+
+    assert services.pull_request.calls == ["AGENT-123"]
+    assert services.escalation.calls == [("AGENT-123", reason)]
+    assert state.visited_nodes == [
+        "plan",
+        "request_execution_approval",
+        "implement",
+        "run_tests",
+        "review",
+        "open_pull_request",
+        "escalate",
+        "report",
+    ]
+    assert state.workflow_status == "escalated"
+    assert state.pull_request_url is None
+    assert state.escalation_reason == reason
+    assert state.error == reason
 
 
 def _initial_state(**updates: Any) -> TicketState:
@@ -222,6 +265,16 @@ class _PullRequest:
     async def open_pull_request(self, state: TicketState) -> str:
         self.calls.append(state.ticket_key)
         return self.result
+
+
+class _FailingPullRequest:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.calls: list[str] = []
+
+    async def open_pull_request(self, state: TicketState) -> str:
+        self.calls.append(state.ticket_key)
+        raise self.error
 
 
 class _Escalation:

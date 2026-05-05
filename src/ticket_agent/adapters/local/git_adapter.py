@@ -40,7 +40,7 @@ class GitAdapter:
         _validate_safe_ref_component(short_lock_id, "short_lock_id")
 
         branch_name = f"agent/{ticket_key}/{short_lock_id}"
-        worktree_path = repo / ".worktrees" / ticket_key
+        worktree_path = repo / ".worktrees" / ticket_key / short_lock_id
         try:
             _validate_worktree_path(repo, worktree_path)
         except WorktreeCleanupError as exc:
@@ -50,10 +50,7 @@ class GitAdapter:
 
         worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
-        result = self._run_git(
-            ("worktree", "add", "-b", branch_name, str(worktree_path)),
-            cwd=repo,
-        )
+        result = self._add_worktree(repo, worktree_path, branch_name)
         if result.returncode != 0:
             raise WorktreeCreationError(_failure_message(result))
 
@@ -99,6 +96,8 @@ class GitAdapter:
         repo = Path(repo_path).resolve(strict=True)
         resolved_worktree = Path(worktree_path).resolve(strict=False)
         _validate_worktree_path(repo, resolved_worktree)
+        if not resolved_worktree.exists() and not resolved_worktree.is_symlink():
+            return
 
         result = self._run_git(
             ("worktree", "remove", "--force", str(resolved_worktree)),
@@ -106,6 +105,27 @@ class GitAdapter:
         )
         if result.returncode != 0:
             raise WorktreeCleanupError(_failure_message(result))
+        _remove_empty_parents(resolved_worktree, repo / ".worktrees")
+
+    def _add_worktree(
+        self,
+        repo: Path,
+        worktree_path: Path,
+        branch_name: str,
+    ) -> subprocess.CompletedProcess[str]:
+        branch_result = self._run_git(
+            ("rev-parse", "--verify", f"refs/heads/{branch_name}"),
+            cwd=repo,
+        )
+        if branch_result.returncode == 0:
+            return self._run_git(
+                ("worktree", "add", str(worktree_path), branch_name),
+                cwd=repo,
+            )
+        return self._run_git(
+            ("worktree", "add", "-b", branch_name, str(worktree_path)),
+            cwd=repo,
+        )
 
     def _run_git(
         self,
@@ -163,3 +183,14 @@ def _validate_worktree_path(repo: Path, worktree_path: Path) -> None:
         ) from exc
     if not relative.parts:
         raise WorktreeCleanupError(f"refusing to remove worktrees root: {worktree_path}")
+
+
+def _remove_empty_parents(path: Path, stop_at: Path) -> None:
+    stop = stop_at.resolve(strict=False)
+    current = path.parent.resolve(strict=False)
+    while current != stop:
+        try:
+            current.rmdir()
+        except OSError:
+            return
+        current = current.parent

@@ -109,7 +109,14 @@ def build_ticket_graph(
             "rejected": ESCALATE,
         },
     )
-    graph.add_edge(OPEN_PULL_REQUEST, REPORT)
+    graph.add_conditional_edges(
+        OPEN_PULL_REQUEST,
+        route_after_pull_request,
+        {
+            "opened": REPORT,
+            "failed": ESCALATE,
+        },
+    )
     graph.add_edge(ESCALATE, REPORT)
     graph.add_edge(REPORT, END)
 
@@ -184,6 +191,14 @@ def route_after_tests(state: TicketState) -> Literal["passed", "retry", "failed"
 
 def route_after_review(state: TicketState) -> Literal["accepted", "rejected"]:
     return "accepted" if state.review_passed is True else "rejected"
+
+
+def route_after_pull_request(state: TicketState) -> Literal["opened", "failed"]:
+    if state.pull_request_url:
+        return "opened"
+    if state.error or state.escalation_reason:
+        return "failed"
+    return "opened"
 
 
 def _implementation_failure_escalates_immediately(

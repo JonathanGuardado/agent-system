@@ -112,6 +112,44 @@ def test_local_implementation_service_uses_contract_repo_root_when_repo_path_mis
     assert result["implementation_result"]["status"] == "prepared"
 
 
+def test_local_implementation_service_uses_short_state_lock_for_branch_but_preserves_lock_id(
+    tmp_path,
+):
+    repo_path = tmp_path / "repo"
+    worktree_path = repo_path / ".worktrees" / "AGENT-123" / "12345678"
+    calls: dict[str, Any] = {}
+    git = _FakeGit(
+        WorktreeInfo(
+            repo_path=repo_path,
+            worktree_path=worktree_path,
+            branch_name="agent/AGENT-123/12345678",
+            ticket_key="AGENT-123",
+            lock_id="12345678",
+        )
+    )
+    service = LocalImplementationService(
+        contract_loader=_loader(calls, _contract(repo_root=str(repo_path))),
+        git=git,
+        file_adapter_factory=_file_adapter_factory(calls),
+    )
+
+    result = asyncio.run(
+        service.implement(
+            TicketState(
+                ticket_key="AGENT-123",
+                summary="Implement feature",
+                repository="example",
+                repo_path=str(repo_path),
+                lock_id="1234567890abcdef",
+            )
+        )
+    )
+
+    assert git.calls == [(repo_path, "AGENT-123", "12345678")]
+    assert result["branch_name"] == "agent/AGENT-123/12345678"
+    assert result["lock_id"] == "1234567890abcdef"
+
+
 def test_local_implementation_service_reuses_existing_worktree(tmp_path):
     repo_path = tmp_path / "repo"
     worktree_path = tmp_path / "existing-worktree"

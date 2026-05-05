@@ -74,7 +74,19 @@ class TicketNodeRunner:
         )
 
     async def implement(self, state: TicketState) -> TicketStateUpdate:
-        implementation_update = await self._implementation.implement(state)
+        try:
+            implementation_update = await self._implementation.implement(state)
+        except Exception as exc:
+            error = _error_message(exc)
+            implementation_update = {
+                "implementation_result": {
+                    "status": "failed",
+                    "changed_files": [],
+                    "error": error,
+                },
+                "error": error,
+                "errors": [*state.errors, error],
+            }
         return _mark_node(
             state,
             "implement",
@@ -84,7 +96,11 @@ class TicketNodeRunner:
         )
 
     async def run_tests(self, state: TicketState) -> TicketStateUpdate:
-        test_result = await self._tests.run_tests(state)
+        try:
+            test_result = await self._tests.run_tests(state)
+        except Exception as exc:
+            error = _error_message(exc)
+            test_result = {"status": "failed", "tests_passed": False, "error": error}
         return _mark_node(
             state,
             "run_tests",
@@ -94,7 +110,15 @@ class TicketNodeRunner:
         )
 
     async def review(self, state: TicketState) -> TicketStateUpdate:
-        verification_result = await self._review.review(state)
+        try:
+            verification_result = await self._review.review(state)
+        except Exception as exc:
+            error = _error_message(exc)
+            verification_result = {
+                "status": "failed",
+                "review_passed": False,
+                "error": error,
+            }
         return _mark_node(
             state,
             "review",
@@ -105,11 +129,33 @@ class TicketNodeRunner:
                 positive_statuses={"accepted", "approved", "passed", "success"},
                 negative_statuses={"rejected", "failed", "failure"},
             ),
+            escalation_reason=_result_error(verification_result),
             verification_result=verification_result,
         )
 
     async def open_pull_request(self, state: TicketState) -> TicketStateUpdate:
-        pull_request_url = await self._pull_request.open_pull_request(state)
+        try:
+            pull_request_url = await self._pull_request.open_pull_request(state)
+        except Exception as exc:
+            error = _error_message(exc)
+            return _mark_node(
+                state,
+                "open_pull_request",
+                workflow_status="opening_pull_request",
+                escalation_reason=error,
+                error=error,
+                errors=[*state.errors, error],
+            )
+        if not pull_request_url:
+            error = "pull request service did not return a PR URL"
+            return _mark_node(
+                state,
+                "open_pull_request",
+                workflow_status="opening_pull_request",
+                escalation_reason=error,
+                error=error,
+                errors=[*state.errors, error],
+            )
         return _mark_node(
             state,
             "open_pull_request",
@@ -189,6 +235,13 @@ def _result_passed(
     return None
 
 
+def _result_error(result: dict[str, Any]) -> str | None:
+    error = result.get("error")
+    if isinstance(error, str) and error.strip():
+        return error
+    return None
+
+
 def _normalize_approval_decision(
     decision: bool | ApprovalDecision,
 ) -> ApprovalDecision:
@@ -210,12 +263,19 @@ def _escalation_reason(state: TicketState) -> str:
     if implementation_reason is not None:
         return implementation_reason
     if state.tests_passed is False:
+        test_error = _test_failure_reason(state)
+        if test_error is not None:
+            return test_error
         return "tests failed"
     if state.review_passed is False:
         return "review rejected"
     if state.error:
         return state.error
     return "workflow escalated"
+
+
+def _error_message(exc: BaseException) -> str:
+    return str(exc) or exc.__class__.__name__
 
 
 def _implementation_failure_reason(state: TicketState) -> str | None:
@@ -244,3 +304,13 @@ def _implementation_failure_reason(state: TicketState) -> str | None:
         return f"implementation failed: {error_code}"
 
     return "implementation failed"
+
+
+def _test_failure_reason(state: TicketState) -> str | None:
+    result = state.test_result
+    if not isinstance(result, dict):
+        return None
+    error = result.get("error")
+    if isinstance(error, str) and error.strip():
+        return error
+    return None

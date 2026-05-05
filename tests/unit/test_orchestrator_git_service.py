@@ -12,7 +12,11 @@ from ticket_agent.domain.errors import (
     PullRequestCreationError,
     PushError,
 )
-from ticket_agent.orchestrator.git_services import GhPullRequestOpener, GitService
+from ticket_agent.orchestrator.git_services import (
+    GhPullRequestOpener,
+    GitService,
+    WorktreeCleanupService,
+)
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.state import TicketState
 
@@ -114,6 +118,21 @@ def test_git_service_does_not_open_pr_when_push_fails(tmp_path):
     assert opener.calls == []
 
 
+def test_git_service_reuses_pr_url_already_recorded_in_state(tmp_path):
+    git = _FakeGit()
+    opener = _FakePullRequestOpener()
+    service = GitService(git=git, pull_request_opener=opener)
+    state = _state(tmp_path).model_copy(
+        update={"pull_request_url": "https://github.test/acme/repo/pull/old"}
+    )
+
+    result = asyncio.run(service.open_pull_request(state))
+
+    assert result == "https://github.test/acme/repo/pull/old"
+    assert git.calls == []
+    assert opener.calls == []
+
+
 def test_ticket_node_runner_open_pull_request_stores_git_service_url(tmp_path):
     service = GitService(
         git=_FakeGit(),
@@ -133,11 +152,31 @@ def test_ticket_node_runner_open_pull_request_stores_git_service_url(tmp_path):
     assert state.pull_request_url == "https://github.test/acme/repo/pull/8"
 
 
+def test_worktree_cleanup_service_removes_state_worktree(tmp_path):
+    git = _FakeCleanupGit()
+    service = WorktreeCleanupService(git=git)
+    state = _state(
+        tmp_path / "repo" / ".worktrees" / "AGENT-123" / "12345678",
+        repo_path=tmp_path / "repo",
+    )
+
+    service.cleanup(state)
+
+    assert git.calls == [
+        (
+            tmp_path / "repo",
+            tmp_path / "repo" / ".worktrees" / "AGENT-123" / "12345678",
+        )
+    ]
+
+
 def test_gh_pull_request_opener_runs_gh_pr_create_without_shell(tmp_path, monkeypatch):
     calls: list[tuple[tuple[str, ...], dict[str, Any]]] = []
 
     def fake_run(command, **kwargs):
         calls.append((tuple(command), kwargs))
+        if tuple(command[:3]) == ("gh", "pr", "list"):
+            return subprocess.CompletedProcess(command, 0, "\n", "")
         return subprocess.CompletedProcess(command, 0, "https://github.test/pr/9\n", "")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -152,6 +191,30 @@ def test_gh_pull_request_opener_runs_gh_pr_create_without_shell(tmp_path, monkey
 
     assert result == "https://github.test/pr/9"
     assert calls == [
+        (
+            (
+                "gh",
+                "pr",
+                "list",
+                "--state",
+                "open",
+                "--base",
+                "main",
+                "--head",
+                "agent/AGENT-123/12345678",
+                "--json",
+                "url",
+                "--jq",
+                ".[0].url",
+            ),
+            {
+                "cwd": tmp_path,
+                "check": False,
+                "capture_output": True,
+                "text": True,
+                "timeout": 300,
+            },
+        ),
         (
             (
                 "gh",
@@ -175,6 +238,34 @@ def test_gh_pull_request_opener_runs_gh_pr_create_without_shell(tmp_path, monkey
             },
         )
     ]
+
+
+def test_gh_pull_request_opener_reuses_existing_open_pr(tmp_path, monkeypatch):
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(command, **kwargs):
+        del kwargs
+        calls.append(tuple(command))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            "https://github.test/pr/existing\n",
+            "",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = GhPullRequestOpener().open_pull_request(
+        worktree_path=tmp_path,
+        branch_name="agent/AGENT-123/12345678",
+        base_branch="main",
+        title="AGENT-123: Add service",
+        body="Ticket: AGENT-123",
+    )
+
+    assert result == "https://github.test/pr/existing"
+    assert len(calls) == 1
+    assert calls[0][:3] == ("gh", "pr", "list")
 
 
 def test_gh_pull_request_opener_raises_when_gh_times_out(tmp_path, monkeypatch):
@@ -213,11 +304,13 @@ def _state(
     worktree_path: Path,
     *,
     description: str = "",
+    repo_path: Path | None = None,
 ) -> TicketState:
     return TicketState(
         ticket_key="AGENT-123",
         summary="Add concrete PR service",
         description=description,
+        repo_path=None if repo_path is None else str(repo_path),
         worktree_path=str(worktree_path),
         branch_name="agent/AGENT-123/12345678",
     )
@@ -258,6 +351,18 @@ class _FakeGit:
         self.calls.append(("push", Path(worktree_path), branch_name))
         if self._push_error is not None:
             raise self._push_error
+
+
+class _FakeCleanupGit:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Path, Path]] = []
+
+    def cleanup_worktree(
+        self,
+        repo_path: str | Path,
+        worktree_path: str | Path,
+    ) -> None:
+        self.calls.append((Path(repo_path), Path(worktree_path)))
 
 
 class _FakePullRequestOpener:

@@ -11,6 +11,7 @@ from ticket_agent.jira.constants import (
     FIELD_AGENT_RETRY_COUNT,
     FIELD_REPOSITORY,
     FIELD_REPO_PATH,
+    FIELD_SLACK_THREAD_TS,
     LABEL_AI_READY,
 )
 from ticket_agent.jira.models import JiraTicket
@@ -94,7 +95,7 @@ class JiraWriter:
         context: _WriteContext,
     ) -> None:
         labels = _normalize_labels(spec.labels)
-        fields = _build_fields(spec)
+        fields = _build_fields(spec, proposal)
 
         try:
             ticket = await self._client.create_issue(
@@ -136,10 +137,11 @@ def _normalize_labels(labels: list[str]) -> list[str]:
     return ordered
 
 
-def _build_fields(spec: TicketSpec) -> dict[str, object]:
+def _build_fields(spec: TicketSpec, proposal: Proposal) -> dict[str, object]:
     fields: dict[str, object] = {
         FIELD_AGENT_RETRY_COUNT: 0,
         FIELD_AGENT_CAPABILITIES_NEEDED: list(spec.capabilities_needed),
+        FIELD_SLACK_THREAD_TS: proposal.slack_thread_ts,
     }
     if spec.repository:
         fields[FIELD_REPOSITORY] = spec.repository

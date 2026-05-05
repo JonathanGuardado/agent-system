@@ -48,7 +48,7 @@ from ticket_agent.orchestrator.execution_approval import (
     SlackExecutionApprovalService,
 )
 from ticket_agent.orchestrator.execution_worker import ExecutionWorker
-from ticket_agent.orchestrator.git_services import GitService
+from ticket_agent.orchestrator.git_services import GitService, WorktreeCleanupService
 from ticket_agent.orchestrator.graph import build_persistent_ticket_graph
 from ticket_agent.orchestrator.jira_services import JiraEscalationService
 from ticket_agent.orchestrator.local_services import (
@@ -235,6 +235,7 @@ def build_runtime(
     implementation_loop = (
         None if implementation is not None else IterativeImplementationService(router)
     )
+    worktree_cleaner = WorktreeCleanupService()
 
     execution_service = JiraExecutionService(
         jira_client,
@@ -288,6 +289,9 @@ def build_runtime(
             execution_service,
             runner,
             emit=emit,
+            slack=slack,
+            worktree_cleaner=worktree_cleaner,
+            checkpointer=checkpointer,
         ),
         detector,
     )

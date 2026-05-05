@@ -17,7 +17,7 @@ from ticket_agent.orchestrator.execution_worker import (
     ExecutionWorker,
     TicketExecutionCoordinator,
 )
-from ticket_agent.orchestrator.git_services import GitService
+from ticket_agent.orchestrator.git_services import GitService, WorktreeCleanupService
 from ticket_agent.orchestrator.jira_services import (
     JiraEscalationService,
     JiraLabelApprovalService,
@@ -108,6 +108,7 @@ __all__ = [
     "TicketNodeRunner",
     "TicketWorkItem",
     "TicketWorkflowNodes",
+    "WorktreeCleanupService",
     "build_ticket_graph",
     "build_persistent_ticket_graph",
 ]
