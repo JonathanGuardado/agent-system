@@ -28,6 +28,8 @@ from ticket_agent.jira.constants import (
     FIELD_SLACK_THREAD_TS,
 )
 
+_JIRA_PROJECT_ISSUE_TYPES_REQUIRED = frozenset({"Epic", "Task"})
+
 
 SmokeStatus = Literal["pass", "fail", "skip"]
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
@@ -86,39 +88,23 @@ async def collect_smoke_checks(
     checks.append(_gh_auth_check(run_command or subprocess.run))
 
     if app_config is None:
-        checks.append(
-            SmokeCheck(
-                "repo_contracts",
-                "skip",
-                "startup config failed before contract path could be resolved",
-            )
-        )
-        checks.append(
-            SmokeCheck(
-                "jira_field_map",
-                "skip",
-                "startup config failed before Jira field map could be checked",
-            )
-        )
-        checks.append(
-            SmokeCheck(
-                "network_auth",
-                "skip",
-                "startup config failed before auth endpoints could be checked",
-            )
-        )
+        _skip_all = "startup config failed before auth endpoints could be checked"
+        checks.append(SmokeCheck("repo_contracts", "skip", "startup config failed before contract path could be resolved"))
+        checks.append(SmokeCheck("jira_field_map", "skip", "startup config failed before Jira field map could be checked"))
+        checks.append(SmokeCheck("slack_auth", "skip", _skip_all))
+        checks.append(SmokeCheck("jira_auth", "skip", _skip_all))
+        checks.append(SmokeCheck("jira_project_metadata", "skip", _skip_all))
+        checks.append(SmokeCheck("jira_epic_link_field", "skip", _skip_all))
         return checks
 
     checks.append(_repo_contracts_check(app_config.runtime.contract_dir))
     checks.append(_jira_field_map_check(app_config))
     checks.extend(_model_env_checks())
     if skip_network:
-        checks.append(
-            SmokeCheck("slack_auth", "skip", "network checks skipped")
-        )
-        checks.append(
-            SmokeCheck("jira_auth", "skip", "network checks skipped")
-        )
+        checks.append(SmokeCheck("slack_auth", "skip", "network checks skipped"))
+        checks.append(SmokeCheck("jira_auth", "skip", "network checks skipped"))
+        checks.append(SmokeCheck("jira_project_metadata", "skip", "network checks skipped"))
+        checks.append(SmokeCheck("jira_epic_link_field", "skip", "network checks skipped"))
     else:
         checks.append(await _slack_auth_check(app_config.slack_bot_token))
         checks.append(
@@ -129,6 +115,7 @@ async def collect_smoke_checks(
                 app_config.jira_timeout_s,
             )
         )
+        checks.extend(await _jira_metadata_checks(app_config))
     return checks
 
 
@@ -273,6 +260,152 @@ async def _jira_auth_check(
     except Exception as exc:  # noqa: BLE001 - smoke boundary
         return SmokeCheck("jira_auth", "fail", _error_message(exc))
     return SmokeCheck("jira_auth", "pass", "Jira /myself succeeded")
+
+
+async def _jira_metadata_checks(app_config: AppConfig) -> list[SmokeCheck]:
+    """Run Jira project-level metadata checks for each configured target project."""
+    target_projects = app_config.jira_target_projects
+    if not target_projects:
+        return [
+            SmokeCheck(
+                "jira_project_metadata",
+                "skip",
+                "no target projects configured; set AGENT_SYSTEM_JIRA_TARGET_PROJECTS",
+            ),
+            SmokeCheck(
+                "jira_epic_link_field",
+                "skip",
+                "no target projects configured",
+            ),
+        ]
+
+    checks: list[SmokeCheck] = []
+    for project_key in target_projects:
+        checks.extend(
+            await _jira_project_checks(
+                app_config.jira_base_url,
+                app_config.jira_user_email,
+                app_config.jira_api_key,
+                app_config.jira_timeout_s,
+                project_key,
+            )
+        )
+    checks.append(
+        await _jira_epic_link_field_check(
+            app_config.jira_base_url,
+            app_config.jira_user_email,
+            app_config.jira_api_key,
+            app_config.jira_timeout_s,
+            app_config.jira_field_map,
+        )
+    )
+    return checks
+
+
+async def _jira_project_checks(
+    base_url: str,
+    user_email: str,
+    api_key: str,
+    timeout_s: float,
+    project_key: str,
+) -> list[SmokeCheck]:
+    """Verify a Jira project exists and has the required issue types."""
+    url = base_url.rstrip("/") + f"/rest/api/3/project/{project_key}"
+    proj_name = f"jira_project_{project_key.lower()}"
+    types_name = f"jira_issue_types_{project_key.lower()}"
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            response = await client.get(
+                url,
+                auth=(user_email, api_key),
+                headers={"Accept": "application/json"},
+            )
+    except Exception as exc:  # noqa: BLE001 - smoke boundary
+        msg = _error_message(exc)
+        return [
+            SmokeCheck(proj_name, "fail", msg),
+            SmokeCheck(types_name, "skip", f"{proj_name} failed"),
+        ]
+
+    if response.status_code == 404:
+        return [
+            SmokeCheck(proj_name, "fail", f"project {project_key} not found in Jira"),
+            SmokeCheck(types_name, "skip", f"project {project_key} not found"),
+        ]
+
+    try:
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:  # noqa: BLE001 - smoke boundary
+        return [
+            SmokeCheck(proj_name, "fail", _error_message(exc)),
+            SmokeCheck(types_name, "skip", f"{proj_name} failed"),
+        ]
+
+    issue_types = data.get("issueTypes") or []
+    present = {t.get("name", "") for t in issue_types if isinstance(t, dict)}
+    missing = sorted(_JIRA_PROJECT_ISSUE_TYPES_REQUIRED - present)
+
+    project_check = SmokeCheck(proj_name, "pass", f"project {project_key} found")
+    if missing:
+        types_check = SmokeCheck(
+            types_name,
+            "fail",
+            f"project {project_key} missing issue types: {', '.join(missing)}",
+        )
+    else:
+        types_check = SmokeCheck(
+            types_name,
+            "pass",
+            f"project {project_key} has Epic and Task issue types",
+        )
+    return [project_check, types_check]
+
+
+async def _jira_epic_link_field_check(
+    base_url: str,
+    user_email: str,
+    api_key: str,
+    timeout_s: float,
+    field_map: Mapping[str, str],
+) -> SmokeCheck:
+    """Verify the configured Epic Link field ID exists in Jira, or skip if unconfigured."""
+    epic_link_field_id = field_map.get(FIELD_EPIC_LINK)
+    if not epic_link_field_id:
+        return SmokeCheck(
+            "jira_epic_link_field",
+            "skip",
+            "FIELD_EPIC_LINK not configured; parent key approach will be used",
+        )
+
+    url = base_url.rstrip("/") + "/rest/api/3/field"
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            response = await client.get(
+                url,
+                auth=(user_email, api_key),
+                headers={"Accept": "application/json"},
+            )
+            response.raise_for_status()
+            fields = response.json()
+    except Exception as exc:  # noqa: BLE001 - smoke boundary
+        return SmokeCheck("jira_epic_link_field", "fail", _error_message(exc))
+
+    if not isinstance(fields, list):
+        return SmokeCheck("jira_epic_link_field", "fail", "Jira /field response was not a list")
+
+    field_ids = {f.get("id", "") for f in fields if isinstance(f, dict)}
+    if epic_link_field_id not in field_ids:
+        return SmokeCheck(
+            "jira_epic_link_field",
+            "fail",
+            f"Epic Link field {epic_link_field_id!r} not found in Jira fields",
+        )
+    return SmokeCheck(
+        "jira_epic_link_field",
+        "pass",
+        f"Epic Link field {epic_link_field_id!r} found",
+    )
 
 
 def _format_checks(checks: Sequence[SmokeCheck]) -> str:

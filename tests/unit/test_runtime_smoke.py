@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from ticket_agent import runtime_smoke as runtime_smoke_module
 from ticket_agent.runtime_smoke import collect_smoke_checks, main
 
 
@@ -71,6 +72,292 @@ def test_runtime_smoke_main_returns_failure_when_gh_auth_fails(tmp_path, capsys)
 
     assert exit_code == 1
     assert "not logged in" in capsys.readouterr().out
+
+
+def test_jira_project_metadata_skipped_when_no_network(tmp_path):
+    contract_dir = _write_contract(tmp_path)
+    checks = asyncio.run(
+        collect_smoke_checks(
+            env=_env(contract_dir),
+            env_path=_empty_env_file(tmp_path),
+            skip_network=True,
+            run_command=_successful_command,
+        )
+    )
+    by_name = {check.name: check for check in checks}
+    assert by_name["jira_project_metadata"].status == "skip"
+    assert by_name["jira_epic_link_field"].status == "skip"
+
+
+def test_jira_project_metadata_skipped_when_no_target_projects(tmp_path, monkeypatch):
+    contract_dir = _write_contract(tmp_path)
+    env = _env(contract_dir)
+    # No AGENT_SYSTEM_JIRA_TARGET_PROJECTS in env
+    monkeypatch.setattr(runtime_smoke_module, "httpx", _FakeHttpx([]))
+
+    checks = asyncio.run(
+        collect_smoke_checks(
+            env=env,
+            env_path=_empty_env_file(tmp_path),
+            skip_network=False,
+            run_command=_successful_command,
+        )
+    )
+    by_name = {check.name: check for check in checks}
+    assert by_name["jira_project_metadata"].status == "skip"
+    assert "AGENT_SYSTEM_JIRA_TARGET_PROJECTS" in by_name["jira_project_metadata"].detail
+    assert by_name["jira_epic_link_field"].status == "skip"
+
+
+def test_jira_project_exists_check_passes(tmp_path, monkeypatch):
+    contract_dir = _write_contract(tmp_path)
+    env = _env(contract_dir)
+    env["AGENT_SYSTEM_JIRA_TARGET_PROJECTS"] = "AGENT"
+    project_response = {
+        "key": "AGENT",
+        "issueTypes": [
+            {"name": "Task"},
+            {"name": "Bug"},
+            {"name": "Epic"},
+        ],
+    }
+    # _env() includes JIRA_FIELD_EPIC_LINK → field check runs and needs a response.
+    field_response = [{"id": "customfield_epic_link"}]
+    monkeypatch.setattr(
+        runtime_smoke_module,
+        "httpx",
+        _FakeHttpx([project_response, field_response]),
+    )
+
+    checks = asyncio.run(
+        collect_smoke_checks(
+            env=env,
+            env_path=_empty_env_file(tmp_path),
+            skip_network=False,
+            run_command=_successful_command,
+        )
+    )
+    by_name = {check.name: check for check in checks}
+    assert by_name["jira_project_agent"].status == "pass"
+    assert by_name["jira_issue_types_agent"].status == "pass"
+
+
+def test_jira_project_not_found_fails(tmp_path, monkeypatch):
+    contract_dir = _write_contract(tmp_path)
+    env = _env(contract_dir)
+    env["AGENT_SYSTEM_JIRA_TARGET_PROJECTS"] = "MISSING"
+    # _env() includes JIRA_FIELD_EPIC_LINK → field check runs after the project check.
+    field_response = [{"id": "customfield_epic_link"}]
+    monkeypatch.setattr(
+        runtime_smoke_module,
+        "httpx",
+        _FakeHttpx([_NotFoundResponse(), field_response]),
+    )
+
+    checks = asyncio.run(
+        collect_smoke_checks(
+            env=env,
+            env_path=_empty_env_file(tmp_path),
+            skip_network=False,
+            run_command=_successful_command,
+        )
+    )
+    by_name = {check.name: check for check in checks}
+    assert by_name["jira_project_missing"].status == "fail"
+    assert "not found" in by_name["jira_project_missing"].detail
+    assert by_name["jira_issue_types_missing"].status == "skip"
+
+
+def test_jira_issue_types_check_fails_when_epic_missing(tmp_path, monkeypatch):
+    contract_dir = _write_contract(tmp_path)
+    env = _env(contract_dir)
+    env["AGENT_SYSTEM_JIRA_TARGET_PROJECTS"] = "AGENT"
+    project_response = {
+        "key": "AGENT",
+        "issueTypes": [{"name": "Task"}, {"name": "Bug"}],  # no Epic
+    }
+    # _env() includes JIRA_FIELD_EPIC_LINK → field check runs.
+    field_response = [{"id": "customfield_epic_link"}]
+    monkeypatch.setattr(
+        runtime_smoke_module,
+        "httpx",
+        _FakeHttpx([project_response, field_response]),
+    )
+
+    checks = asyncio.run(
+        collect_smoke_checks(
+            env=env,
+            env_path=_empty_env_file(tmp_path),
+            skip_network=False,
+            run_command=_successful_command,
+        )
+    )
+    by_name = {check.name: check for check in checks}
+    assert by_name["jira_project_agent"].status == "pass"
+    assert by_name["jira_issue_types_agent"].status == "fail"
+    assert "Epic" in by_name["jira_issue_types_agent"].detail
+
+
+def test_jira_epic_link_field_passes_when_configured_and_found(tmp_path, monkeypatch):
+    contract_dir = _write_contract(tmp_path)
+    env = _env(contract_dir)
+    env["AGENT_SYSTEM_JIRA_TARGET_PROJECTS"] = "AGENT"
+    env["JIRA_FIELD_EPIC_LINK"] = "customfield_10014"
+    project_response = {
+        "key": "AGENT",
+        "issueTypes": [{"name": "Task"}, {"name": "Epic"}],
+    }
+    fields_response = [{"id": "customfield_10014", "name": "Epic Link"}]
+    monkeypatch.setattr(
+        runtime_smoke_module,
+        "httpx",
+        _FakeHttpx([project_response, fields_response]),
+    )
+
+    checks = asyncio.run(
+        collect_smoke_checks(
+            env=env,
+            env_path=_empty_env_file(tmp_path),
+            skip_network=False,
+            run_command=_successful_command,
+        )
+    )
+    by_name = {check.name: check for check in checks}
+    assert by_name["jira_epic_link_field"].status == "pass"
+    assert "customfield_10014" in by_name["jira_epic_link_field"].detail
+
+
+def test_jira_epic_link_field_fails_when_field_not_in_jira(tmp_path, monkeypatch):
+    contract_dir = _write_contract(tmp_path)
+    env = _env(contract_dir)
+    env["AGENT_SYSTEM_JIRA_TARGET_PROJECTS"] = "AGENT"
+    env["JIRA_FIELD_EPIC_LINK"] = "customfield_99999"
+    project_response = {
+        "key": "AGENT",
+        "issueTypes": [{"name": "Task"}, {"name": "Epic"}],
+    }
+    fields_response = [{"id": "customfield_10014", "name": "Epic Link"}]
+    monkeypatch.setattr(
+        runtime_smoke_module,
+        "httpx",
+        _FakeHttpx([project_response, fields_response]),
+    )
+
+    checks = asyncio.run(
+        collect_smoke_checks(
+            env=env,
+            env_path=_empty_env_file(tmp_path),
+            skip_network=False,
+            run_command=_successful_command,
+        )
+    )
+    by_name = {check.name: check for check in checks}
+    assert by_name["jira_epic_link_field"].status == "fail"
+    assert "customfield_99999" in by_name["jira_epic_link_field"].detail
+
+
+def test_jira_epic_link_field_skipped_when_not_configured(tmp_path, monkeypatch):
+    contract_dir = _write_contract(tmp_path)
+    env = _env(contract_dir)
+    env["AGENT_SYSTEM_JIRA_TARGET_PROJECTS"] = "AGENT"
+    # Remove the EPIC_LINK mapping so the field check is skipped (no GET /field call).
+    del env["JIRA_FIELD_EPIC_LINK"]
+    project_response = {
+        "key": "AGENT",
+        "issueTypes": [{"name": "Task"}, {"name": "Epic"}],
+    }
+    monkeypatch.setattr(
+        runtime_smoke_module,
+        "httpx",
+        _FakeHttpx([project_response]),
+    )
+
+    checks = asyncio.run(
+        collect_smoke_checks(
+            env=env,
+            env_path=_empty_env_file(tmp_path),
+            skip_network=False,
+            run_command=_successful_command,
+        )
+    )
+    by_name = {check.name: check for check in checks}
+    assert by_name["jira_epic_link_field"].status == "skip"
+    assert "parent key" in by_name["jira_epic_link_field"].detail
+
+
+# ---------------------------------------------------------------------------
+# Fake httpx infrastructure for network-isolated smoke check tests
+# ---------------------------------------------------------------------------
+#
+# _FakeHttpx uses a shared response queue consumed across AsyncClient instances.
+# URL /myself is handled automatically (jira auth) without consuming from the
+# queue. Slack auth uses post() which always returns {"ok": True}.
+# All other GET calls consume the next item from the queue in order.
+
+
+class _NotFoundResponse:
+    status_code = 404
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> object:
+        return {}
+
+
+class _FakeResponse:
+    status_code = 200
+
+    def __init__(self, payload: object) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> object:
+        return self._payload
+
+
+class _FakeAsyncClient:
+    """One AsyncClient instance, backed by the shared _FakeHttpx response queue."""
+
+    def __init__(self, owner: "_FakeHttpx") -> None:
+        self._owner = owner
+
+    async def __aenter__(self) -> "_FakeAsyncClient":
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        return None
+
+    async def get(self, url: str, **kwargs: Any) -> Any:
+        del kwargs
+        if "/myself" in url:
+            # Jira auth check — always succeed without consuming the queue.
+            return _FakeResponse({})
+        resp = self._owner._consume()
+        return resp if isinstance(resp, _NotFoundResponse) else _FakeResponse(resp)
+
+    async def post(self, url: str, **kwargs: Any) -> Any:
+        del url, kwargs
+        return _FakeResponse({"ok": True})
+
+
+class _FakeHttpx:
+    """Drop-in replacement for the httpx module in smoke check tests."""
+
+    def __init__(self, responses: list[Any]) -> None:
+        self._queue = list(responses)
+        self._pos = 0
+
+    def AsyncClient(self, **kwargs: Any) -> "_FakeAsyncClient":
+        del kwargs
+        return _FakeAsyncClient(self)
+
+    def _consume(self) -> Any:
+        item = self._queue[self._pos]
+        self._pos += 1
+        return item
 
 
 def _write_contract(tmp_path: Path) -> Path:

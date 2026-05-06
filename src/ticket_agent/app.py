@@ -144,6 +144,7 @@ class AppConfig:
     jira_api_key: str
     jira_timeout_s: float
     jira_field_map: Mapping[str, str]
+    jira_target_projects: tuple[str, ...]
     runtime: RuntimeConfig
 
 
@@ -610,6 +611,7 @@ def load_app_config(
         jira_api_key=_required(merged_env, "JIRA_API_KEY"),
         jira_timeout_s=_float_env(merged_env, "JIRA_TIMEOUT_SECONDS", default=30.0),
         jira_field_map=_jira_field_map(merged_env),
+        jira_target_projects=_jira_target_projects(merged_env),
         runtime=runtime_config,
     )
 
@@ -876,6 +878,13 @@ def _optional_int_env(env: Mapping[str, str], name: str) -> int | None:
     if value < 1:
         raise StartupConfigError(f"{name} must be positive")
     return value
+
+
+def _jira_target_projects(env: Mapping[str, str]) -> tuple[str, ...]:
+    raw = _env_value(env, "AGENT_SYSTEM_JIRA_TARGET_PROJECTS")
+    if not raw:
+        return ()
+    return tuple(k.strip().upper() for k in raw.split(",") if k.strip())
 
 
 def _jira_field_map(env: Mapping[str, str]) -> Mapping[str, str]:

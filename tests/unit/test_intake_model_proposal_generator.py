@@ -124,6 +124,101 @@ def test_model_proposal_generator_revision_preserves_prior_context():
     assert revised.tickets[0].repo_path == "/home/agent"
 
 
+def test_model_provided_project_key_cannot_override_trusted_context():
+    """Model-returned project_key must be ignored; value must come from request text."""
+    router = _Router(
+        {
+            "title": "Add feature",
+            "summary": "Implement the feature.",
+            "project_key": "ATTACKER",  # model tries to override
+            "tickets": [{"summary": "Implement feature", "description": ""}],
+        }
+    )
+
+    proposal = asyncio.run(
+        ModelRouterProposalGenerator(
+            router,
+            clock=_clock,
+        ).generate(_request("Add feature to AGENT project"))
+    ).proposal
+
+    assert proposal is not None
+    assert proposal.project_key == "AGENT"
+
+
+def test_model_provided_repository_cannot_override_trusted_context():
+    """Model-returned repository and repo_path in tickets must be ignored."""
+    router = _Router(
+        {
+            "title": "Add feature",
+            "tickets": [
+                {
+                    "summary": "Implement feature",
+                    "description": "",
+                    "repository": "attacker-repo",
+                    "repo_path": "/evil/path",
+                }
+            ],
+        }
+    )
+
+    proposal = asyncio.run(
+        ModelRouterProposalGenerator(
+            router,
+            clock=_clock,
+        ).generate(_request("Add feature to AGENT project"))
+    ).proposal
+
+    assert proposal is not None
+    assert proposal.tickets[0].repository == "agent-system"
+    assert proposal.tickets[0].repo_path == "/home/agent"
+
+
+def test_model_tickets_truncated_to_max_tickets():
+    """Model output exceeding max_tickets is truncated deterministically."""
+    seven_tickets = [
+        {"summary": f"Ticket {i}", "description": ""} for i in range(7)
+    ]
+    router = _Router(
+        {
+            "title": "Big project",
+            "tickets": seven_tickets,
+        }
+    )
+
+    proposal = asyncio.run(
+        ModelRouterProposalGenerator(
+            router,
+            clock=_clock,
+            max_tickets=5,
+        ).generate(_request("For AGENT project, do many things"))
+    ).proposal
+
+    assert proposal is not None
+    assert len(proposal.tickets) == 5
+    assert proposal.tickets[0].summary == "Ticket 0"
+    assert proposal.tickets[4].summary == "Ticket 4"
+
+
+def test_model_tickets_default_max_is_five():
+    """Default max_tickets is MAX_TICKETS (5)."""
+    from ticket_agent.intake.proposal_generator import MAX_TICKETS
+
+    assert MAX_TICKETS == 5
+
+    six_tickets = [{"summary": f"Ticket {i}", "description": ""} for i in range(6)]
+    router = _Router({"title": "Project", "tickets": six_tickets})
+
+    proposal = asyncio.run(
+        ModelRouterProposalGenerator(router, clock=_clock).generate(
+            _request("For AGENT project, do things")
+        )
+    ).proposal
+
+    assert proposal is not None
+    assert len(proposal.tickets) == MAX_TICKETS
+
+
 def _request(
     text: str,
     *,

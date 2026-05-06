@@ -81,6 +81,9 @@ class ModelRouterProtocol(Protocol):
     ) -> object: ...
 
 
+MAX_TICKETS = 5
+
+
 class _ModelTicketPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -90,8 +93,8 @@ class _ModelTicketPayload(BaseModel):
     priority: str | None = None
     labels: list[str] = Field(default_factory=list)
     capabilities_needed: list[str] = Field(default_factory=list)
-    repository: str | None = None
-    repo_path: str | None = None
+    # repository and repo_path are not accepted from the model;
+    # they are resolved from repo_defaults or prior proposal only.
 
 
 class _ModelProposalPayload(BaseModel):
@@ -99,8 +102,9 @@ class _ModelProposalPayload(BaseModel):
 
     title: str | None = None
     summary: str | None = None
-    project_key: str | None = None
-    epic_key: str | None = None
+    # project_key and epic_key are not accepted from the model;
+    # project_key comes from request text or prior proposal,
+    # epic_key comes from request text or prior proposal.
     epic_summary: str | None = None
     epic_description: str | None = None
     assumptions: list[str] = Field(default_factory=list)
@@ -210,9 +214,12 @@ class ModelRouterProposalGenerator:
         proposal_id_factory: ProposalIdFactory | None = None,
         ttl_seconds: int = PROPOSAL_TTL_SECONDS,
         min_model_words: int = 4,
+        max_tickets: int = MAX_TICKETS,
     ) -> None:
         if min_model_words < 1:
             raise ValueError("min_model_words must be at least 1")
+        if max_tickets < 1:
+            raise ValueError("max_tickets must be at least 1")
         self._model_router = model_router
         self._fallback = fallback or DeterministicProposalGenerator(
             clock=clock,
@@ -223,6 +230,7 @@ class ModelRouterProposalGenerator:
         self._proposal_id_factory = proposal_id_factory or _default_proposal_id
         self._ttl_seconds = ttl_seconds
         self._min_model_words = min_model_words
+        self._max_tickets = max_tickets
 
     async def generate(
         self,
@@ -268,16 +276,15 @@ class ModelRouterProposalGenerator:
             raise ValueError("model proposal must include at least one ticket")
 
         text = request.text.strip()
-        project_key = (
-            _clean_optional(payload.project_key)
-            or _extract_project_key(text)
-            or (prior.project_key if prior is not None else None)
+        # project_key and epic_key come from request text or prior proposal only —
+        # the model is not trusted to set operational context.
+        project_key = _extract_project_key(text) or (
+            prior.project_key if prior is not None else None
         )
-        epic_key = (
-            _clean_optional(payload.epic_key)
-            or _extract_epic_key(text)
-            or (prior.epic_key if prior is not None else None)
+        epic_key = _extract_epic_key(text) or (
+            prior.epic_key if prior is not None else None
         )
+        # repository and repo_path come from repo_defaults or prior proposal only.
         repository, repo_path = _resolve_repository(
             text,
             project_key,
@@ -294,6 +301,8 @@ class ModelRouterProposalGenerator:
         if clarification is not None:
             return ProposalDraft(clarification=clarification)
 
+        # Truncate to max_tickets before building specs.
+        raw_tickets = payload.tickets[: self._max_tickets]
         tickets = [
             _ticket_spec_from_model_ticket(
                 ticket,
@@ -301,7 +310,7 @@ class ModelRouterProposalGenerator:
                 default_repository=repository,
                 default_repo_path=repo_path,
             )
-            for ticket in payload.tickets
+            for ticket in raw_tickets
         ]
 
         now = self._clock()
@@ -395,8 +404,9 @@ def _ticket_spec_from_model_ticket(
         priority=_clean_optional(ticket.priority),
         labels=labels,
         capabilities_needed=capabilities,
-        repository=_clean_optional(ticket.repository) or default_repository,
-        repo_path=_clean_optional(ticket.repo_path) or default_repo_path,
+        # Always use trusted context — model cannot override repository or repo_path.
+        repository=default_repository,
+        repo_path=default_repo_path,
     )
 
 
@@ -424,10 +434,12 @@ def _model_proposal_messages(
                     f"capability: {request.resolution.capability}",
                     f"repo_defaults: {json.dumps(request.repo_defaults)}",
                     f"prior_proposal: {prior_json}",
-                    "Required JSON schema:",
+                    "Required JSON schema (omit project_key, epic_key, "
+                    "repository, repo_path, slack_channel, slack_thread, "
+                    "and Jira field IDs — the system sets these from trusted "
+                    "context and will ignore any values you provide):",
                     (
                         '{"title": "string", "summary": "string", '
-                        '"project_key": "AGENT", "epic_key": null, '
                         '"epic_summary": "optional string", '
                         '"epic_description": "optional string", '
                         '"assumptions": ["string"], '
@@ -435,14 +447,10 @@ def _model_proposal_messages(
                         '"tickets": [{"summary": "string", '
                         '"description": "string", "issue_type": "Task", '
                         '"priority": null, "labels": ["ai-ready"], '
-                        '"capabilities_needed": ["code.implement"], '
-                        '"repository": "repo-name", '
-                        '"repo_path": "/absolute/repo/path"}]}'
+                        '"capabilities_needed": ["code.implement"]}]}'
                     ),
                     "Create multiple tickets only when the request naturally "
                     "contains multiple deliverable slices.",
-                    "Use an existing epic_key only if the request or prior "
-                    "proposal provides one.",
                     "Do not create brand-new Jira projects.",
                     "Return JSON only. No markdown fences. No prose before or "
                     "after JSON.",
@@ -668,6 +676,7 @@ def _default_proposal_id() -> str:
 
 __all__ = [
     "DeterministicProposalGenerator",
+    "MAX_TICKETS",
     "ModelRouterProposalGenerator",
     "ProposalDraft",
     "ProposalGenerator",
