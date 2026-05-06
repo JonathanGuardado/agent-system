@@ -21,23 +21,20 @@ We are building the system incrementally.
 Current phase:
 
 - P0: ✅ Infrastructure
-- P1: ✅ Intake handler foundation
-- P2: ✅ Detection + Locking foundation
-- P3: ✅ Tool adapters
-- P4: ✅ Internal ModelRouter + provider clients (smoke validated)
-- P5: 🚧 LangGraph pipeline — skeleton + services built, wiring pending
+- P1: ✅ Slack intake + proposal approvals
+- P2: ✅ Detection + SQLite locking
+- P3: ✅ Local tool adapters
+- P4: ✅ Internal ModelRouter + provider clients
+- P5: ✅ MVP runtime wiring
 
-Current active task:
-
-Wire the remaining full end-to-end pipeline pieces: the real coding-agent loop
-and the process entrypoint that boots Slack intake + Detection +
-ExecutionWorker together.
-
-P5 work already done:
+MVP work now includes:
 - LangGraph StateGraph (graph.py) with full node sequence and routing
 - TicketState, service Protocols, TicketNodeRunner (DI surface)
 - LocalImplementationService (worktree prep), AdapterTestService
-- ModelRouterPlannerService, ModelRouterImplementationService, ModelRouterReviewService
+- IterativeImplementationService with file-only JSON tool calls
+- ModelRouterProposalGenerator with deterministic fallback
+- JiraWriter support for multi-ticket Epic creation in existing projects
+- ModelRouterPlannerService, ModelRouterReviewService
 - GitService (commit/push) + GhPullRequestOpener
 - JiraEscalationService, JiraLabelApprovalService, AutoApprovalService
 - OrchestratorRunner (lock+heartbeat+claim+graph+release)
@@ -46,14 +43,14 @@ P5 work already done:
 - SQLiteCheckpointer wired into persistent graph compilation
 - OrchestratorRunner stale-checkpoint guard after fresh lock acquisition
 - Slack-driven execution-approval interrupt + SQLite approval persistence
-- 352 unit tests passing
+- app.py process entrypoint for Slack listener + Detection + ExecutionWorker
+- runtime smoke check for Slack/Jira/GitHub/config prerequisites
 
-P5 remaining gaps (in priority order):
-1. Coding-agent loop — LocalImplementationService defaults to _prepare_only_step (no writes); ModelRouterImplementationService is single-shot, no tool-use iteration
-2. Process entrypoint — no app.py that boots Slack listener + Detection + ExecutionWorker together
-
-Do not claim Slack, Jira, the full orchestrator, or the coding-agent loop are
-done until the coding-agent loop is implemented.
+Deferred after MVP:
+- brand-new Jira project creation
+- Slack Block Kit buttons
+- model-callable shell/test/git tools
+- MCP/OpenClaw/multi-host execution
 
 ## Runtime model
 

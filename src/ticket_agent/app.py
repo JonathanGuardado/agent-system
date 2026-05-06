@@ -20,7 +20,10 @@ from ticket_agent.detection.ownership import OwnershipChecker
 from ticket_agent.intake.approval_flow import ApprovalFlow, SlackPoster
 from ticket_agent.intake.intent_resolver import IntakeIntentResolver
 from ticket_agent.intake.jira_writer import JiraWriter
-from ticket_agent.intake.proposal_generator import DeterministicProposalGenerator
+from ticket_agent.intake.proposal_generator import (
+    DeterministicProposalGenerator,
+    ModelRouterProposalGenerator,
+)
 from ticket_agent.intake.proposal_store import ProposalStore
 from ticket_agent.intake.slack_listener import (
     SlackIntakeListener,
@@ -32,9 +35,12 @@ from ticket_agent.jira.constants import (
     FIELD_AGENT_ASSIGNED_COMPONENT,
     FIELD_AGENT_CAPABILITIES_NEEDED,
     FIELD_AGENT_RETRY_COUNT,
+    FIELD_EPIC_LINK,
     FIELD_MAX_ATTEMPTS,
     FIELD_REPOSITORY,
     FIELD_REPO_PATH,
+    FIELD_SLACK_CHANNEL,
+    FIELD_SLACK_THREAD_TS,
 )
 from ticket_agent.jira.execution_coordinator import JiraExecutionCoordinator
 from ticket_agent.jira.execution_service import JiraExecutionService
@@ -283,23 +289,25 @@ def build_runtime(
         max_backoff_seconds=runtime_config.max_backoff_seconds,
         emit=emit,
     )
-    coordinator = _MarkDoneCoordinator(
-        JiraExecutionCoordinator(
-            JiraWorkItemLoader(jira_client),
-            execution_service,
-            runner,
-            emit=emit,
-            slack=slack,
-            worktree_cleaner=worktree_cleaner,
-            checkpointer=checkpointer,
-        ),
-        detector,
+    jira_coordinator = JiraExecutionCoordinator(
+        JiraWorkItemLoader(jira_client),
+        execution_service,
+        runner,
+        emit=emit,
+        slack=slack,
+        worktree_cleaner=worktree_cleaner,
+        checkpointer=checkpointer,
     )
+    coordinator = _MarkDoneCoordinator(jira_coordinator, detector)
     worker = ExecutionWorker(detector_queue, coordinator, emit=emit)
 
+    proposal_generator = ModelRouterProposalGenerator(
+        router,
+        fallback=DeterministicProposalGenerator(),
+    )
     approval_flow = ApprovalFlow(
         resolver=IntakeIntentResolver(),
-        generator=DeterministicProposalGenerator(),
+        generator=proposal_generator,
         store=proposal_store,
         jira_writer=JiraWriter(jira_client),
         slack=slack,
@@ -310,6 +318,7 @@ def build_runtime(
         store=approval_store,
         graph=graph,
         slack=slack,
+        on_resumed=jira_coordinator.finalize_resumed_state,
     )
     listener = SlackIntakeListener(
         approval_flow=approval_flow,
@@ -898,6 +907,9 @@ _JIRA_FIELD_ENV_NAMES = {
     "JIRA_FIELD_AGENT_CAPABILITIES_NEEDED": FIELD_AGENT_CAPABILITIES_NEEDED,
     "JIRA_FIELD_REPOSITORY": FIELD_REPOSITORY,
     "JIRA_FIELD_REPO_PATH": FIELD_REPO_PATH,
+    "JIRA_FIELD_SLACK_CHANNEL": FIELD_SLACK_CHANNEL,
+    "JIRA_FIELD_SLACK_THREAD_TS": FIELD_SLACK_THREAD_TS,
+    "JIRA_FIELD_EPIC_LINK": FIELD_EPIC_LINK,
     "JIRA_FIELD_MAX_ATTEMPTS": FIELD_MAX_ATTEMPTS,
 }
 
@@ -934,6 +946,8 @@ def _config_payload(app_config: AppConfig) -> dict[str, Any]:
     return {
         "env_path": str(app_config.env_path),
         "env_file_loaded": app_config.env_file_loaded,
+        "jira_field_map_configured": bool(app_config.jira_field_map),
+        "jira_field_map_keys": sorted(app_config.jira_field_map),
     }
 
 

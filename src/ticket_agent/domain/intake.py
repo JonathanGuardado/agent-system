@@ -59,12 +59,18 @@ class Proposal(BaseModel):
 
     proposal_id: str
     slack_user_id: str
+    slack_channel: str | None = None
     slack_thread_ts: str
     mode: IntakeMode
     project_key: str | None = None
     epic_key: str | None = None
+    epic_summary: str | None = None
+    epic_description: str | None = None
+    created_epic_key: str | None = None
     title: str
     summary: str
+    assumptions: list[str] = Field(default_factory=list)
+    effort_estimate: str | None = None
     tickets: list[TicketSpec] = Field(default_factory=list)
     revision_count: int = 0
     status: ProposalStatus = ProposalStatus.DRAFTING

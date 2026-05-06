@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
+from inspect import isawaitable
 from typing import Protocol
 
 from ticket_agent.domain.intake import (
@@ -16,6 +17,7 @@ from ticket_agent.domain.intake import (
 from ticket_agent.intake.intent_resolver import IntakeIntentResolver
 from ticket_agent.intake.jira_writer import JiraWriteResult, JiraWriter
 from ticket_agent.intake.proposal_generator import (
+    ProposalDraft,
     ProposalGenerator,
     ProposalRequest,
 )
@@ -115,9 +117,10 @@ class ApprovalFlow:
             slack_thread_ts=thread_ts,
             text=text,
             resolution=resolution,
+            slack_channel=channel,
             repo_defaults=self._repo_defaults,
         )
-        draft = self._generator.generate(request)
+        draft = await _generate_proposal(self._generator, request)
         if draft.needs_clarification:
             assert draft.clarification is not None
             await self._post(channel, thread_ts, user_id, draft.clarification)
@@ -186,7 +189,7 @@ class ApprovalFlow:
             return ApprovalResult(outcome=ApprovalOutcome.NO_ACTIVE_PROPOSAL)
 
         result = await self._jira_writer.write(proposal)
-        if not result.created_ticket_keys:
+        if not result.created_ticket_keys and not result.created_epic_key:
             self._store.mark_status(
                 proposal.proposal_id, ProposalStatus.AWAITING_CONFIRMATION
             )
@@ -270,9 +273,10 @@ class ApprovalFlow:
             slack_thread_ts=proposal.slack_thread_ts,
             text=merged_text,
             resolution=resolution,
+            slack_channel=channel or proposal.slack_channel,
             repo_defaults=self._repo_defaults,
         )
-        draft = self._generator.generate(request, prior=proposal)
+        draft = await _generate_proposal(self._generator, request, prior=proposal)
         if draft.needs_clarification:
             assert draft.clarification is not None
             await self._post(
@@ -337,6 +341,18 @@ def _classify_reply(text: str) -> str:
     return "edit"
 
 
+async def _generate_proposal(
+    generator: ProposalGenerator,
+    request: ProposalRequest,
+    *,
+    prior: Proposal | None = None,
+) -> ProposalDraft:
+    draft = generator.generate(request, prior=prior)
+    if isawaitable(draft):
+        draft = await draft
+    return draft
+
+
 def _merge_revision_text(proposal: Proposal, edit_text: str) -> str:
     pieces: list[str] = []
     if proposal.summary:
@@ -357,7 +373,15 @@ def _format_proposal_message(proposal: Proposal, *, revised: bool = False) -> st
         f"Project: {proposal.project_key}" if proposal.project_key else "Project: _unset_"
     )
     epic_line = f"Epic: {proposal.epic_key}" if proposal.epic_key else None
-    ticket_lines = [_format_ticket_line(index, ticket) for index, ticket in enumerate(proposal.tickets, start=1)]
+    epic_create_line = (
+        f"Epic to create: {proposal.epic_summary}"
+        if proposal.epic_summary and not proposal.epic_key and len(proposal.tickets) > 1
+        else None
+    )
+    ticket_lines = [
+        _format_ticket_line(index, ticket)
+        for index, ticket in enumerate(proposal.tickets, start=1)
+    ]
 
     body_lines: list[str] = [
         header,
@@ -366,7 +390,14 @@ def _format_proposal_message(proposal: Proposal, *, revised: bool = False) -> st
     ]
     if epic_line:
         body_lines.append(epic_line)
+    if epic_create_line:
+        body_lines.append(epic_create_line)
     body_lines.append(f"Title: {proposal.title}")
+    if proposal.effort_estimate:
+        body_lines.append(f"Effort: {proposal.effort_estimate}")
+    if proposal.assumptions:
+        body_lines.append("Assumptions:")
+        body_lines.extend(f"  - {item}" for item in proposal.assumptions)
     body_lines.append(f"Tickets ({len(proposal.tickets)}):")
     body_lines.extend(ticket_lines)
     body_lines.append("")
@@ -381,16 +412,21 @@ def _format_ticket_line(index: int, ticket: TicketSpec) -> str:
 
 def _format_confirmation_message(result: JiraWriteResult) -> str:
     keys = ", ".join(result.created_ticket_keys) or "(none)"
+    epic_prefix = (
+        f"Created Jira epic: {result.created_epic_key}. "
+        if result.created_epic_key
+        else ""
+    )
     if result.partial:
         failures = "; ".join(
             f"{item.spec.summary}: {item.reason}" for item in result.failed_items
         )
         return (
-            f"Partially created: {keys}. Failures: {failures}. "
+            f"{epic_prefix}Partially created: {keys}. Failures: {failures}. "
             "Reply with edits to retry the failed items."
         )
     return (
-        f"Created Jira tickets: {keys}. "
+        f"{epic_prefix}Created Jira tickets: {keys}. "
         "The detection pipeline will pick them up automatically."
     )
 

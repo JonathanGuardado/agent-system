@@ -124,6 +124,70 @@ def test_slack_message_to_ai_ready_jira_ticket(tmp_path):
     assert decision.eligible, decision.reason
 
 
+def test_plain_text_approval_creates_epic_and_child_tasks(tmp_path):
+    store = ProposalStore(tmp_path / "proposals.db")
+    slack = _FakeSlack()
+    jira_client = FakeJiraClient([])
+    flow = ApprovalFlow(
+        resolver=IntakeIntentResolver(),
+        generator=DeterministicProposalGenerator(
+            clock=lambda: datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc),
+            proposal_id_factory=lambda: "prop-int-epic",
+        ),
+        store=store,
+        jira_writer=JiraWriter(jira_client),
+        slack=slack,
+        repo_defaults={
+            "AGENT": {
+                "repository": "agent-system",
+                "repo_path": "/home/jguardado/repos/agent-system",
+            }
+        },
+    )
+    listener = SlackIntakeListener(
+        approval_flow=flow,
+        store=store,
+        intake_channel="C-INTAKE",
+    )
+
+    request = asyncio.run(
+        listener.handle_event(
+            SlackEvent(
+                user_id="U-jonathan",
+                text=(
+                    "Break this AGENT epic into Jira tickets:\n"
+                    "- Add login API\n"
+                    "- Add login UI"
+                ),
+                channel="C-INTAKE",
+                thread_ts="thr-epic",
+            )
+        )
+    )
+    assert request is not None
+    assert request.outcome == ApprovalOutcome.PROPOSAL_POSTED
+    slack.messages.clear()
+
+    approved = asyncio.run(
+        listener.handle_event(
+            SlackEvent(
+                user_id="U-jonathan",
+                text="approve",
+                channel="C-INTAKE",
+                thread_ts="thr-epic",
+            )
+        )
+    )
+
+    assert approved is not None
+    assert approved.write_result is not None
+    assert approved.write_result.created_epic_key == "AGENT-1"
+    assert approved.write_result.created_ticket_keys == ("AGENT-2", "AGENT-3")
+    assert LABEL_AI_READY not in jira_client.ticket("AGENT-1").labels
+    assert LABEL_AI_READY in jira_client.ticket("AGENT-2").labels
+    assert "AGENT-1" in slack.messages[0][3]
+
+
 def test_listener_emits_no_jira_writes_for_clarification_path(tmp_path):
     """If the resolver asks for clarification, no Jira writes happen."""
 

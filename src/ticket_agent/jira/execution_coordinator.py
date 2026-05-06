@@ -16,6 +16,7 @@ from ticket_agent.jira.constants import (
     EVENT_JIRA_EXECUTION_RELEASED_WITHOUT_PR,
     EVENT_JIRA_EXECUTION_SLACK_NOTIFICATION_FAILED,
     EVENT_JIRA_EXECUTION_STARTED,
+    EVENT_JIRA_EXECUTION_WAITING_FOR_APPROVAL,
     EVENT_JIRA_EXECUTION_WORKTREE_CLEANUP_FAILED,
 )
 from ticket_agent.jira.execution_service import JiraExecutionService
@@ -115,6 +116,40 @@ class JiraExecutionCoordinator:
             await self._cleanup_terminal_state(None, work_item)
             raise
 
+        if _is_waiting_for_execution_approval(final_state):
+            await self._emit(
+                EVENT_JIRA_EXECUTION_WAITING_FOR_APPROVAL,
+                ticket_key=ticket_key,
+            )
+            return final_state
+
+        try:
+            await self.finalize_resumed_state(ticket_key, final_state)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await self._mark_failed(ticket_key, exc)
+            await self._notify_failure(final_state, _error_message(exc))
+            await self._emit_failed(ticket_key, exc)
+            raise
+
+        return final_state
+
+    async def finalize_resumed_state(
+        self,
+        ticket_key: str,
+        graph_result: TicketState | dict[str, object],
+    ) -> TicketState:
+        """Reflect a resumed approval graph result back to Jira and Slack."""
+
+        final_state = (
+            graph_result
+            if isinstance(graph_result, TicketState)
+            else TicketState.model_validate(graph_result)
+        )
+        if _is_waiting_for_execution_approval(final_state):
+            return final_state
+
         try:
             if _is_escalated(final_state):
                 reason = _escalation_reason(final_state)
@@ -141,15 +176,8 @@ class JiraExecutionCoordinator:
                     EVENT_JIRA_EXECUTION_RELEASED_WITHOUT_PR,
                     ticket_key=ticket_key,
                 )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            await self._mark_failed(ticket_key, exc)
-            await self._notify_failure(final_state, _error_message(exc))
-            await self._emit_failed(ticket_key, exc)
-            raise
         finally:
-            await self._cleanup_terminal_state(final_state, work_item)
+            await self._cleanup_terminal_state(final_state, None)
 
         await self._emit(EVENT_JIRA_EXECUTION_COMPLETED, ticket_key=ticket_key)
         return final_state
@@ -270,6 +298,13 @@ def _error_message(exc: BaseException) -> str:
 
 def _is_escalated(state: TicketState) -> bool:
     return state.workflow_status == "escalated"
+
+
+def _is_waiting_for_execution_approval(state: TicketState) -> bool:
+    return (
+        state.workflow_status == "waiting_for_approval"
+        and state.execution_approved is None
+    )
 
 
 def _escalation_reason(state: TicketState) -> str:

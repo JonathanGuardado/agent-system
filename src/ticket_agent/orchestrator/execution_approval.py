@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from inspect import isawaitable
 from pathlib import Path
 from threading import RLock
 from typing import Any, Literal, Protocol
@@ -70,6 +71,9 @@ class SlackPoster(Protocol):
         text: str,
     ) -> None:
         """Post a plain-text reply to a Slack thread."""
+
+
+ResumeCallback = Callable[[str, Any], Awaitable[Any] | Any]
 
 
 class SQLiteExecutionApprovalStore:
@@ -398,11 +402,13 @@ class ExecutionApprovalCommandHandler:
         graph: ResumableGraph,
         slack: SlackPoster | None = None,
         poster_user_id: str = "execution-approval",
+        on_resumed: ResumeCallback | None = None,
     ) -> None:
         self._store = store
         self._graph = graph
         self._slack = slack
         self._poster_user_id = poster_user_id
+        self._on_resumed = on_resumed
 
     def matches(self, text: str) -> bool:
         return _parse_command(text) is not None
@@ -430,6 +436,7 @@ class ExecutionApprovalCommandHandler:
             return None
 
         graph_result = await self._resume(ticket_key, action)
+        await self._after_resume(ticket_key, graph_result)
         await self._post_ack(
             approval,
             action,
@@ -451,6 +458,7 @@ class ExecutionApprovalCommandHandler:
         if approval is None:
             return None
         graph_result = await self._resume(ticket_key, "expire")
+        await self._after_resume(ticket_key, graph_result)
         return ExecutionApprovalCommandResult(
             action="expire",
             ticket_key=ticket_key,
@@ -464,6 +472,13 @@ class ExecutionApprovalCommandHandler:
             Command(resume={"decision": decision}),
             config={"configurable": {"thread_id": ticket_key}},
         )
+
+    async def _after_resume(self, ticket_key: str, graph_result: Any) -> None:
+        if self._on_resumed is None:
+            return
+        result = self._on_resumed(ticket_key, graph_result)
+        if isawaitable(result):
+            await result
 
     async def _post_ack(
         self,
@@ -709,5 +724,6 @@ __all__ = [
     "PendingApprovalResult",
     "SQLiteExecutionApprovalStore",
     "SlackExecutionApprovalService",
+    "ResumeCallback",
     "is_execution_approval_command",
 ]

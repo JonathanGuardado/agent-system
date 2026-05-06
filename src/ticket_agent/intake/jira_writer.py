@@ -11,6 +11,7 @@ from ticket_agent.jira.constants import (
     FIELD_AGENT_RETRY_COUNT,
     FIELD_REPOSITORY,
     FIELD_REPO_PATH,
+    FIELD_SLACK_CHANNEL,
     FIELD_SLACK_THREAD_TS,
     LABEL_AI_READY,
 )
@@ -30,6 +31,7 @@ class JiraWriteResult:
     """Aggregate result of attempting to write a proposal to Jira."""
 
     project_key: str | None
+    created_epic_key: str | None = None
     created_ticket_keys: tuple[str, ...] = ()
     failed_items: tuple[JiraWriteFailure, ...] = ()
     partial: bool = False
@@ -47,6 +49,7 @@ class JiraWriteResult:
 @dataclass
 class _WriteContext:
     project_key: str
+    created_epic_key: str | None = None
     created: list[str] = field(default_factory=list)
     failures: list[JiraWriteFailure] = field(default_factory=list)
 
@@ -77,22 +80,69 @@ class JiraWriter:
             )
 
         context = _WriteContext(project_key=project_key)
-        for spec in proposal.tickets:
-            await self._write_one(spec, proposal, context)
+        parent_key = proposal.epic_key
+        if parent_key is None and len(proposal.tickets) > 1:
+            parent_key = await self._create_epic(proposal, context)
+            if parent_key is None:
+                return JiraWriteResult(
+                    project_key=project_key,
+                    created_epic_key=context.created_epic_key,
+                    failed_items=tuple(context.failures),
+                    partial=bool(context.created_epic_key),
+                )
 
-        partial = bool(context.created) and bool(context.failures)
+        for spec in proposal.tickets:
+            await self._write_one(spec, proposal, context, parent_key=parent_key)
+
+        partial = bool(context.created or context.created_epic_key) and bool(
+            context.failures
+        )
         return JiraWriteResult(
             project_key=project_key,
+            created_epic_key=context.created_epic_key,
             created_ticket_keys=tuple(context.created),
             failed_items=tuple(context.failures),
             partial=partial,
         )
+
+    async def _create_epic(
+        self,
+        proposal: Proposal,
+        context: _WriteContext,
+    ) -> str | None:
+        summary = proposal.epic_summary or proposal.title
+        description = proposal.epic_description or proposal.summary
+        fields = {
+            FIELD_SLACK_THREAD_TS: proposal.slack_thread_ts,
+        }
+        if proposal.slack_channel:
+            fields[FIELD_SLACK_CHANNEL] = proposal.slack_channel
+        try:
+            epic = await self._client.create_issue(
+                context.project_key,
+                summary=summary,
+                description=description,
+                issue_type="Epic",
+                labels=[],
+                fields=fields,
+            )
+        except Exception as exc:  # noqa: BLE001 - boundary call
+            reason = f"epic_create_failed: {_error_message(exc)}"
+            context.failures.extend(
+                JiraWriteFailure(spec=spec, reason=reason)
+                for spec in proposal.tickets
+            )
+            return None
+        context.created_epic_key = epic.key
+        return epic.key
 
     async def _write_one(
         self,
         spec: TicketSpec,
         proposal: Proposal,
         context: _WriteContext,
+        *,
+        parent_key: str | None,
     ) -> None:
         labels = _normalize_labels(spec.labels)
         fields = _build_fields(spec, proposal)
@@ -106,7 +156,7 @@ class JiraWriter:
                 priority=spec.priority,
                 labels=labels,
                 fields=fields,
-                parent_key=proposal.epic_key,
+                parent_key=parent_key,
             )
         except Exception as exc:  # noqa: BLE001 - boundary call
             context.failures.append(
@@ -143,6 +193,8 @@ def _build_fields(spec: TicketSpec, proposal: Proposal) -> dict[str, object]:
         FIELD_AGENT_CAPABILITIES_NEEDED: list(spec.capabilities_needed),
         FIELD_SLACK_THREAD_TS: proposal.slack_thread_ts,
     }
+    if proposal.slack_channel:
+        fields[FIELD_SLACK_CHANNEL] = proposal.slack_channel
     if spec.repository:
         fields[FIELD_REPOSITORY] = spec.repository
     if spec.repo_path:

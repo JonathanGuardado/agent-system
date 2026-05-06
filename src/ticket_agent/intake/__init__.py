@@ -8,6 +8,7 @@ from ticket_agent.intake.intent_resolver import (
 from ticket_agent.intake.jira_writer import JiraWriteResult, JiraWriter
 from ticket_agent.intake.proposal_generator import (
     DeterministicProposalGenerator,
+    ModelRouterProposalGenerator,
     ProposalDraft,
     ProposalGenerator,
     ProposalRequest,
@@ -24,6 +25,7 @@ __all__ = [
     "ApprovalOutcome",
     "CAPABILITY_TO_MODE",
     "DeterministicProposalGenerator",
+    "ModelRouterProposalGenerator",
     "IntakeIntentResolver",
     "JiraWriteResult",
     "JiraWriter",

@@ -19,6 +19,7 @@ dependencies = [
 [project.scripts]
 ticket-agent = "ticket_agent.app:run"
 ticket-agent-smoke-model-router = "ticket_agent.router.smoke:main"
+ticket-agent-smoke-runtime = "ticket_agent.runtime_smoke:main"
 
 [project.optional-dependencies]
 dev = [

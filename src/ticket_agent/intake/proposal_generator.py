@@ -9,11 +9,15 @@ can replace :class:`DeterministicProposalGenerator` without changes to
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+import json
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from inspect import isawaitable
 from typing import Protocol
 from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ticket_agent.domain.intake import (
     IntakeMode,
@@ -42,6 +46,7 @@ class ProposalRequest:
     slack_thread_ts: str
     text: str
     resolution: IntakeResolution
+    slack_channel: str | None = None
     repo_defaults: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
 
@@ -64,7 +69,43 @@ class ProposalGenerator(Protocol):
         self,
         request: ProposalRequest,
         prior: Proposal | None = None,
-    ) -> ProposalDraft: ...
+    ) -> ProposalDraft | Awaitable[ProposalDraft]: ...
+
+
+class ModelRouterProtocol(Protocol):
+    async def invoke(
+        self,
+        capability: str,
+        messages: Sequence[Mapping[str, str]],
+        **kwargs: object,
+    ) -> object: ...
+
+
+class _ModelTicketPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    summary: str
+    description: str = ""
+    issue_type: str = "Task"
+    priority: str | None = None
+    labels: list[str] = Field(default_factory=list)
+    capabilities_needed: list[str] = Field(default_factory=list)
+    repository: str | None = None
+    repo_path: str | None = None
+
+
+class _ModelProposalPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    title: str | None = None
+    summary: str | None = None
+    project_key: str | None = None
+    epic_key: str | None = None
+    epic_summary: str | None = None
+    epic_description: str | None = None
+    assumptions: list[str] = Field(default_factory=list)
+    effort_estimate: str | None = None
+    tickets: list[_ModelTicketPayload] = Field(default_factory=list)
 
 
 class DeterministicProposalGenerator:
@@ -141,6 +182,7 @@ class DeterministicProposalGenerator:
         proposal = Proposal(
             proposal_id=proposal_id,
             slack_user_id=request.slack_user_id,
+            slack_channel=request.slack_channel,
             slack_thread_ts=request.slack_thread_ts,
             mode=mode,
             project_key=project_key,
@@ -154,6 +196,158 @@ class DeterministicProposalGenerator:
             expires_at=expires_at,
         )
         return ProposalDraft(proposal=proposal)
+
+
+class ModelRouterProposalGenerator:
+    """Model-assisted proposal generator with deterministic fallback."""
+
+    def __init__(
+        self,
+        model_router: ModelRouterProtocol | None,
+        *,
+        fallback: ProposalGenerator | None = None,
+        clock: Clock | None = None,
+        proposal_id_factory: ProposalIdFactory | None = None,
+        ttl_seconds: int = PROPOSAL_TTL_SECONDS,
+        min_model_words: int = 4,
+    ) -> None:
+        if min_model_words < 1:
+            raise ValueError("min_model_words must be at least 1")
+        self._model_router = model_router
+        self._fallback = fallback or DeterministicProposalGenerator(
+            clock=clock,
+            proposal_id_factory=proposal_id_factory,
+            ttl_seconds=ttl_seconds,
+        )
+        self._clock = clock or _utcnow
+        self._proposal_id_factory = proposal_id_factory or _default_proposal_id
+        self._ttl_seconds = ttl_seconds
+        self._min_model_words = min_model_words
+
+    async def generate(
+        self,
+        request: ProposalRequest,
+        prior: Proposal | None = None,
+    ) -> ProposalDraft:
+        text = request.text.strip()
+        if self._model_router is None or len(text.split()) < self._min_model_words:
+            return await self._fallback_generate(request, prior)
+
+        try:
+            response = await self._model_router.invoke(
+                "ticket.decompose",
+                _model_proposal_messages(request, prior),
+                ticket_id=None,
+                metadata={"workflow_node": "intake_proposal"},
+            )
+            payload = _coerce_model_payload(response)
+            model_payload = _ModelProposalPayload.model_validate(payload)
+            return self._proposal_from_payload(request, prior, model_payload)
+        except (ValidationError, ValueError, TypeError, RuntimeError, KeyError):
+            return await self._fallback_generate(request, prior)
+        except Exception:
+            return await self._fallback_generate(request, prior)
+
+    async def _fallback_generate(
+        self,
+        request: ProposalRequest,
+        prior: Proposal | None,
+    ) -> ProposalDraft:
+        draft = self._fallback.generate(request, prior)
+        if isawaitable(draft):
+            draft = await draft
+        return draft
+
+    def _proposal_from_payload(
+        self,
+        request: ProposalRequest,
+        prior: Proposal | None,
+        payload: _ModelProposalPayload,
+    ) -> ProposalDraft:
+        if not payload.tickets:
+            raise ValueError("model proposal must include at least one ticket")
+
+        text = request.text.strip()
+        project_key = (
+            _clean_optional(payload.project_key)
+            or _extract_project_key(text)
+            or (prior.project_key if prior is not None else None)
+        )
+        epic_key = (
+            _clean_optional(payload.epic_key)
+            or _extract_epic_key(text)
+            or (prior.epic_key if prior is not None else None)
+        )
+        repository, repo_path = _resolve_repository(
+            text,
+            project_key,
+            request.repo_defaults,
+            prior,
+        )
+
+        clarification = _missing_context_clarification(
+            request.resolution.mode,
+            project_key=project_key,
+            epic_key=epic_key,
+            repository=repository,
+        )
+        if clarification is not None:
+            return ProposalDraft(clarification=clarification)
+
+        tickets = [
+            _ticket_spec_from_model_ticket(
+                ticket,
+                default_capability=request.resolution.capability,
+                default_repository=repository,
+                default_repo_path=repo_path,
+            )
+            for ticket in payload.tickets
+        ]
+
+        now = self._clock()
+        if prior is None:
+            proposal_id = self._proposal_id_factory()
+            created_at = now
+            expires_at = created_at + timedelta(seconds=self._ttl_seconds)
+            revision_count = 0
+        else:
+            proposal_id = prior.proposal_id
+            created_at = prior.created_at
+            expires_at = prior.expires_at
+            revision_count = prior.revision_count + 1
+
+        title = _clean_optional(payload.title) or _proposal_title(text)
+        summary = _clean_optional(payload.summary) or _proposal_summary(
+            request.resolution.mode,
+            text,
+            len(tickets),
+        )
+        epic_summary = _clean_optional(payload.epic_summary)
+        if epic_summary is None and len(tickets) > 1:
+            epic_summary = title
+
+        return ProposalDraft(
+            proposal=Proposal(
+                proposal_id=proposal_id,
+                slack_user_id=request.slack_user_id,
+                slack_channel=request.slack_channel,
+                slack_thread_ts=request.slack_thread_ts,
+                mode=request.resolution.mode,
+                project_key=project_key,
+                epic_key=epic_key,
+                epic_summary=epic_summary,
+                epic_description=_clean_optional(payload.epic_description) or summary,
+                title=title,
+                summary=summary,
+                assumptions=_clean_string_list(payload.assumptions),
+                effort_estimate=_clean_optional(payload.effort_estimate),
+                tickets=tickets,
+                revision_count=revision_count,
+                status=ProposalStatus.AWAITING_CONFIRMATION,
+                created_at=created_at,
+                expires_at=expires_at,
+            )
+        )
 
 
 def _build_ticket_specs(
@@ -183,6 +377,143 @@ def _build_ticket_specs(
     return specs
 
 
+def _ticket_spec_from_model_ticket(
+    ticket: _ModelTicketPayload,
+    *,
+    default_capability: str,
+    default_repository: str | None,
+    default_repo_path: str | None,
+) -> TicketSpec:
+    labels = _ordered_unique([*ticket.labels, LABEL_AI_READY])
+    capabilities = _ordered_unique(
+        ticket.capabilities_needed or [default_capability]
+    )
+    return TicketSpec(
+        summary=ticket.summary.strip(),
+        description=ticket.description.strip(),
+        issue_type=ticket.issue_type.strip() or "Task",
+        priority=_clean_optional(ticket.priority),
+        labels=labels,
+        capabilities_needed=capabilities,
+        repository=_clean_optional(ticket.repository) or default_repository,
+        repo_path=_clean_optional(ticket.repo_path) or default_repo_path,
+    )
+
+
+def _model_proposal_messages(
+    request: ProposalRequest,
+    prior: Proposal | None,
+) -> list[dict[str, str]]:
+    prior_json = "{}" if prior is None else json.dumps(prior.model_dump(mode="json"))
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You turn Slack software requests into Jira-ready proposals. "
+                "Return exactly one strict JSON object. Do not include markdown "
+                "fences or prose."
+            ),
+        },
+        {
+            "role": "user",
+            "content": "\n".join(
+                [
+                    "Create a Jira proposal for this Slack request.",
+                    f"text: {request.text}",
+                    f"mode: {request.resolution.mode.value}",
+                    f"capability: {request.resolution.capability}",
+                    f"repo_defaults: {json.dumps(request.repo_defaults)}",
+                    f"prior_proposal: {prior_json}",
+                    "Required JSON schema:",
+                    (
+                        '{"title": "string", "summary": "string", '
+                        '"project_key": "AGENT", "epic_key": null, '
+                        '"epic_summary": "optional string", '
+                        '"epic_description": "optional string", '
+                        '"assumptions": ["string"], '
+                        '"effort_estimate": "S|M|L or brief text", '
+                        '"tickets": [{"summary": "string", '
+                        '"description": "string", "issue_type": "Task", '
+                        '"priority": null, "labels": ["ai-ready"], '
+                        '"capabilities_needed": ["code.implement"], '
+                        '"repository": "repo-name", '
+                        '"repo_path": "/absolute/repo/path"}]}'
+                    ),
+                    "Create multiple tickets only when the request naturally "
+                    "contains multiple deliverable slices.",
+                    "Use an existing epic_key only if the request or prior "
+                    "proposal provides one.",
+                    "Do not create brand-new Jira projects.",
+                    "Return JSON only. No markdown fences. No prose before or "
+                    "after JSON.",
+                ]
+            ),
+        },
+    ]
+
+
+def _coerce_model_payload(response: object) -> dict[str, object]:
+    if isinstance(response, Mapping):
+        if "content" in response and response["content"] is not None:
+            return _coerce_model_payload(response["content"])
+        return dict(response)
+    if isinstance(response, str):
+        return _extract_json_object(response)
+    content = getattr(response, "content", None)
+    if content is not None:
+        return _coerce_model_payload(content)
+    raise ValueError(f"model response has unsupported shape: {type(response).__name__}")
+
+
+def _extract_json_object(text: str) -> dict[str, object]:
+    stripped = text.strip()
+    if not stripped:
+        raise ValueError("model response is empty")
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        parsed = _extract_fenced_or_embedded_json(stripped)
+    if not isinstance(parsed, dict):
+        raise ValueError("model response JSON must be an object")
+    return parsed
+
+
+def _extract_fenced_or_embedded_json(text: str) -> object:
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.I | re.S)
+    if fenced is not None:
+        return json.loads(fenced.group(1).strip())
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        return json.loads(text[start : end + 1])
+    raise ValueError("model response could not be parsed as JSON")
+
+
+def _clean_optional(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _clean_string_list(values: Sequence[str]) -> list[str]:
+    return [value.strip() for value in values if isinstance(value, str) and value.strip()]
+
+
+def _ordered_unique(values: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        cleaned = value.strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        result.append(cleaned)
+    return result
+
+
 def _candidate_summaries(mode: IntakeMode, text: str) -> list[str]:
     if mode == IntakeMode.NEW_TICKETS:
         items = _split_into_items(text)
@@ -204,6 +535,8 @@ def _split_into_items(text: str) -> list[str]:
         cleaned = re.sub(r"^[\-\*\d\.\)\s]+", "", line).strip()
         if cleaned:
             items.append(cleaned)
+    if len(items) >= 3 and items[0].endswith(":"):
+        items = items[1:]
     if len(items) >= 2:
         return items
 
@@ -321,7 +654,7 @@ def _missing_context_clarification(
     return None
 
 
-_STOP_WORDS = {"oauth", "api", "ui", "cli", "saas", "json", "yaml"}
+_STOP_WORDS = {"oauth", "saml", "sso", "api", "ui", "cli", "saas", "json", "yaml"}
 _PATH_PATTERN = re.compile(r"\b([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)\b")
 
 
@@ -335,6 +668,7 @@ def _default_proposal_id() -> str:
 
 __all__ = [
     "DeterministicProposalGenerator",
+    "ModelRouterProposalGenerator",
     "ProposalDraft",
     "ProposalGenerator",
     "ProposalRequest",

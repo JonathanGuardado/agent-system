@@ -15,13 +15,22 @@ from ticket_agent.app import (
     run_runtime,
 )
 from ticket_agent.intake.slack_listener import SlackEvent
+from ticket_agent.jira.constants import LABEL_AI_READY, STATUS_IN_REVIEW, STATUS_TODO
 from ticket_agent.jira.fake_client import FakeJiraClient
+from ticket_agent.jira.models import JiraTicket
 from ticket_agent.orchestrator.state import TicketState
 
 
 def test_build_runtime_wires_execution_approval_commands_into_listener(tmp_path):
     slack = _FakeSlack()
-    jira_client = FakeJiraClient([])
+    jira_client = FakeJiraClient(
+        JiraTicket(
+            key="AGENT-123",
+            summary="Exercise runtime composition",
+            status=STATUS_TODO,
+            labels=[LABEL_AI_READY],
+        )
+    )
     implementation = _Implementation()
     runtime = build_runtime(
         jira_client=jira_client,
@@ -69,6 +78,98 @@ def test_build_runtime_wires_execution_approval_commands_into_listener(tmp_path)
         approval = runtime.approval_store.get("AGENT-123")
         assert approval is not None
         assert approval.status == "approved"
+        assert jira_client.ticket("AGENT-123").status == STATUS_IN_REVIEW
+    finally:
+        runtime.close()
+
+
+def test_fake_slack_to_jira_to_execution_pr_path(tmp_path):
+    slack = _FakeSlack()
+    jira_client = FakeJiraClient([])
+    implementation = _Implementation()
+    runtime = build_runtime(
+        jira_client=jira_client,
+        slack=slack,
+        config=RuntimeConfig(
+            data_dir=tmp_path,
+            intake_channel="C-INTAKE",
+            execution_approval_channel="C-INTAKE",
+            repo_defaults={
+                "AGENT": {
+                    "repository": "agent-system",
+                    "repo_path": "/home/jguardado/repos/agent-system",
+                }
+            },
+            poll_interval_seconds=0.01,
+            max_backoff_seconds=0.01,
+        ),
+        planner=_Planner(),
+        implementation=implementation,
+        tests=_Tests(),
+        review=_Review(),
+        pull_request=_PullRequest(),
+        escalation=_Escalation(),
+    )
+
+    try:
+        request = asyncio.run(
+            runtime.listener.handle_event(
+                SlackEvent(
+                    user_id="U1",
+                    text=(
+                        "Break this AGENT epic into Jira tickets:\n"
+                        "- Add login API\n"
+                        "- Add login UI"
+                    ),
+                    channel="C-INTAKE",
+                    thread_ts="intake-thread",
+                )
+            )
+        )
+        assert request is not None
+
+        approved = asyncio.run(
+            runtime.listener.handle_event(
+                SlackEvent(
+                    user_id="U1",
+                    text="approve",
+                    channel="C-INTAKE",
+                    thread_ts="intake-thread",
+                )
+            )
+        )
+        assert approved is not None
+        assert approved.write_result is not None
+        assert approved.write_result.created_epic_key == "AGENT-1"
+        assert approved.write_result.created_ticket_keys == ("AGENT-2", "AGENT-3")
+
+        assert asyncio.run(runtime.detector.poll_once()) == 2
+        assert asyncio.run(runtime.worker.run_once()) is True
+
+        pending = runtime.approval_store.get("AGENT-2")
+        assert pending is not None
+        assert pending.status == "pending"
+        assert implementation.calls == []
+
+        routed = asyncio.run(
+            runtime.listener.handle_event(
+                SlackEvent(
+                    user_id="U1",
+                    text="approve AGENT-2",
+                    channel="C-INTAKE",
+                    thread_ts="intake-thread",
+                )
+            )
+        )
+
+        assert routed is None
+        assert implementation.calls == ["AGENT-2"]
+        assert runtime.approval_store.get("AGENT-2").status == "approved"
+        assert jira_client.ticket("AGENT-2").status == STATUS_IN_REVIEW
+        assert any(
+            "https://github.test/acme/repo/pull/1" in message
+            for _channel, _thread, _user, message in slack.messages
+        )
     finally:
         runtime.close()
 

@@ -8,6 +8,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from ticket_agent.jira.constants import FIELD_EPIC_LINK
 from ticket_agent.jira.models import JiraTicket
 
 
@@ -179,7 +180,11 @@ class JiraRestClient:
         if priority:
             issue_fields["priority"] = {"name": priority}
         if parent_key:
-            issue_fields["parent"] = {"key": parent_key}
+            epic_link_field = self.field_map.get(FIELD_EPIC_LINK)
+            if epic_link_field:
+                issue_fields[epic_link_field] = parent_key
+            else:
+                issue_fields["parent"] = {"key": parent_key}
         for field_name, value in (fields or {}).items():
             issue_fields[self._jira_field_name(field_name)] = value
 
