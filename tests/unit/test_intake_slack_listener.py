@@ -11,7 +11,11 @@ from ticket_agent.domain.intake import (
     ProposalStatus,
     TicketSpec,
 )
-from ticket_agent.intake.approval_flow import ApprovalFlow, ApprovalOutcome
+from ticket_agent.intake.approval_flow import (
+    ApprovalFlow,
+    ApprovalOutcome,
+    ApprovalResult,
+)
 from ticket_agent.intake.jira_writer import JiraWriter
 from ticket_agent.intake.proposal_generator import DeterministicProposalGenerator
 from ticket_agent.intake.proposal_store import PROPOSAL_TTL_SECONDS, ProposalStore
@@ -181,6 +185,91 @@ def test_listener_routes_active_thread_to_handle_reply(tmp_path):
 
     assert result is not None
     assert result.outcome == ApprovalOutcome.PROPOSAL_CANCELLED
+
+
+def test_listener_routes_approve_ticket_command_to_execution_handler_first(tmp_path):
+    store = ProposalStore(tmp_path / "proposals.db")
+    _save_active_proposal(store, thread_ts="t1")
+    flow = _RoutingApprovalFlow()
+    handler = _RoutingExecutionHandler()
+    listener = SlackIntakeListener(
+        approval_flow=flow,
+        store=store,
+        execution_approval_handler=handler,
+    )
+
+    result = asyncio.run(
+        listener.handle_event(
+            SlackEvent(
+                user_id="U1",
+                text="approve AGENT-123",
+                channel="C-INTAKE",
+                thread_ts="t1",
+            )
+        )
+    )
+
+    assert result is None
+    assert handler.messages == ["approve AGENT-123"]
+    assert flow.reply_calls == []
+    assert flow.new_request_calls == []
+
+
+def test_listener_routes_reject_ticket_command_to_execution_handler_first(tmp_path):
+    store = ProposalStore(tmp_path / "proposals.db")
+    _save_active_proposal(store, thread_ts="t1")
+    flow = _RoutingApprovalFlow()
+    handler = _RoutingExecutionHandler()
+    listener = SlackIntakeListener(
+        approval_flow=flow,
+        store=store,
+        execution_approval_handler=handler,
+    )
+
+    result = asyncio.run(
+        listener.handle_event(
+            SlackEvent(
+                user_id="U1",
+                text="reject AGENT-123",
+                channel="C-INTAKE",
+                thread_ts="t1",
+            )
+        )
+    )
+
+    assert result is None
+    assert handler.messages == ["reject AGENT-123"]
+    assert flow.reply_calls == []
+    assert flow.new_request_calls == []
+
+
+def test_listener_routes_plain_approve_in_proposal_thread_to_intake_reply(tmp_path):
+    store = ProposalStore(tmp_path / "proposals.db")
+    _save_active_proposal(store, thread_ts="t1")
+    flow = _RoutingApprovalFlow()
+    handler = _RoutingExecutionHandler()
+    listener = SlackIntakeListener(
+        approval_flow=flow,
+        store=store,
+        execution_approval_handler=handler,
+    )
+
+    result = asyncio.run(
+        listener.handle_event(
+            SlackEvent(
+                user_id="U1",
+                text="approve",
+                channel="C-INTAKE",
+                thread_ts="t1",
+            )
+        )
+    )
+
+    assert result is not None
+    assert result.outcome == ApprovalOutcome.PROPOSAL_CONFIRMED
+    assert handler.messages == []
+    assert flow.reply_calls == ["approve"]
+    assert flow.new_request_calls == []
 
 
 def test_listener_routes_intake_and_execution_approvals_without_collision(tmp_path):
@@ -473,3 +562,62 @@ class _ExecutionEscalation:
 
     async def escalate(self, state: TicketState, reason: str) -> None:
         self.calls.append((state.ticket_key, reason))
+
+
+def _save_active_proposal(store: ProposalStore, *, thread_ts: str) -> None:
+    store.save(
+        Proposal(
+            proposal_id="prop-routing",
+            slack_user_id="U1",
+            slack_thread_ts=thread_ts,
+            mode=IntakeMode.NEW_FEATURE,
+            project_key="AGENT",
+            title="Routing proposal",
+            summary="Verify routing priority.",
+            tickets=[
+                TicketSpec(
+                    summary="Ticket",
+                    labels=["ai-ready"],
+                    capabilities_needed=["code.implement"],
+                    repository="agent-system",
+                    repo_path="/home/agent",
+                )
+            ],
+            revision_count=0,
+            status=ProposalStatus.AWAITING_CONFIRMATION,
+            created_at=datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc),
+            expires_at=datetime(2026, 5, 4, 12, 0, tzinfo=timezone.utc),
+        )
+    )
+
+
+class _RoutingApprovalFlow:
+    def __init__(self) -> None:
+        self.reply_calls: list[str] = []
+        self.new_request_calls: list[str] = []
+
+    async def handle_reply(self, *, text: str, **kwargs) -> ApprovalResult:
+        del kwargs
+        self.reply_calls.append(text)
+        return ApprovalResult(outcome=ApprovalOutcome.PROPOSAL_CONFIRMED)
+
+    async def handle_new_request(self, *, text: str, **kwargs) -> ApprovalResult:
+        del kwargs
+        self.new_request_calls.append(text)
+        return ApprovalResult(outcome=ApprovalOutcome.PROPOSAL_POSTED)
+
+
+class _RoutingExecutionHandler:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def matches(self, text: str) -> bool:
+        return text.strip().lower() in {
+            "approve agent-123",
+            "reject agent-123",
+        }
+
+    async def handle_message(self, *, text: str, **kwargs) -> object:
+        del kwargs
+        self.messages.append(text)
+        return None

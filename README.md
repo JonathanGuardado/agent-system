@@ -132,33 +132,103 @@ The production entrypoint is:
 ticket-agent
 ```
 
-It reads `~/config/agent-system.env` by default. Required values include Slack
-Socket Mode tokens, Jira Cloud credentials, DeepSeek/Gemini provider keys, and
-the Jira custom field map used for execution metadata.
+It reads `.env` by default, or a path provided via `AGENT_SYSTEM_ENV_PATH` /
+`--env-path`. Production deployments can point `AGENT_SYSTEM_ENV_PATH` at a
+host-managed secret file such as `~/config/agent-system.env`.
 
-Important Jira field mappings:
+### Runtime wiring
 
-- `JIRA_FIELD_AGENT_ASSIGNED_COMPONENT`
-- `JIRA_FIELD_AGENT_RETRY_COUNT`
-- `JIRA_FIELD_AGENT_CAPABILITIES_NEEDED`
-- `JIRA_FIELD_REPOSITORY`
-- `JIRA_FIELD_REPO_PATH`
-- `JIRA_FIELD_SLACK_THREAD_TS`
-- `JIRA_FIELD_SLACK_CHANNEL`
-- `JIRA_FIELD_MAX_ATTEMPTS`
-- `JIRA_FIELD_EPIC_LINK` when the Jira project requires an Epic Link custom
-  field instead of the standard parent field.
+`ticket-agent` loads validated environment config, builds the Jira and Slack
+adapters, then starts four long-running loops together:
 
-Run the non-mutating runtime smoke check before starting the worker:
+- Slack intake listener
+- Jira detection polling
+- Execution worker
+- Lock reconciler
 
-```bash
-ticket-agent-smoke-runtime --skip-network
-ticket-agent-smoke-runtime
-```
+`ticket-agent-smoke-runtime` is the non-mutating preflight for that runtime.
 
-The first command validates local config, repo contracts, provider env vars,
-and GitHub CLI auth without network calls. The second also checks Slack
-`auth.test` and Jira `/myself`.
+- `--skip-network` checks startup config, repo contracts, Jira field-map
+  wiring, model-provider env vars, and local GitHub CLI auth.
+- Without `--skip-network`, it also checks Slack `auth.test`, Jira `/myself`,
+  each Jira project listed in `AGENT_SYSTEM_JIRA_TARGET_PROJECTS`, required
+  Epic/Task issue types, and the configured Epic Link field when
+  `JIRA_FIELD_EPIC_LINK` is set.
+
+### Required local runtime configuration
+
+Copy [.env.example](.env.example) to `.env` and fill in real values.
+The primary variables for local Slack/Jira runs are:
+
+- Slack:
+  - `SLACK_BOT_TOKEN`
+  - `SLACK_APP_TOKEN`
+  - `AGENT_SYSTEM_INTAKE_CHANNEL`
+  - `AGENT_SYSTEM_EXECUTION_APPROVAL_CHANNEL`
+- Jira:
+  - `JIRA_BASE_URL`
+  - `JIRA_USER_EMAIL`
+  - `JIRA_API_KEY`
+  - `AGENT_SYSTEM_JIRA_TARGET_PROJECTS`
+- Jira field map:
+  - `JIRA_FIELD_AGENT_ASSIGNED_COMPONENT`
+  - `JIRA_FIELD_AGENT_RETRY_COUNT`
+  - `JIRA_FIELD_AGENT_CAPABILITIES_NEEDED`
+  - `JIRA_FIELD_REPOSITORY`
+  - `JIRA_FIELD_REPO_PATH`
+  - `JIRA_FIELD_SLACK_THREAD_TS`
+  - `JIRA_FIELD_SLACK_CHANNEL`
+  - `JIRA_FIELD_MAX_ATTEMPTS`
+  - `JIRA_FIELD_EPIC_LINK` when the Jira project still requires an Epic Link
+    custom field
+- Model providers:
+  - `DEEPSEEK_API_KEY`
+  - `GEMINI_API_KEY`
+- Repo contract path:
+  - `AGENT_SYSTEM_REPO_CONFIG_PATH` (defaults to `config/repos`)
+
+Local prerequisites that are not environment variables:
+
+- `gh` must be installed and authenticated. The smoke check runs `gh auth status`.
+- The repo contract path must contain valid YAML contracts for each target repo.
+
+### Local integration checklist
+
+1. Create a local env file:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Confirm GitHub CLI auth before any runtime smoke check:
+
+   ```bash
+   gh auth status
+   ```
+
+3. Run unit tests:
+
+   ```bash
+   PATH="$PWD/.venv/bin:$PATH" pytest tests/unit/ -q
+   ```
+
+4. Run smoke without network calls:
+
+   ```bash
+   PATH="$PWD/.venv/bin:$PATH" ticket-agent-smoke-runtime --skip-network
+   ```
+
+5. Run smoke with Slack/Jira network checks:
+
+   ```bash
+   PATH="$PWD/.venv/bin:$PATH" ticket-agent-smoke-runtime
+   ```
+
+6. Start the app locally:
+
+   ```bash
+   PATH="$PWD/.venv/bin:$PATH" ticket-agent
+   ```
 
 ## Tests
 

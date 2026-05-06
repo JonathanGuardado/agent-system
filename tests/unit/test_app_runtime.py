@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from ticket_agent.app import (
+    DEFAULT_ENV_PATH,
     REQUIRED_ENV_VARS,
     RuntimeConfig,
     StartupConfigError,
@@ -15,6 +16,7 @@ from ticket_agent.app import (
     run_runtime,
 )
 from ticket_agent.intake.slack_listener import SlackEvent
+from ticket_agent.jira.constants import FIELD_AGENT_ASSIGNED_COMPONENT
 from ticket_agent.jira.constants import LABEL_AI_READY, STATUS_IN_REVIEW, STATUS_TODO
 from ticket_agent.jira.fake_client import FakeJiraClient
 from ticket_agent.jira.models import JiraTicket
@@ -187,6 +189,10 @@ def test_load_app_config_missing_required_env_fails_fast(tmp_path):
     assert "GEMINI_API_KEY" in message
 
 
+def test_default_env_path_is_repo_dotenv():
+    assert str(DEFAULT_ENV_PATH) == ".env"
+
+
 def test_load_app_config_reads_env_file_and_runtime_options(tmp_path):
     env_path = tmp_path / "agent-system.env"
     data_dir = tmp_path / "runtime-data"
@@ -195,11 +201,15 @@ def test_load_app_config_reads_env_file_and_runtime_options(tmp_path):
             [
                 "SLACK_BOT_TOKEN=xoxb-unit",
                 "SLACK_APP_TOKEN=xapp-unit",
+                "AGENT_SYSTEM_INTAKE_CHANNEL=C-INTAKE",
+                "AGENT_SYSTEM_EXECUTION_APPROVAL_CHANNEL=C-EXEC",
                 "JIRA_BASE_URL=https://jira.example.test",
                 "JIRA_USER_EMAIL=agent@example.test",
                 "JIRA_API_KEY=jira-key",
                 "DEEPSEEK_API_KEY=deepseek-key",
                 "GEMINI_API_KEY=gemini-key",
+                "AGENT_SYSTEM_JIRA_TARGET_PROJECTS=AGENT,OPS",
+                "JIRA_FIELD_AGENT_ASSIGNED_COMPONENT=customfield_10001",
                 f"AGENT_SYSTEM_DATA_DIR={data_dir}",
                 "AGENT_SYSTEM_COMPONENT_ID=runner-1",
                 "AGENT_SYSTEM_POLL_INTERVAL_SECONDS=0.25",
@@ -215,9 +225,13 @@ def test_load_app_config_reads_env_file_and_runtime_options(tmp_path):
     assert config.env_file_loaded is True
     assert config.runtime.data_dir == data_dir
     assert config.runtime.component_id == "runner-1"
+    assert config.runtime.intake_channel == "C-INTAKE"
+    assert config.runtime.execution_approval_channel == "C-EXEC"
     assert config.runtime.poll_interval_seconds == 0.25
     assert config.runtime.reconcile_interval_seconds == 0.5
     assert str(config.runtime.contract_dir) == "config/test-repos"
+    assert config.jira_target_projects == ("AGENT", "OPS")
+    assert config.jira_field_map[FIELD_AGENT_ASSIGNED_COMPONENT] == "customfield_10001"
 
 
 def test_run_runtime_starts_all_loops_and_shuts_down_cleanly(tmp_path):

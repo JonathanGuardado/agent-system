@@ -72,6 +72,7 @@ class Proposal(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
     effort_estimate: str | None = None
     tickets: list[TicketSpec] = Field(default_factory=list)
+    truncated_ticket_count: int = 0
     revision_count: int = 0
     status: ProposalStatus = ProposalStatus.DRAFTING
     created_at: datetime

@@ -303,6 +303,7 @@ class ModelRouterProposalGenerator:
 
         # Truncate to max_tickets before building specs.
         raw_tickets = payload.tickets[: self._max_tickets]
+        truncated_ticket_count = max(0, len(payload.tickets) - len(raw_tickets))
         tickets = [
             _ticket_spec_from_model_ticket(
                 ticket,
@@ -351,6 +352,7 @@ class ModelRouterProposalGenerator:
                 assumptions=_clean_string_list(payload.assumptions),
                 effort_estimate=_clean_optional(payload.effort_estimate),
                 tickets=tickets,
+                truncated_ticket_count=truncated_ticket_count,
                 revision_count=revision_count,
                 status=ProposalStatus.AWAITING_CONFIRMATION,
                 created_at=created_at,

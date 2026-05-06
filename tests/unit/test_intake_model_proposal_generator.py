@@ -196,6 +196,7 @@ def test_model_tickets_truncated_to_max_tickets():
 
     assert proposal is not None
     assert len(proposal.tickets) == 5
+    assert proposal.truncated_ticket_count == 2
     assert proposal.tickets[0].summary == "Ticket 0"
     assert proposal.tickets[4].summary == "Ticket 4"
 
@@ -217,6 +218,7 @@ def test_model_tickets_default_max_is_five():
 
     assert proposal is not None
     assert len(proposal.tickets) == MAX_TICKETS
+    assert proposal.truncated_ticket_count == 1
 
 
 def _request(

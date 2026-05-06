@@ -17,6 +17,7 @@ from ticket_agent.domain.intake import (
 from ticket_agent.intake.intent_resolver import IntakeIntentResolver
 from ticket_agent.intake.jira_writer import JiraWriteResult, JiraWriter
 from ticket_agent.intake.proposal_generator import (
+    MAX_TICKETS,
     ProposalDraft,
     ProposalGenerator,
     ProposalRequest,
@@ -400,6 +401,13 @@ def _format_proposal_message(proposal: Proposal, *, revised: bool = False) -> st
         body_lines.extend(f"  - {item}" for item in proposal.assumptions)
     body_lines.append(f"Tickets ({len(proposal.tickets)}):")
     body_lines.extend(ticket_lines)
+    if proposal.truncated_ticket_count > 0:
+        body_lines.append("")
+        body_lines.append(
+            "Note: model output exceeded the MVP max ticket limit; "
+            f"only the first {MAX_TICKETS} tickets are included "
+            f"({proposal.truncated_ticket_count} additional ticket(s) omitted)."
+        )
     body_lines.append("")
     body_lines.append("Reply `approve` to write to Jira, `cancel` to discard, or describe edits.")
     return "\n".join(body_lines)

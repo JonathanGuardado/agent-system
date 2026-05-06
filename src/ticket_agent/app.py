@@ -85,7 +85,7 @@ SlackLoop = Callable[[], Awaitable[None]]
 
 DEFAULT_DATA_DIR = Path("data")
 DEFAULT_COMPONENT_ID = "agent-system"
-DEFAULT_ENV_PATH = Path("~/config/agent-system.env")
+DEFAULT_ENV_PATH = Path(".env")
 ENV_PATH_VAR = "AGENT_SYSTEM_ENV_PATH"
 REQUIRED_ENV_VARS = (
     "SLACK_BOT_TOKEN",
@@ -984,6 +984,7 @@ def _runtime_payload(runtime: AgentSystemRuntime) -> dict[str, Any]:
 __all__ = [
     "AgentSystemRuntime",
     "AppConfig",
+    "DEFAULT_ENV_PATH",
     "REQUIRED_ENV_VARS",
     "RuntimeConfig",
     "RuntimeLoopExited",

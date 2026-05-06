@@ -13,6 +13,7 @@ from ticket_agent.domain.intake import (
 from ticket_agent.intake.approval_flow import ApprovalFlow, ApprovalOutcome
 from ticket_agent.intake.jira_writer import JiraWriter
 from ticket_agent.intake.proposal_generator import (
+    MAX_TICKETS,
     DeterministicProposalGenerator,
     ProposalDraft,
     ProposalRequest,
@@ -286,3 +287,74 @@ def test_reply_with_no_active_proposal_returns_no_active(tmp_path):
     )
 
     assert result.outcome == ApprovalOutcome.NO_ACTIVE_PROPOSAL
+
+
+def test_handle_new_request_posts_truncation_note_for_model_generated_proposal(
+    tmp_path,
+):
+    store = ProposalStore(tmp_path / "proposals.db")
+    jira_client = FakeJiraClient([])
+    slack = _FakeSlack()
+    resolver = _StubResolver([_resolution_new_feature()])
+    generator = _StaticGenerator(
+        ProposalDraft(
+            proposal=Proposal(
+                proposal_id="prop-truncated",
+                slack_user_id="U1",
+                slack_thread_ts="t1",
+                mode=IntakeMode.NEW_FEATURE,
+                project_key="AGENT",
+                title="Large request",
+                summary="Model returned too many tickets.",
+                tickets=[
+                    TicketSpec(
+                        summary=f"Ticket {index}",
+                        labels=[LABEL_AI_READY],
+                        capabilities_needed=["code.implement"],
+                        repository="agent-system",
+                        repo_path="/home/agent",
+                    )
+                    for index in range(1, MAX_TICKETS + 1)
+                ],
+                truncated_ticket_count=2,
+                status=ProposalStatus.AWAITING_CONFIRMATION,
+                created_at=datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc),
+                expires_at=datetime(2026, 5, 4, 12, 0, tzinfo=timezone.utc),
+            )
+        )
+    )
+    flow = ApprovalFlow(
+        resolver=resolver,
+        generator=generator,
+        store=store,
+        jira_writer=JiraWriter(jira_client),
+        slack=slack,
+        repo_defaults={"AGENT": {"repository": "agent-system", "repo_path": "/home/agent"}},
+    )
+
+    result = asyncio.run(
+        flow.handle_new_request(
+            user_id="U1",
+            thread_ts="t1",
+            text="Break this AGENT feature into many tickets",
+        )
+    )
+
+    assert result.outcome == ApprovalOutcome.PROPOSAL_POSTED
+    assert result.posted_message is not None
+    assert f"only the first {MAX_TICKETS} tickets are included" in result.posted_message
+    assert slack.messages
+    assert f"{MAX_TICKETS} tickets are included" in slack.messages[0][3]
+
+
+class _StaticGenerator:
+    def __init__(self, draft: ProposalDraft) -> None:
+        self._draft = draft
+
+    def generate(
+        self,
+        request: ProposalRequest,
+        prior: Proposal | None = None,
+    ) -> ProposalDraft:
+        del request, prior
+        return self._draft
