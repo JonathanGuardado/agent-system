@@ -71,6 +71,21 @@ class ExecutionApprovalHandler(Protocol):
     ) -> object: ...
 
 
+class QuestionAnswerHandler(Protocol):
+    """Optional handler for non-ticket Slack questions."""
+
+    def matches(self, text: str) -> bool: ...
+
+    async def handle_message(
+        self,
+        *,
+        text: str,
+        channel: str | None = None,
+        thread_ts: str | None = None,
+        user_id: str | None = None,
+    ) -> object: ...
+
+
 class SlackIntakeListener:
     """Route Slack messages to :class:`ApprovalFlow`.
 
@@ -86,12 +101,14 @@ class SlackIntakeListener:
         store: ProposalStore,
         intake_channel: str | None = None,
         execution_approval_handler: ExecutionApprovalHandler | None = None,
+        question_answer_handler: QuestionAnswerHandler | None = None,
         emit: Callable[[str, dict[str, object]], None] | None = None,
     ) -> None:
         self._approval_flow = approval_flow
         self._store = store
         self._intake_channel = intake_channel
         self._execution_approval_handler = execution_approval_handler
+        self._question_answer_handler = question_answer_handler
         self._emit = emit
 
     async def handle_event(self, event: SlackEvent) -> ApprovalResult | None:
@@ -106,11 +123,12 @@ class SlackIntakeListener:
         if not event.text.strip():
             self._emit_event("intake.slack_ignored", {"reason": "empty_text"})
             return None
-        if (
+        is_wrong_channel = (
             self._intake_channel is not None
             and event.channel is not None
             and event.channel != self._intake_channel
-        ):
+        )
+        if is_wrong_channel and not self._is_dm(event):
             self._emit_event(
                 "intake.slack_ignored",
                 {"reason": "wrong_channel", "channel": event.channel},
@@ -141,6 +159,33 @@ class SlackIntakeListener:
                 text=event.text,
                 channel=event.channel,
             )
+        if self._is_dm(event) and self._question_answer_handler is not None:
+            answer = await self._question_answer_handler.handle_message(
+                text=event.text,
+                channel=event.channel,
+                thread_ts=event.thread_ts,
+                user_id=event.user_id,
+            )
+            self._emit_event(
+                "intake.dm_answered",
+                _question_answer_log_payload(event.thread_ts, answer),
+            )
+            return None
+        if (
+            self._question_answer_handler is not None
+            and self._question_answer_handler.matches(event.text)
+        ):
+            answer = await self._question_answer_handler.handle_message(
+                text=event.text,
+                channel=event.channel,
+                thread_ts=event.thread_ts,
+                user_id=event.user_id,
+            )
+            self._emit_event(
+                "intake.question_answered",
+                _question_answer_log_payload(event.thread_ts, answer),
+            )
+            return None
         return await self._approval_flow.handle_new_request(
             user_id=event.user_id,
             thread_ts=event.thread_ts,
@@ -148,10 +193,25 @@ class SlackIntakeListener:
             channel=event.channel,
         )
 
+    def _is_dm(self, event: SlackEvent) -> bool:
+        return event.channel is not None and event.channel.startswith("D")
+
     def _emit_event(self, name: str, payload: dict[str, object]) -> None:
         if self._emit is None:
             return
         self._emit(name, payload)
+
+
+def _question_answer_log_payload(
+    thread_ts: str,
+    answer: object,
+) -> dict[str, object]:
+    payload: dict[str, object] = {"thread_ts": thread_ts}
+    for field in ("model", "provider", "capability", "fallback_used"):
+        value = getattr(answer, field, None)
+        if value is not None:
+            payload[field] = value
+    return payload
 
 
 def event_from_slack_payload(payload: dict[str, Any]) -> SlackEvent:
@@ -315,6 +375,7 @@ def _required_env(name: str) -> str:
 __all__ = [
     "SlackClient",
     "ExecutionApprovalHandler",
+    "QuestionAnswerHandler",
     "SlackEvent",
     "SlackIntakeListener",
     "SlackPoster",

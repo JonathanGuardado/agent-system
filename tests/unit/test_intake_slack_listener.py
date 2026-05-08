@@ -144,6 +144,164 @@ def test_listener_routes_new_request_to_handle_new_request(tmp_path):
     assert len(slack.messages) == 1
 
 
+def test_listener_routes_question_without_creating_proposal(tmp_path):
+    store = ProposalStore(tmp_path / "proposals.db")
+    flow = _RoutingApprovalFlow()
+    question_handler = _RoutingQuestionHandler()
+    listener = SlackIntakeListener(
+        approval_flow=flow,
+        store=store,
+        intake_channel="C-INTAKE",
+        question_answer_handler=question_handler,
+    )
+
+    result = asyncio.run(
+        listener.handle_event(
+            SlackEvent(
+                user_id="U1",
+                text="is there a ticket for OAuth login?",
+                channel="C-INTAKE",
+                thread_ts="t-question",
+            )
+        )
+    )
+
+    assert result is None
+    assert question_handler.messages == ["is there a ticket for OAuth login?"]
+    assert flow.new_request_calls == []
+    assert store.get_active_for_thread("U1", "t-question") is None
+
+
+def test_listener_routes_dm_question_when_intake_channel_is_configured(tmp_path):
+    store = ProposalStore(tmp_path / "proposals.db")
+    flow = _RoutingApprovalFlow()
+    question_handler = _RoutingQuestionHandler()
+    listener = SlackIntakeListener(
+        approval_flow=flow,
+        store=store,
+        intake_channel="C-INTAKE",
+        question_answer_handler=question_handler,
+    )
+
+    result = asyncio.run(
+        listener.handle_event(
+            SlackEvent(
+                user_id="U1",
+                text="is there a ticket for OAuth login?",
+                channel="D-DM",
+                thread_ts="t-dm-question",
+            )
+        )
+    )
+
+    assert result is None
+    assert question_handler.messages == ["is there a ticket for OAuth login?"]
+    assert flow.new_request_calls == []
+    assert store.get_active_for_thread("U1", "t-dm-question") is None
+
+
+def test_listener_logs_question_answer_model_metadata(tmp_path):
+    store = ProposalStore(tmp_path / "proposals.db")
+    flow = _RoutingApprovalFlow()
+    events: list[tuple[str, dict[str, object]]] = []
+    question_handler = _RoutingQuestionHandler(
+        answer=_QuestionAnswer(
+            model="gpt-4.1-mini",
+            provider="openai",
+            capability="trivial.respond",
+            fallback_used=False,
+        )
+    )
+    listener = SlackIntakeListener(
+        approval_flow=flow,
+        store=store,
+        intake_channel="C-INTAKE",
+        question_answer_handler=question_handler,
+        emit=lambda name, payload: events.append((name, payload)),
+    )
+
+    result = asyncio.run(
+        listener.handle_event(
+            SlackEvent(
+                user_id="U1",
+                text="is there a ticket for OAuth login?",
+                channel="C-INTAKE",
+                thread_ts="t-question",
+            )
+        )
+    )
+
+    assert result is None
+    assert events == [
+        (
+            "intake.question_answered",
+            {
+                "thread_ts": "t-question",
+                "model": "gpt-4.1-mini",
+                "provider": "openai",
+                "capability": "trivial.respond",
+                "fallback_used": False,
+            },
+        )
+    ]
+
+
+def test_listener_routes_dm_greeting_when_intake_channel_is_configured(tmp_path):
+    store = ProposalStore(tmp_path / "proposals.db")
+    flow = _RoutingApprovalFlow()
+    question_handler = _RoutingQuestionHandler(match_all=True)
+    listener = SlackIntakeListener(
+        approval_flow=flow,
+        store=store,
+        intake_channel="C-INTAKE",
+        question_answer_handler=question_handler,
+    )
+
+    result = asyncio.run(
+        listener.handle_event(
+            SlackEvent(
+                user_id="U1",
+                text="hi are you able to reply",
+                channel="D-DM",
+                thread_ts="t-dm-greeting",
+            )
+        )
+    )
+
+    assert result is None
+    assert question_handler.messages == ["hi are you able to reply"]
+    assert flow.new_request_calls == []
+    assert store.get_active_for_thread("U1", "t-dm-greeting") is None
+
+
+def test_listener_routes_dm_task_request_to_safe_dm_handler(tmp_path):
+    store = ProposalStore(tmp_path / "proposals.db")
+    flow = _RoutingApprovalFlow()
+    question_handler = _RoutingQuestionHandler(match_all=True)
+    listener = SlackIntakeListener(
+        approval_flow=flow,
+        store=store,
+        intake_channel="C-INTAKE",
+        question_answer_handler=question_handler,
+    )
+
+    result = asyncio.run(
+        listener.handle_event(
+            SlackEvent(
+                user_id="U1",
+                text="please fix OAuth login in AGENT",
+                channel="D-DM",
+                thread_ts="t-dm-task",
+            )
+        )
+    )
+
+    assert result is None
+    assert question_handler.messages == ["please fix OAuth login in AGENT"]
+    assert flow.new_request_calls == []
+    assert store.get_active_for_thread("U1", "t-dm-task") is None
+
+
 def test_listener_routes_active_thread_to_handle_reply(tmp_path):
     listener, store, slack = _build_listener(tmp_path)
 
@@ -621,3 +779,38 @@ class _RoutingExecutionHandler:
         del kwargs
         self.messages.append(text)
         return None
+
+
+class _RoutingQuestionHandler:
+    def __init__(
+        self,
+        *,
+        match_all: bool = False,
+        answer: object | None = None,
+    ) -> None:
+        self.messages: list[str] = []
+        self._match_all = match_all
+        self._answer = answer
+
+    def matches(self, text: str) -> bool:
+        return self._match_all or text.strip().lower().startswith("is there ")
+
+    async def handle_message(self, *, text: str, **kwargs) -> object:
+        del kwargs
+        self.messages.append(text)
+        return self._answer
+
+
+class _QuestionAnswer:
+    def __init__(
+        self,
+        *,
+        model: str | None = None,
+        provider: str | None = None,
+        capability: str | None = None,
+        fallback_used: bool | None = None,
+    ) -> None:
+        self.model = model
+        self.provider = provider
+        self.capability = capability
+        self.fallback_used = fallback_used
