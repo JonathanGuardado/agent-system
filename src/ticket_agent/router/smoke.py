@@ -99,11 +99,14 @@ def _load_dotenv_if_available() -> None:
     except ModuleNotFoundError:
         return
 
-    # Check canonical key store first, then repo-local .env for dev convenience.
+    # Prefer the repo-local .env by default, then fall back to a host-managed
+    # secret file for deployments that do not keep a repo-local env file.
+    repo_env = REPO_ROOT / ".env"
+    load_dotenv(repo_env)
+
     config_env = Path.home() / "config" / "agent-system.env"
     if config_env.exists():
         load_dotenv(config_env)
-    load_dotenv(REPO_ROOT / ".env")
 
 
 def _available_providers(router: object) -> list[str]:

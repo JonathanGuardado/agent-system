@@ -25,6 +25,7 @@ from ticket_agent.intake.proposal_generator import (
     ModelRouterProposalGenerator,
 )
 from ticket_agent.intake.proposal_store import ProposalStore
+from ticket_agent.intake.question_answerer import JiraQuestionAnswerHandler
 from ticket_agent.intake.slack_listener import (
     SlackIntakeListener,
     SlackSDKPoster,
@@ -326,6 +327,11 @@ def build_runtime(
         store=proposal_store,
         intake_channel=runtime_config.intake_channel,
         execution_approval_handler=execution_approval_handler,
+        question_answer_handler=JiraQuestionAnswerHandler(
+            jira_client=jira_client,
+            slack=slack,
+            model_router=router,
+        ),
         emit=emit,
     )
 

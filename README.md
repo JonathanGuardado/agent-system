@@ -34,6 +34,27 @@ LangGraph is intended to orchestrate the execution workflow, while the actual
 coding, file, shell, test, and git operations stay in explicit Python
 components.
 
+## Slack Usage
+
+Post actionable work in the configured intake channel. The bot replies with a
+proposal first; Jira tickets are created only after someone replies `approve`
+in that proposal thread. Reply `cancel` to discard a proposal, or describe
+edits to revise it.
+
+Non-ticket questions can be asked in the intake channel or in a direct message
+with the app. Use natural question phrasing or an explicit prefix:
+
+```txt
+is there a ticket for OAuth login?
+how is AGENT-123 going?
+ask: what is blocking the Slack Q&A feature?
+```
+
+The Q&A path gathers Jira context, then asks the internal model router to
+compose the reply. Direct messages never create proposals or Jira tickets;
+post actionable work in the intake channel so approvals and execution updates
+stay visible.
+
 ## Core Components
 
 The main package lives under `src/ticket_agent/`.

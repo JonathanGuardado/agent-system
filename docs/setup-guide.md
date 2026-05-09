@@ -9,10 +9,10 @@ the real values as you work through each section.
 cp .env.example .env
 ```
 
-The runtime loads `.env` by default, or whatever path you pass via
-`AGENT_SYSTEM_ENV_PATH` / `--env-path`. Production deployments can point
-`AGENT_SYSTEM_ENV_PATH` at a host-managed secret file such as
-`~/config/agent-system.env`.
+The runtime loads `.env` by default. You can still override it with
+`AGENT_SYSTEM_ENV_PATH` or `--env-path` when you want to use a different file.
+Production deployments can point `AGENT_SYSTEM_ENV_PATH` at a host-managed
+secret file such as `~/config/agent-system.env`.
 
 > Secrets must never be committed. `.env` is gitignored. Provider
 > clients read their own keys from the environment — do not pass keys into
@@ -66,8 +66,11 @@ app does not need a public URL.
 
 5. Install the app to the workspace. Copy the **Bot User OAuth Token**
    (starts with `xoxb-`). This is your `SLACK_BOT_TOKEN`.
-6. Invite the bot to the intake channel and the execution-approval channel.
-7. Copy each channel's ID (Slack → channel → **View channel details** → copy
+6. To use the app as a direct-message assistant for non-ticket Jira
+   questions, enable the app's messages tab / direct messages in Slack app
+   configuration and subscribe the app to message events for DMs.
+7. Invite the bot to the intake channel and the execution-approval channel.
+8. Copy each channel's ID (Slack → channel → **View channel details** → copy
    the `C…` ID at the bottom).
 
 ### Variables
@@ -125,14 +128,14 @@ field does not yet exist, create it in Jira first.
 
 | Variable | Logical purpose |
 |---|---|
-| `JIRA_FIELD_AGENT_ASSIGNED_COMPONENT` | Which agent component owns the ticket. |
+| `                                                                                                                                                                                             ` | Which agent component owns the ticket. |
 | `JIRA_FIELD_AGENT_RETRY_COUNT` | Retry counter the orchestrator increments. |
 | `JIRA_FIELD_AGENT_CAPABILITIES_NEEDED` | Capabilities the ticket requires. |
 | `JIRA_FIELD_REPOSITORY` | Repo name the work targets. |
 | `JIRA_FIELD_REPO_PATH` | Local clone path for the repo. |
 | `JIRA_FIELD_SLACK_THREAD_TS` | Slack thread that originated the ticket. |
 | `JIRA_FIELD_SLACK_CHANNEL` | Slack channel the originating thread is in. |
-| `JIRA_FIELD_MAX_ATTEMPTS` | Optional ticket-specific attempt cap. |
+| `JIRA_FIELD_MAX_ATTEMPTS` | Optional ticket -specific attempt cap. |
 | `JIRA_FIELD_EPIC_LINK` | Only set if your project still uses a custom Epic Link field (older Jira projects). Leave unset on next-gen projects that use the native parent. |
 
 The required keys (everything except `JIRA_FIELD_MAX_ATTEMPTS` and
@@ -192,7 +195,7 @@ Optional:
 - `AGENT_SYSTEM_CONTRACT_DIR` — alternative spelling of
   `AGENT_SYSTEM_REPO_CONFIG_PATH`; the first one set wins.
 - `AGENT_SYSTEM_ENV_PATH` — the entrypoint reads this if no `--env-path` is
-  passed. Set it when running `ticket-agent` without flags.
+  passed. Use it only when you want to override the default `.env`.
 
 ---
 
@@ -224,7 +227,7 @@ Run these in order. Each step gates the next.
    Jira field-map wiring, model-provider env vars, and `gh auth status`:
 
    ```bash
-   PATH="$PWD/.venv/bin:$PATH" ticket-agent-smoke-runtime --skip-network
+  PATH="$PWD/.venv/bin:$PATH" ticket-agent-smoke-runtime --skip-network
    ```
 
 3. **Smoke check with network** — additionally hits Slack `auth.test`,
@@ -233,13 +236,13 @@ Run these in order. Each step gates the next.
    `JIRA_FIELD_EPIC_LINK`:
 
    ```bash
-   PATH="$PWD/.venv/bin:$PATH" ticket-agent-smoke-runtime
+  PATH="$PWD/.venv/bin:$PATH" ticket-agent-smoke-runtime
    ```
 
 4. **Start the runtime**:
 
    ```bash
-   PATH="$PWD/.venv/bin:$PATH" ticket-agent
+  PATH="$PWD/.venv/bin:$PATH" ticket-agent
    ```
 
    This runs the Slack listener, Jira detection poller, execution worker,
@@ -256,7 +259,8 @@ Run these in order. Each step gates the next.
   tenant.
 - **`jira_project_metadata` fails** — the API user can see the project but
   the project does not have both `Epic` and `Task` issue types.
-- **`gh_auth` fails** — re-run `gh auth login`. The orchestrator cannot
+- **`github_auth` fails** — install `gh` first, then re-run `gh auth login`.
+  The orchestrator cannot
   open PRs without it.
 - **Slack listener silent** — the bot was not invited to
   `AGENT_SYSTEM_INTAKE_CHANNEL`, or the app-level token is missing the

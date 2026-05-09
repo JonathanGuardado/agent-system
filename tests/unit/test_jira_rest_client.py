@@ -36,6 +36,36 @@ def test_jira_rest_client_uses_configured_epic_link_field(monkeypatch):
     assert "parent" not in create_payload
 
 
+def test_jira_rest_client_search_uses_current_jql_endpoint(monkeypatch):
+    fake_client = _FakeAsyncClient()
+    monkeypatch.setattr(
+        jira_client_module.httpx,
+        "AsyncClient",
+        lambda **kwargs: fake_client,
+    )
+
+    result = asyncio.run(
+        JiraRestClient(
+            base_url="https://jira.example.test",
+            user_email="agent@example.test",
+            api_key="secret",
+            field_map={"agent_assigned_component": "customfield_10020"},
+        ).search_issues(
+            'project = AGENT AND labels = "ai-ready"',
+            fields=["summary", "agent_assigned_component"],
+        )
+    )
+
+    assert result == {"issues": []}
+    search_request = fake_client.requests[0]
+    assert search_request["method"] == "POST"
+    assert search_request["url"] == "https://jira.example.test/rest/api/3/search/jql"
+    assert search_request["json"] == {
+        "jql": 'project = AGENT AND labels = "ai-ready"',
+        "fields": ["summary", "customfield_10020"],
+    }
+
+
 class _FakeAsyncClient:
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
@@ -48,6 +78,8 @@ class _FakeAsyncClient:
 
     async def request(self, method: str, url: str, **kwargs: Any) -> "_Response":
         self.requests.append({"method": method, "url": url, **kwargs})
+        if url.endswith("/rest/api/3/search/jql"):
+            return _Response({"issues": []})
         if method == "POST":
             return _Response({"key": "AGENT-2"})
         return _Response(

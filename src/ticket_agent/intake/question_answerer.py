@@ -52,12 +52,61 @@ class QuestionAnswerResult:
 
 
 @dataclass(frozen=True)
+class QuestionConversationMessage:
+    """One ephemeral prior message in a Slack Q&A conversation."""
+
+    role: str
+    content: str
+
+
+@dataclass(frozen=True)
 class _ModelReply:
     message: str
     model: str | None = None
     provider: str | None = None
     capability: str | None = None
     fallback_used: bool | None = None
+
+
+class InMemoryQuestionConversationStore:
+    """Bounded, process-local memory for Slack Q&A follow-up context."""
+
+    def __init__(self, *, max_messages: int = 12, max_chars: int = 6000) -> None:
+        if max_messages < 2:
+            raise ValueError("max_messages must be at least 2")
+        if max_chars < 1:
+            raise ValueError("max_chars must be positive")
+        self._max_messages = max_messages
+        self._max_chars = max_chars
+        self._messages: dict[str, list[QuestionConversationMessage]] = {}
+
+    def get(self, key: str | None) -> tuple[QuestionConversationMessage, ...]:
+        if key is None:
+            return ()
+        return tuple(self._messages.get(key, ()))
+
+    def append(self, key: str | None, *, user: str, assistant: str) -> None:
+        if key is None:
+            return
+        user = user.strip()
+        assistant = assistant.strip()
+        if not user or not assistant:
+            return
+        messages = [
+            *self._messages.get(key, ()),
+            QuestionConversationMessage(role="user", content=user),
+            QuestionConversationMessage(role="assistant", content=assistant),
+        ]
+        self._messages[key] = self._trim(messages)
+
+    def _trim(
+        self,
+        messages: list[QuestionConversationMessage],
+    ) -> list[QuestionConversationMessage]:
+        trimmed = messages[-self._max_messages :]
+        while _conversation_chars(trimmed) > self._max_chars and len(trimmed) > 2:
+            trimmed = trimmed[1:]
+        return trimmed
 
 
 class JiraQuestionAnswerHandler:
@@ -69,6 +118,7 @@ class JiraQuestionAnswerHandler:
         jira_client: JiraQuestionClient,
         slack: SlackPoster,
         model_router: ModelRouterProtocol | None = None,
+        conversation_store: InMemoryQuestionConversationStore | None = None,
         max_results: int = 5,
     ) -> None:
         if max_results < 1:
@@ -76,6 +126,9 @@ class JiraQuestionAnswerHandler:
         self._jira_client = jira_client
         self._slack = slack
         self._model_router = model_router
+        self._conversation_store = (
+            conversation_store or InMemoryQuestionConversationStore()
+        )
         self._max_results = max_results
 
     def matches(self, text: str) -> bool:
@@ -93,7 +146,12 @@ class JiraQuestionAnswerHandler:
     ) -> QuestionAnswerResult:
         """Post an answer to Slack and return it for tests/telemetry."""
 
-        answer = await self.answer(text)
+        conversation_key = _conversation_key(
+            channel=channel,
+            thread_ts=thread_ts,
+            user_id=user_id,
+        )
+        answer = await self.answer(text, conversation_key=conversation_key)
         if thread_ts is not None and user_id is not None:
             await self._slack.post_thread_reply(
                 channel,
@@ -103,13 +161,19 @@ class JiraQuestionAnswerHandler:
             )
         return answer
 
-    async def answer(self, text: str) -> QuestionAnswerResult:
+    async def answer(
+        self,
+        text: str,
+        *,
+        conversation_key: str | None = None,
+    ) -> QuestionAnswerResult:
         """Answer one Jira-oriented question."""
 
         question = _strip_question_prefix(text)
-        context = await self._answer_context(question)
-        reply = await self._model_reply(question, context)
-        return QuestionAnswerResult(
+        history = self._conversation_store.get(conversation_key)
+        context = await self._answer_context(question, has_history=bool(history))
+        reply = await self._model_reply(question, context, history)
+        result = QuestionAnswerResult(
             answered=True,
             message=reply.message,
             model=reply.model,
@@ -117,8 +181,19 @@ class JiraQuestionAnswerHandler:
             capability=reply.capability,
             fallback_used=reply.fallback_used,
         )
+        self._conversation_store.append(
+            conversation_key,
+            user=question,
+            assistant=result.message,
+        )
+        return result
 
-    async def _answer_context(self, question: str) -> dict[str, object]:
+    async def _answer_context(
+        self,
+        question: str,
+        *,
+        has_history: bool = False,
+    ) -> dict[str, object]:
         ticket_key = _extract_ticket_key(question)
         if ticket_key is not None:
             try:
@@ -134,7 +209,9 @@ class JiraQuestionAnswerHandler:
                 "ticket": _ticket_payload(ticket),
             }
 
-        if _is_general_dm_question(question):
+        if _is_general_dm_question(question) or (
+            has_history and _is_contextual_follow_up(question)
+        ):
             return {"kind": "general_dm"}
 
         terms = _search_terms(question)
@@ -171,6 +248,7 @@ class JiraQuestionAnswerHandler:
         self,
         question: str,
         context: Mapping[str, object],
+        history: Sequence[QuestionConversationMessage],
     ) -> _ModelReply:
         if self._model_router is None:
             return _ModelReply(message=_fallback_reply(context))
@@ -178,7 +256,7 @@ class JiraQuestionAnswerHandler:
         try:
             response = await self._model_router.invoke(
                 "trivial.respond",
-                _reply_messages(question, context),
+                _reply_messages(question, context, history),
                 ticket_id=_context_ticket_id(context),
                 metadata={"workflow_node": "intake_question_answer"},
             )
@@ -229,6 +307,23 @@ def _search_terms(text: str) -> str:
     return " ".join(words[:8]).strip()
 
 
+def _conversation_key(
+    *,
+    channel: str | None,
+    thread_ts: str | None,
+    user_id: str | None,
+) -> str | None:
+    if channel is not None and channel.startswith("D") and user_id:
+        return f"dm:{channel}:{user_id}"
+    if channel is not None and thread_ts:
+        return f"thread:{channel}:{thread_ts}"
+    return None
+
+
+def _conversation_chars(messages: Sequence[QuestionConversationMessage]) -> int:
+    return sum(len(message.content) for message in messages)
+
+
 def _is_general_dm_question(text: str) -> bool:
     normalized = " ".join(_strip_question_prefix(text).lower().split())
     normalized = normalized.strip(".,!?;: ")
@@ -241,6 +336,19 @@ def _is_general_dm_question(text: str) -> bool:
     if any(phrase in normalized for phrase in _CAPABILITY_PHRASES):
         return True
     return normalized.startswith(_GENERAL_DM_STARTS)
+
+
+def _is_contextual_follow_up(text: str) -> bool:
+    normalized = " ".join(_strip_question_prefix(text).lower().split())
+    normalized = normalized.strip(".,!?;: ")
+    if not normalized or normalized.startswith(_ACTION_STARTS):
+        return False
+    if _extract_ticket_key(normalized) is not None:
+        return False
+    if any(phrase in normalized for phrase in _FOLLOW_UP_PHRASES):
+        return True
+    words = set(re.findall(r"[a-z0-9][a-z0-9_.-]*", normalized))
+    return bool(words & _FOLLOW_UP_WORDS)
 
 
 def _is_conversational_search_terms(terms: str) -> bool:
@@ -324,6 +432,7 @@ def _ticket_payload(ticket: JiraTicket) -> dict[str, object]:
 def _reply_messages(
     question: str,
     context: Mapping[str, object],
+    history: Sequence[QuestionConversationMessage] = (),
 ) -> list[dict[str, str]]:
     return [
         {
@@ -331,15 +440,18 @@ def _reply_messages(
             "content": (
                 "You are Agentic System, a Slack assistant for Jira-backed "
                 "software work. Reply conversationally and concisely. Use the "
-                "provided Jira context when present; do not invent ticket "
-                "status, ticket keys, work progress, PRs, blockers, or created "
-                "tickets. You cannot create Jira tickets from direct messages. "
+                "provided Jira context when present; treat it as fresher than "
+                "conversation history. Use prior conversation only to resolve "
+                "follow-up references. Do not invent ticket status, ticket keys, "
+                "work progress, PRs, blockers, or created tickets. You cannot "
+                "create Jira tickets from direct messages. "
                 "If the user asks you to implement, fix, create, or change "
                 "work, tell them to post the task in the configured intake "
                 "channel for proposal review. Always make clear that no Jira "
                 "ticket was created by this answer."
             ),
         },
+        *(_history_message(message) for message in history),
         {
             "role": "user",
             "content": "\n".join(
@@ -351,6 +463,11 @@ def _reply_messages(
             ),
         },
     ]
+
+
+def _history_message(message: QuestionConversationMessage) -> dict[str, str]:
+    role = "assistant" if message.role == "assistant" else "user"
+    return {"role": role, "content": message.content}
 
 
 def _model_content(response: object) -> str:
@@ -511,6 +628,17 @@ _CONVERSATIONAL_TERMS = {
     "there",
     "you",
 }
+_FOLLOW_UP_PHRASES = (
+    "for that",
+    "for it",
+    "intake channel",
+    "tag you",
+)
+_FOLLOW_UP_WORDS = {
+    "that",
+    "this",
+    "it",
+}
 _ACTION_STARTS = (
     "add ",
     "build ",
@@ -583,7 +711,9 @@ _PROJECT_STOP_WORDS = _STOP_WORDS | {
 
 
 __all__ = [
+    "InMemoryQuestionConversationStore",
     "JiraQuestionAnswerHandler",
+    "QuestionConversationMessage",
     "QuestionAnswerResult",
     "is_question_text",
 ]

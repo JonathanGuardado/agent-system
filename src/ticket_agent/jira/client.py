@@ -94,7 +94,7 @@ class JiraRestClient:
             payload["fields"] = jira_fields
         result = await self._request(
             "POST",
-            "/rest/api/3/search",
+            "/rest/api/3/search/jql",
             json=payload,
         )
         if not isinstance(result, Mapping):

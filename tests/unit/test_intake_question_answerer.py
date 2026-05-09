@@ -177,6 +177,56 @@ def test_question_answerer_returns_model_metadata():
     assert result.fallback_used is True
 
 
+def test_question_answerer_includes_dm_history_on_followup():
+    slack = _FakeSlack()
+    jira_client = FakeJiraClient([])
+    router = _Router(
+        [
+            "Yes, I am here. No Jira ticket was created.",
+            "Yes, tag me in the intake channel for that. No Jira ticket was created.",
+        ]
+    )
+    handler = JiraQuestionAnswerHandler(
+        jira_client=jira_client,
+        slack=slack,
+        model_router=router,
+    )
+
+    first = asyncio.run(
+        handler.handle_message(
+            text="hi, are you there?",
+            channel="D-DM",
+            thread_ts="111.1",
+            user_id="U1",
+        )
+    )
+    second = asyncio.run(
+        handler.handle_message(
+            text="should i tag you for that in the intake channel?",
+            channel="D-DM",
+            thread_ts="222.2",
+            user_id="U1",
+        )
+    )
+
+    assert first.message == "Yes, I am here. No Jira ticket was created."
+    assert second.message == (
+        "Yes, tag me in the intake channel for that. No Jira ticket was created."
+    )
+    assert jira_client.calls == []
+    second_messages = router.calls[1]["messages"]
+    assert second_messages[1] == {
+        "role": "user",
+        "content": "hi, are you there?",
+    }
+    assert second_messages[2] == {
+        "role": "assistant",
+        "content": "Yes, I am here. No Jira ticket was created.",
+    }
+    assert "should i tag you" in second_messages[3]["content"]
+    assert '"kind": "general_dm"' in second_messages[3]["content"]
+
+
 def test_question_answerer_has_safe_fallback_when_model_router_is_unavailable():
     jira_client = FakeJiraClient(
         JiraTicket(
@@ -222,4 +272,6 @@ class _Router:
                 "kwargs": dict(kwargs),
             }
         )
+        if isinstance(self.response, list):
+            return self.response[len(self.calls) - 1]
         return self.response

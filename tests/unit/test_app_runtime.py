@@ -85,6 +85,62 @@ def test_build_runtime_wires_execution_approval_commands_into_listener(tmp_path)
         runtime.close()
 
 
+def test_build_runtime_wires_question_answering_without_creating_proposal(tmp_path):
+    slack = _FakeSlack()
+    model_router = _QuestionRouter(
+        "Model runtime response for AGENT-321. No Jira ticket was created."
+    )
+    jira_client = FakeJiraClient(
+        JiraTicket(
+            key="AGENT-321",
+            summary="Add Slack Q&A mode",
+            status=STATUS_TODO,
+        )
+    )
+    runtime = build_runtime(
+        jira_client=jira_client,
+        slack=slack,
+        config=RuntimeConfig(
+            data_dir=tmp_path,
+            intake_channel="C-INTAKE",
+            execution_approval_channel="C-INTAKE",
+        ),
+        planner=_Planner(),
+        implementation=_Implementation(),
+        tests=_Tests(),
+        review=_Review(),
+        pull_request=_PullRequest(),
+        escalation=_Escalation(),
+        model_router=model_router,
+    )
+
+    try:
+        routed = asyncio.run(
+            runtime.listener.handle_event(
+                SlackEvent(
+                    user_id="U1",
+                    text="how is AGENT-321 going?",
+                    channel="C-INTAKE",
+                    thread_ts="question-thread",
+                )
+            )
+        )
+
+        assert routed is None
+        active = runtime.proposal_store.get_active_for_thread(
+            "U1",
+            "question-thread",
+        )
+        assert active is None
+        assert jira_client.created_keys == []
+        assert slack.messages[-1][3] == (
+            "Model runtime response for AGENT-321. No Jira ticket was created."
+        )
+        assert model_router.calls == ["how is AGENT-321 going?"]
+    finally:
+        runtime.close()
+
+
 def test_fake_slack_to_jira_to_execution_pr_path(tmp_path):
     slack = _FakeSlack()
     jira_client = FakeJiraClient([])
@@ -399,3 +455,22 @@ class _PullRequest:
 class _Escalation:
     async def escalate(self, state: TicketState, reason: str) -> None:
         del state, reason
+
+
+class _QuestionRouter:
+    def __init__(self, response: str) -> None:
+        self._response = response
+        self.calls: list[str] = []
+        self.capabilities: list[str] = []
+
+    async def invoke(
+        self,
+        capability: str,
+        messages: list[dict[str, str]],
+        **kwargs: Any,
+    ) -> str:
+        del kwargs
+        self.capabilities.append(capability)
+        user_message = messages[-1]["content"].splitlines()[0]
+        self.calls.append(user_message.removeprefix("user_message: "))
+        return self._response

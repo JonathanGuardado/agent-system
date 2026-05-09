@@ -14,6 +14,11 @@ from ticket_agent.intake.proposal_generator import (
     ProposalRequest,
 )
 from ticket_agent.intake.proposal_store import ProposalStore
+from ticket_agent.intake.question_answerer import (
+    JiraQuestionAnswerHandler,
+    QuestionAnswerResult,
+    is_question_text,
+)
 from ticket_agent.intake.slack_listener import (
     SlackClient,
     SlackEvent,
@@ -27,13 +32,16 @@ __all__ = [
     "DeterministicProposalGenerator",
     "ModelRouterProposalGenerator",
     "IntakeIntentResolver",
+    "JiraQuestionAnswerHandler",
     "JiraWriteResult",
     "JiraWriter",
     "ProposalDraft",
     "ProposalGenerator",
     "ProposalRequest",
     "ProposalStore",
+    "QuestionAnswerResult",
     "SlackClient",
     "SlackEvent",
     "SlackIntakeListener",
+    "is_question_text",
 ]
