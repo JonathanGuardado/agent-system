@@ -109,11 +109,20 @@ def test_write_creates_epic_for_multi_ticket_proposal():
     create_calls = [call for call in client.calls if call[0] == "create_issue"]
     assert create_calls[0][2]["issue_type"] == "Epic"
     assert create_calls[0][2]["labels"] == []
+    assert create_calls[0][2]["fields"] == {}
     assert [call[2]["parent_key"] for call in create_calls[1:]] == [
         "AGENT-1",
         "AGENT-1",
         "AGENT-1",
     ]
+    assert [
+        call[2]["fields"][FIELD_SLACK_THREAD_TS]
+        for call in create_calls[1:]
+    ] == ["t1", "t1", "t1"]
+    assert [
+        call[2]["fields"][FIELD_SLACK_CHANNEL]
+        for call in create_calls[1:]
+    ] == ["C-INTAKE", "C-INTAKE", "C-INTAKE"]
 
 
 def test_write_uses_existing_epic_key_without_creating_epic():

@@ -112,11 +112,6 @@ class JiraWriter:
     ) -> str | None:
         summary = proposal.epic_summary or proposal.title
         description = proposal.epic_description or proposal.summary
-        fields = {
-            FIELD_SLACK_THREAD_TS: proposal.slack_thread_ts,
-        }
-        if proposal.slack_channel:
-            fields[FIELD_SLACK_CHANNEL] = proposal.slack_channel
         try:
             epic = await self._client.create_issue(
                 context.project_key,
@@ -124,7 +119,7 @@ class JiraWriter:
                 description=description,
                 issue_type="Epic",
                 labels=[],
-                fields=fields,
+                fields={},
             )
         except Exception as exc:  # noqa: BLE001 - boundary call
             reason = f"epic_create_failed: {_error_message(exc)}"
