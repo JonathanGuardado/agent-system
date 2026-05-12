@@ -234,6 +234,52 @@ def test_approve_calls_jira_writer_and_marks_confirmed(tmp_path):
     assert "AGENT-1" in slack.messages[0][3]
 
 
+def test_approve_accepts_slack_inline_code_formatting(tmp_path):
+    flow, store, _slack, _jira_client, _ = _build_flow(tmp_path)
+
+    asyncio.run(
+        flow.handle_new_request(
+            user_id="U1",
+            thread_ts="t1",
+            text="Add OAuth login to AGENT",
+        )
+    )
+
+    result = asyncio.run(
+        flow.handle_reply(
+            user_id="U1",
+            thread_ts="t1",
+            text="`approve`",
+        )
+    )
+
+    assert result.outcome == ApprovalOutcome.PROPOSAL_CONFIRMED
+    assert store.get_active_for_thread("U1", "t1") is None
+
+
+def test_cancel_accepts_slack_inline_code_formatting(tmp_path):
+    flow, store, _slack, _jira_client, _ = _build_flow(tmp_path)
+
+    asyncio.run(
+        flow.handle_new_request(
+            user_id="U1",
+            thread_ts="t1",
+            text="Add OAuth login to AGENT",
+        )
+    )
+
+    result = asyncio.run(
+        flow.handle_reply(
+            user_id="U1",
+            thread_ts="t1",
+            text="`cancel`",
+        )
+    )
+
+    assert result.outcome == ApprovalOutcome.PROPOSAL_CANCELLED
+    assert store.get_active_for_thread("U1", "t1") is None
+
+
 def test_approve_with_partial_jira_failure_posts_partial_result(tmp_path):
     flow, store, slack, jira_client, _ = _build_flow(
         tmp_path,

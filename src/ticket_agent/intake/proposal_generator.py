@@ -138,8 +138,10 @@ class DeterministicProposalGenerator:
             )
 
         mode = request.resolution.mode
-        project_key = _extract_project_key(text) or (
-            prior.project_key if prior is not None else None
+        project_key = _resolve_project_key(
+            text,
+            request.repo_defaults,
+            prior,
         )
         epic_key = _extract_epic_key(text) or (
             prior.epic_key if prior is not None else None
@@ -278,8 +280,10 @@ class ModelRouterProposalGenerator:
         text = request.text.strip()
         # project_key and epic_key come from request text or prior proposal only —
         # the model is not trusted to set operational context.
-        project_key = _extract_project_key(text) or (
-            prior.project_key if prior is not None else None
+        project_key = _resolve_project_key(
+            text,
+            request.repo_defaults,
+            prior,
         )
         epic_key = _extract_epic_key(text) or (
             prior.epic_key if prior is not None else None
@@ -580,13 +584,40 @@ def _proposal_summary(mode: IntakeMode, text: str, ticket_count: int) -> str:
     )
 
 
-def _extract_project_key(text: str) -> str | None:
+def _resolve_project_key(
+    text: str,
+    repo_defaults: Mapping[str, Mapping[str, str]],
+    prior: Proposal | None,
+) -> str | None:
+    configured_projects = {key.upper(): key for key in repo_defaults}
+    candidates = _project_key_candidates(text)
+
+    for candidate in candidates:
+        configured = configured_projects.get(candidate)
+        if configured is not None:
+            return configured
+
+    if prior is not None and prior.project_key:
+        return prior.project_key
+
+    if len(repo_defaults) == 1:
+        return next(iter(repo_defaults))
+
+    return candidates[0] if candidates else None
+
+
+def _project_key_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
     for match in _PROJECT_KEY_PATTERN.finditer(text):
         candidate = match.group(1)
         if candidate.lower() in _STOP_WORDS:
             continue
-        return candidate
-    return None
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        candidates.append(candidate)
+    return candidates
 
 
 def _extract_epic_key(text: str) -> str | None:
@@ -605,16 +636,16 @@ def _resolve_repository(
     repository: str | None = None
     repo_path: str | None = None
 
-    inline = _PATH_PATTERN.search(text)
-    if inline is not None:
-        repository = inline.group(1)
-        repo_path = inline.group(0)
-
     if project_key is not None:
         defaults = repo_defaults.get(project_key)
         if defaults is not None:
             repository = repository or defaults.get("repository")
             repo_path = repo_path or defaults.get("repo_path")
+
+    inline = None if repository is not None else _PATH_PATTERN.search(text)
+    if inline is not None:
+        repository = inline.group(1)
+        repo_path = inline.group(0)
 
     if repository is None and prior is not None and prior.tickets:
         repository = prior.tickets[0].repository
@@ -664,7 +695,18 @@ def _missing_context_clarification(
     return None
 
 
-_STOP_WORDS = {"oauth", "saml", "sso", "api", "ui", "cli", "saas", "json", "yaml"}
+_STOP_WORDS = {
+    "api",
+    "cli",
+    "html",
+    "json",
+    "oauth",
+    "saas",
+    "saml",
+    "sso",
+    "ui",
+    "yaml",
+}
 _PATH_PATTERN = re.compile(r"\b([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)\b")
 
 

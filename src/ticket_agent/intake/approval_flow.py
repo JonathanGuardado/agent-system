@@ -331,7 +331,7 @@ class ApprovalFlow:
 
 
 def _classify_reply(text: str) -> str:
-    normalized = " ".join(text.strip().lower().split())
+    normalized = _normalize_reply_command(text)
     if not normalized:
         return "edit"
     first_word = normalized.split()[0]
@@ -340,6 +340,14 @@ def _classify_reply(text: str) -> str:
     if first_word in _CANCEL_WORDS and len(normalized.split()) <= 3:
         return "cancel"
     return "edit"
+
+
+def _normalize_reply_command(text: str) -> str:
+    normalized = " ".join(text.strip().lower().split())
+    normalized = normalized.strip("`*_~")
+    if normalized.startswith("<") and ">" in normalized:
+        normalized = normalized.split(">", maxsplit=1)[1].strip()
+    return normalized.strip("`*_~")
 
 
 async def _generate_proposal(

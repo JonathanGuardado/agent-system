@@ -174,6 +174,41 @@ def test_model_provided_repository_cannot_override_trusted_context():
     assert proposal.tickets[0].repo_path == "/home/agent"
 
 
+def test_single_configured_project_wins_over_source_paths_and_html_word():
+    router = _Router(
+        {
+            "title": "Build Validation App",
+            "summary": "Create a tiny validation app.",
+            "tickets": [
+                {
+                    "summary": "Create validation app",
+                    "description": "Add src/validation_app with an HTML renderer.",
+                }
+            ],
+        }
+    )
+
+    proposal = asyncio.run(
+        ModelRouterProposalGenerator(router, clock=_clock).generate(
+            _request(
+                "Create a tiny Python package under src/validation_app/ with "
+                "an HTML renderer",
+                repo_defaults={
+                    "SCRUM": {
+                        "repository": "agent-system",
+                        "repo_path": "/home/agent-system",
+                    }
+                },
+            )
+        )
+    ).proposal
+
+    assert proposal is not None
+    assert proposal.project_key == "SCRUM"
+    assert proposal.tickets[0].repository == "agent-system"
+    assert proposal.tickets[0].repo_path == "/home/agent-system"
+
+
 def test_model_tickets_truncated_to_max_tickets():
     """Model output exceeding max_tickets is truncated deterministically."""
     seven_tickets = [
@@ -226,6 +261,7 @@ def _request(
     *,
     mode: IntakeMode = IntakeMode.NEW_FEATURE,
     capability: str = "code.implement",
+    repo_defaults: dict[str, dict[str, str]] | None = None,
 ) -> ProposalRequest:
     return ProposalRequest(
         slack_user_id="U1",
@@ -236,7 +272,7 @@ def _request(
             capability=capability,
             model_primary="deepseek-v4-pro",
         ),
-        repo_defaults={
+        repo_defaults=repo_defaults or {
             "AGENT": {
                 "repository": "agent-system",
                 "repo_path": "/home/agent",
