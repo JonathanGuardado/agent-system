@@ -17,7 +17,13 @@ from ticket_agent.app import (
 )
 from ticket_agent.intake.slack_listener import SlackEvent
 from ticket_agent.jira.constants import FIELD_AGENT_ASSIGNED_COMPONENT
-from ticket_agent.jira.constants import LABEL_AI_READY, STATUS_IN_REVIEW, STATUS_TODO
+from ticket_agent.jira.constants import (
+    LABEL_AI_CLAIMED,
+    LABEL_AI_EXECUTION_APPROVED,
+    LABEL_AI_READY,
+    STATUS_IN_REVIEW,
+    STATUS_TODO,
+)
 from ticket_agent.jira.fake_client import FakeJiraClient
 from ticket_agent.jira.models import JiraTicket
 from ticket_agent.orchestrator.state import TicketState
@@ -232,6 +238,236 @@ def test_fake_slack_to_jira_to_execution_pr_path(tmp_path):
         runtime.close()
 
 
+def test_runtime_dry_run_execution_approval_stops_before_implementation(tmp_path):
+    slack = _FakeSlack()
+    jira_client = FakeJiraClient([])
+    implementation = _Implementation()
+    runtime = build_runtime(
+        jira_client=jira_client,
+        slack=slack,
+        config=RuntimeConfig(
+            data_dir=tmp_path,
+            intake_channel="C-INTAKE",
+            execution_approval_channel="C-INTAKE",
+            repo_defaults={
+                "AGENT": {
+                    "repository": "agent-system",
+                    "repo_path": "/home/jguardado/repos/agent-system",
+                }
+            },
+            poll_interval_seconds=0.01,
+            max_backoff_seconds=0.01,
+            execution_mode="dry_run",
+        ),
+        planner=_Planner(),
+        implementation=implementation,
+        tests=_Tests(),
+        review=_Review(),
+        pull_request=_PullRequest(),
+        escalation=_Escalation(),
+    )
+
+    try:
+        asyncio.run(
+            runtime.listener.handle_event(
+                SlackEvent(
+                    user_id="U1",
+                    text="Add OAuth login to AGENT",
+                    channel="C-INTAKE",
+                    thread_ts="dry-run-thread",
+                )
+            )
+        )
+        approved = asyncio.run(
+            runtime.listener.handle_event(
+                SlackEvent(
+                    user_id="U1",
+                    text="approve",
+                    channel="C-INTAKE",
+                    thread_ts="dry-run-thread",
+                )
+            )
+        )
+        assert approved is not None
+        ticket_key = approved.write_result.created_ticket_keys[0]
+
+        assert asyncio.run(runtime.detector.poll_once()) == 1
+        assert asyncio.run(runtime.worker.run_once()) is True
+        ticket = jira_client.ticket(ticket_key)
+        assert LABEL_AI_CLAIMED in ticket.labels
+
+        routed = asyncio.run(
+            runtime.listener.handle_event(
+                SlackEvent(
+                    user_id="U1",
+                    text=f"approve {ticket_key}",
+                    channel="C-INTAKE",
+                    thread_ts="dry-run-thread",
+                )
+            )
+        )
+
+        assert routed is None
+        assert implementation.calls == []
+        assert LABEL_AI_EXECUTION_APPROVED in ticket.labels
+        assert LABEL_AI_CLAIMED not in ticket.labels
+        assert ticket.fields[FIELD_AGENT_ASSIGNED_COMPONENT] is None
+        assert runtime.approval_store.get(ticket_key).status == "approved"
+        assert jira_client.comments_for(ticket_key) == [
+            "AI execution dry-run approved. No code changes were attempted."
+        ]
+        assert any(
+            "Dry-run execution approved" in message
+            for _channel, _thread, _user, message in slack.messages
+        )
+    finally:
+        runtime.close()
+
+
+def test_runtime_dry_run_reject_releases_and_marks_failed(tmp_path):
+    slack = _FakeSlack()
+    jira_client = FakeJiraClient([])
+    runtime = build_runtime(
+        jira_client=jira_client,
+        slack=slack,
+        config=RuntimeConfig(
+            data_dir=tmp_path,
+            intake_channel="C-INTAKE",
+            execution_approval_channel="C-INTAKE",
+            repo_defaults={
+                "AGENT": {
+                    "repository": "agent-system",
+                    "repo_path": "/home/jguardado/repos/agent-system",
+                }
+            },
+            poll_interval_seconds=0.01,
+            max_backoff_seconds=0.01,
+            execution_mode="dry_run",
+        ),
+        planner=_Planner(),
+        implementation=_Implementation(),
+        tests=_Tests(),
+        review=_Review(),
+        pull_request=_PullRequest(),
+        escalation=_Escalation(),
+    )
+
+    try:
+        asyncio.run(
+            runtime.listener.handle_event(
+                SlackEvent(
+                    user_id="U1",
+                    text="Add OAuth login to AGENT",
+                    channel="C-INTAKE",
+                    thread_ts="dry-run-reject-thread",
+                )
+            )
+        )
+        approved = asyncio.run(
+            runtime.listener.handle_event(
+                SlackEvent(
+                    user_id="U1",
+                    text="approve",
+                    channel="C-INTAKE",
+                    thread_ts="dry-run-reject-thread",
+                )
+            )
+        )
+        assert approved is not None
+        ticket_key = approved.write_result.created_ticket_keys[0]
+        assert asyncio.run(runtime.detector.poll_once()) == 1
+        assert asyncio.run(runtime.worker.run_once()) is True
+
+        routed = asyncio.run(
+            runtime.listener.handle_event(
+                SlackEvent(
+                    user_id="U1",
+                    text=f"reject {ticket_key}",
+                    channel="C-INTAKE",
+                    thread_ts="dry-run-reject-thread",
+                )
+            )
+        )
+
+        ticket = jira_client.ticket(ticket_key)
+        assert routed is None
+        assert LABEL_AI_CLAIMED not in ticket.labels
+        assert "ai-failed" in ticket.labels
+        assert ticket.fields[FIELD_AGENT_ASSIGNED_COMPONENT] is None
+        assert runtime.approval_store.get(ticket_key).status == "rejected"
+        assert jira_client.comments_for(ticket_key) == [
+            "AI execution failed:\n\nexecution approval rejected in dry-run mode"
+        ]
+    finally:
+        runtime.close()
+
+
+def test_build_runtime_derives_repo_defaults_from_single_repo_contract(tmp_path):
+    contract_dir = tmp_path / "contracts"
+    contract_dir.mkdir()
+    contract_dir.joinpath("agent-system.yaml").write_text(
+        "\n".join(
+            [
+                "repo:",
+                "  name: agent-system",
+                f"  root: {tmp_path / 'repo'}",
+                "  default_branch: main",
+                "language:",
+                "  primary: python",
+                "  package_manager: setuptools",
+                "commands:",
+                "  test:",
+                "    command: ['python', '-m', 'pytest']",
+                "    timeout_seconds: 30",
+                "    working_directory: .",
+                "  lint: null",
+                "  install: null",
+                "policy:",
+                "  dependency_install_allowed: false",
+                "source_dirs: ['src/']",
+                "test_dirs: ['tests/']",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    runtime = build_runtime(
+        jira_client=FakeJiraClient([]),
+        slack=_FakeSlack(),
+        config=RuntimeConfig(
+            data_dir=tmp_path / "data",
+            intake_channel="C-INTAKE",
+            execution_approval_channel="C-INTAKE",
+            contract_dir=contract_dir,
+            jira_target_projects=("AGENT",),
+        ),
+        planner=_Planner(),
+        implementation=_Implementation(),
+        tests=_Tests(),
+        review=_Review(),
+        pull_request=_PullRequest(),
+        escalation=_Escalation(),
+    )
+
+    try:
+        result = asyncio.run(
+            runtime.listener.handle_event(
+                SlackEvent(
+                    user_id="U1",
+                    text="Add OAuth login to AGENT",
+                    channel="C-INTAKE",
+                    thread_ts="contract-thread",
+                )
+            )
+        )
+
+        assert result is not None
+        assert result.proposal is not None
+        assert result.proposal.tickets[0].repository == "agent-system"
+        assert result.proposal.tickets[0].repo_path == str(tmp_path / "repo")
+    finally:
+        runtime.close()
+
+
 def test_load_app_config_missing_required_env_fails_fast(tmp_path):
     env_path = tmp_path / "agent-system.env"
     env_path.write_text("", encoding="utf-8")
@@ -271,6 +507,7 @@ def test_load_app_config_reads_env_file_and_runtime_options(tmp_path):
                 "AGENT_SYSTEM_POLL_INTERVAL_SECONDS=0.25",
                 "AGENT_SYSTEM_RECONCILE_INTERVAL_SECONDS=0.5",
                 "AGENT_SYSTEM_REPO_CONFIG_PATH=config/test-repos",
+                "AGENT_SYSTEM_EXECUTION_MODE=dry_run",
             ]
         ),
         encoding="utf-8",
@@ -286,8 +523,22 @@ def test_load_app_config_reads_env_file_and_runtime_options(tmp_path):
     assert config.runtime.poll_interval_seconds == 0.25
     assert config.runtime.reconcile_interval_seconds == 0.5
     assert str(config.runtime.contract_dir) == "config/test-repos"
+    assert config.runtime.jira_target_projects == ("AGENT", "OPS")
+    assert config.runtime.execution_mode == "dry_run"
     assert config.jira_target_projects == ("AGENT", "OPS")
     assert config.jira_field_map[FIELD_AGENT_ASSIGNED_COMPONENT] == "customfield_10001"
+
+
+def test_load_app_config_rejects_unknown_execution_mode(tmp_path):
+    env_path = tmp_path / "agent-system.env"
+    env_path.write_text("", encoding="utf-8")
+    env = {name: f"{name.lower()}-value" for name in REQUIRED_ENV_VARS}
+    env["JIRA_BASE_URL"] = "https://jira.example.test"
+    env["JIRA_USER_EMAIL"] = "agent@example.test"
+    env["AGENT_SYSTEM_EXECUTION_MODE"] = "surprise"
+
+    with pytest.raises(StartupConfigError, match="AGENT_SYSTEM_EXECUTION_MODE"):
+        load_app_config(env=env, env_path=env_path)
 
 
 def test_run_runtime_starts_all_loops_and_shuts_down_cleanly(tmp_path):

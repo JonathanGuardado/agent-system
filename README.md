@@ -207,6 +207,9 @@ The primary variables for local Slack/Jira runs are:
   - `GEMINI_API_KEY`
 - Repo contract path:
   - `AGENT_SYSTEM_REPO_CONFIG_PATH` (defaults to `config/repos`)
+- Execution mode:
+  - `AGENT_SYSTEM_EXECUTION_MODE=dry_run` for the first Slack/Jira slice so
+    execution approval records Jira/Slack state without attempting code changes
 
 Local prerequisites that are not environment variables:
 
@@ -245,7 +248,13 @@ Local prerequisites that are not environment variables:
    PATH="$PWD/.venv/bin:$PATH" ticket-agent-smoke-runtime
    ```
 
-6. Start the app locally:
+6. Print manual Slack/Jira vertical-slice steps:
+
+   ```bash
+   PATH="$PWD/.venv/bin:$PATH" ticket-agent-smoke-e2e
+   ```
+
+7. Start the app locally:
 
    ```bash
    PATH="$PWD/.venv/bin:$PATH" ticket-agent

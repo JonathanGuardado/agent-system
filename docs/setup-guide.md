@@ -187,6 +187,7 @@ sane for local development.
 | `AGENT_SYSTEM_HEARTBEAT_INTERVAL_SECONDS` | `600` | How often the active worker refreshes its lock heartbeat. |
 | `AGENT_SYSTEM_RECONCILE_INTERVAL_SECONDS` | `300` | How often the reconciler clears stale locks/checkpoints. |
 | `AGENT_SYSTEM_PULL_REQUEST_BASE_BRANCH` | `main` | Base branch every agent PR targets. |
+| `AGENT_SYSTEM_EXECUTION_MODE` | `execute` | Use `dry_run` for the first vertical-slice test so approval stops before implementation. |
 
 Optional:
 
@@ -247,6 +248,12 @@ Run these in order. Each step gates the next.
 
    This runs the Slack listener, Jira detection poller, execution worker,
    and lock reconciler together.
+
+5. **Print manual vertical-slice steps**:
+
+   ```bash
+  PATH="$PWD/.venv/bin:$PATH" ticket-agent-smoke-e2e
+   ```
 
 ---
 

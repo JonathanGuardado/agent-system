@@ -14,6 +14,7 @@ from ticket_agent.detection.jira_search import (
     DETECTION_JQL,
     JiraDetectionSearchClient,
     JiraIssueSearchClient,
+    detection_jql,
 )
 from ticket_agent.detection.ownership import (
     LockLookup,
@@ -36,4 +37,5 @@ __all__ = [
     "LockLookup",
     "OwnershipChecker",
     "OwnershipDecision",
+    "detection_jql",
 ]

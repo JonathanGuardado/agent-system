@@ -14,6 +14,7 @@ from inspect import isawaitable
 from pathlib import Path
 from typing import Any
 
+from ticket_agent.config.repo_contract import load_repo_contract
 from ticket_agent.detection.detector import DetectionComponent
 from ticket_agent.detection.jira_search import JiraDetectionSearchClient
 from ticket_agent.detection.ownership import OwnershipChecker
@@ -50,6 +51,7 @@ from ticket_agent.locking.checkpointer import SQLiteCheckpointer
 from ticket_agent.locking.reconciler import reconcile_expired_locks
 from ticket_agent.locking.sqlite_store import SQLiteLockManager
 from ticket_agent.orchestrator.execution_approval import (
+    ExecutionApproval,
     ExecutionApprovalCommandHandler,
     SQLiteExecutionApprovalStore,
     SlackExecutionApprovalService,
@@ -130,6 +132,8 @@ class RuntimeConfig:
     reconcile_batch_size: int | None = None
     contract_dir: Path = Path("config/repos")
     pull_request_base_branch: str = "main"
+    jira_target_projects: tuple[str, ...] = ()
+    execution_mode: str = "execute"
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +223,7 @@ def build_runtime(
     data_dir = Path(runtime_config.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     database_paths = _database_paths(data_dir)
+    repo_defaults = _runtime_repo_defaults(runtime_config)
 
     approval_channel = (
         runtime_config.execution_approval_channel
@@ -281,7 +286,10 @@ def build_runtime(
     )
     detector_queue = queue or asyncio.Queue()
     detector = DetectionComponent(
-        client=JiraDetectionSearchClient(jira_client),
+        client=JiraDetectionSearchClient(
+            jira_client,
+            project_keys=runtime_config.jira_target_projects,
+        ),
         queue=detector_queue,
         ownership_checker=OwnershipChecker(
             component_id=runtime_config.component_id,
@@ -313,14 +321,19 @@ def build_runtime(
         store=proposal_store,
         jira_writer=JiraWriter(jira_client),
         slack=slack,
-        repo_defaults=runtime_config.repo_defaults,
+        repo_defaults=repo_defaults,
         emit=emit,
     )
+    dry_run_finalizer = _DryRunExecutionFinalizer(execution_service, slack)
     execution_approval_handler = ExecutionApprovalCommandHandler(
         store=approval_store,
         graph=graph,
         slack=slack,
         on_resumed=jira_coordinator.finalize_resumed_state,
+        dry_run=runtime_config.execution_mode == "dry_run",
+        on_dry_run_decision=dry_run_finalizer.handle_decision
+        if runtime_config.execution_mode == "dry_run"
+        else None,
     )
     listener = SlackIntakeListener(
         approval_flow=approval_flow,
@@ -604,6 +617,9 @@ def load_app_config(
             "AGENT_SYSTEM_PULL_REQUEST_BASE_BRANCH",
         )
         or "main",
+        jira_target_projects=_jira_target_projects(merged_env),
+        execution_mode=_env_value(merged_env, "AGENT_SYSTEM_EXECUTION_MODE")
+        or "execute",
     )
     _validate_runtime_config(runtime_config)
 
@@ -636,6 +652,43 @@ class _MarkDoneCoordinator:
             return await self._coordinator.run_ticket(ticket_key)
         finally:
             self._detector.mark_done(ticket_key)
+
+
+class _DryRunExecutionFinalizer:
+    def __init__(
+        self,
+        execution_service: JiraExecutionService,
+        slack: SlackPoster,
+    ) -> None:
+        self._execution_service = execution_service
+        self._slack = slack
+
+    async def handle_decision(
+        self,
+        approval: ExecutionApproval,
+        action: str,
+    ) -> None:
+        if action == "approve":
+            await self._execution_service.mark_dry_run_approved(approval.ticket_key)
+            message = (
+                f"Dry-run execution approved for {approval.ticket_key}. "
+                "No code changes were attempted."
+            )
+        else:
+            await self._execution_service.mark_failed(
+                approval.ticket_key,
+                "execution approval rejected in dry-run mode",
+            )
+            message = (
+                f"Dry-run execution rejected for {approval.ticket_key}. "
+                "The Jira claim was released and the ticket was marked failed."
+            )
+        await self._slack.post_thread_reply(
+            approval.slack_channel,
+            approval.slack_thread_ts,
+            "execution-approval",
+            message,
+        )
 
 
 async def _reconciler_loop(
@@ -764,6 +817,51 @@ def _database_paths(data_dir: Path) -> dict[str, Path]:
     }
 
 
+def _runtime_repo_defaults(
+    config: RuntimeConfig,
+) -> Mapping[str, Mapping[str, str]]:
+    if config.repo_defaults:
+        return config.repo_defaults
+
+    contracts = []
+    contract_dir = Path(config.contract_dir)
+    if not contract_dir.exists():
+        return {}
+    for path in sorted(contract_dir.glob("*.yaml")):
+        try:
+            contracts.append(load_repo_contract(path))
+        except Exception:  # noqa: BLE001 - smoke/runtime preflight reports details
+            continue
+    if not contracts or not config.jira_target_projects:
+        return {}
+
+    defaults: dict[str, Mapping[str, str]] = {}
+    if len(contracts) == 1:
+        contract = contracts[0]
+        for project_key in config.jira_target_projects:
+            defaults[project_key] = {
+                "repository": contract.repo.name,
+                "repo_path": str(Path(contract.repo.root).expanduser()),
+            }
+        return defaults
+
+    contracts_by_name = {contract.repo.name.upper(): contract for contract in contracts}
+    contracts_by_stem = {
+        Path(contract.repo.name).stem.upper(): contract for contract in contracts
+    }
+    for project_key in config.jira_target_projects:
+        contract = contracts_by_name.get(project_key) or contracts_by_stem.get(
+            project_key
+        )
+        if contract is None:
+            continue
+        defaults[project_key] = {
+            "repository": contract.repo.name,
+            "repo_path": str(Path(contract.repo.root).expanduser()),
+        }
+    return defaults
+
+
 def _validate_runtime_config(config: RuntimeConfig) -> None:
     if not str(config.component_id).strip():
         raise StartupConfigError("AGENT_SYSTEM_COMPONENT_ID must not be blank")
@@ -781,6 +879,10 @@ def _validate_runtime_config(config: RuntimeConfig) -> None:
         )
     if config.reconcile_batch_size is not None and config.reconcile_batch_size < 1:
         raise StartupConfigError("AGENT_SYSTEM_RECONCILE_BATCH_SIZE must be positive")
+    if config.execution_mode not in {"execute", "dry_run"}:
+        raise StartupConfigError(
+            "AGENT_SYSTEM_EXECUTION_MODE must be either 'execute' or 'dry_run'"
+        )
 
 
 def _positive(name: str, value: float) -> None:
@@ -980,6 +1082,8 @@ def _runtime_payload(runtime: AgentSystemRuntime) -> dict[str, Any]:
         "reconcile_interval_seconds": config.reconcile_interval_seconds,
         "repo_config_path": str(config.contract_dir),
         "pull_request_base_branch": config.pull_request_base_branch,
+        "jira_target_projects": list(config.jira_target_projects),
+        "execution_mode": config.execution_mode,
         "intake_channel_configured": bool(config.intake_channel),
         "execution_approval_channel_configured": bool(
             config.execution_approval_channel

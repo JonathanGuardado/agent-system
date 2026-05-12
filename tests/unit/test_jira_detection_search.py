@@ -9,9 +9,12 @@ from ticket_agent.detection.jira_search import (
     DEFAULT_DETECTION_FIELDS,
     DETECTION_JQL,
     JiraDetectionSearchClient,
+    detection_jql,
 )
 from ticket_agent.detection.ownership import OwnershipChecker
 from ticket_agent.jira.constants import (
+    FIELD_AGENT_ASSIGNED_COMPONENT,
+    FIELD_AGENT_RETRY_COUNT,
     FIELD_REPOSITORY,
     LABEL_AI_READY,
     STATUS_TODO,
@@ -88,6 +91,41 @@ def test_jira_detection_search_client_returns_normalized_ai_ready_ticket():
     assert ticket.fields["blocked_by"] == [
         {"key": "AGENT-100", "status": "In Progress", "resolved": False}
     ]
+
+
+def test_detection_jql_uses_configured_target_projects():
+    assert detection_jql(["agent", "OPS"]) == (
+        'project in (AGENT, OPS) AND status = "To Do" '
+        'AND labels = "ai-ready" AND labels != "ai-claimed" '
+        'AND labels != "ai-failed" AND labels != "do-not-automate" '
+        "ORDER BY priority DESC, created ASC"
+    )
+
+
+def test_jira_detection_search_client_maps_configured_custom_fields():
+    raw_issue = {
+        "key": "AGENT-124",
+        "fields": {
+            "summary": "Mapped fields",
+            "status": {"name": STATUS_TODO},
+            "labels": [LABEL_AI_READY],
+            "customfield_10001": "runner-1",
+            "customfield_10002": 1,
+        },
+    }
+    client = _RawSearchClient({"issues": [raw_issue]})
+    detection_client = JiraDetectionSearchClient(
+        client,
+        field_map={
+            FIELD_AGENT_ASSIGNED_COMPONENT: "customfield_10001",
+            FIELD_AGENT_RETRY_COUNT: "customfield_10002",
+        },
+    )
+
+    tickets = asyncio.run(detection_client.search_ai_ready_tickets())
+
+    assert tickets[0].fields[FIELD_AGENT_ASSIGNED_COMPONENT] == "runner-1"
+    assert tickets[0].fields[FIELD_AGENT_RETRY_COUNT] == 1
 
 
 def test_concrete_jira_detection_client_feeds_detection_queue():

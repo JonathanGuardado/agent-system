@@ -14,6 +14,7 @@ from ticket_agent.jira.constants import (
     EVENT_JIRA_COMPENSATION_STARTED,
     FIELD_AGENT_ASSIGNED_COMPONENT,
     LABEL_AI_CLAIMED,
+    LABEL_AI_EXECUTION_APPROVED,
     LABEL_AI_FAILED,
     STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
@@ -22,7 +23,9 @@ from ticket_agent.jira.constants import (
 from ticket_agent.jira.models import JiraExecutionError
 
 _CLAIMED_LABELS = (LABEL_AI_CLAIMED,)
+_EXECUTION_APPROVED_LABELS = (LABEL_AI_EXECUTION_APPROVED,)
 _FAILED_LABELS = (LABEL_AI_FAILED,)
+_DRY_RUN_APPROVED_OPERATION = "mark_dry_run_approved"
 _MARK_CLAIMED_OPERATION = "mark_claimed"
 _MARK_FAILED_OPERATION = "mark_failed"
 _MARK_IN_REVIEW_OPERATION = "mark_in_review"
@@ -208,6 +211,32 @@ class JiraExecutionService:
             lambda: self._client.add_comment(
                 ticket_key,
                 f"AI execution opened pull request:\n\n{pull_request_url}",
+            ),
+        )
+
+    async def mark_dry_run_approved(self, ticket_key: str) -> None:
+        """Record an approved dry-run without attempting implementation."""
+
+        await self._call_jira(
+            _DRY_RUN_APPROVED_OPERATION,
+            ticket_key,
+            _STEP_ADD_LABELS,
+            lambda: self._client.add_labels(
+                ticket_key,
+                list(_EXECUTION_APPROVED_LABELS),
+            ),
+        )
+        try:
+            await self.mark_released(ticket_key)
+        except JiraExecutionError:
+            raise
+        await self._call_jira(
+            _DRY_RUN_APPROVED_OPERATION,
+            ticket_key,
+            _STEP_ADD_COMMENT,
+            lambda: self._client.add_comment(
+                ticket_key,
+                "AI execution dry-run approved. No code changes were attempted.",
             ),
         )
 

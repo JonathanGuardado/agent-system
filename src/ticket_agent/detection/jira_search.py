@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
@@ -24,6 +25,7 @@ DETECTION_JQL = (
     f'AND labels != "{LABEL_DO_NOT_AUTOMATE}" '
     "ORDER BY priority DESC, created ASC"
 )
+_PROJECT_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
 DEFAULT_DETECTION_FIELDS: tuple[str, ...] = (
@@ -58,12 +60,17 @@ class JiraDetectionSearchClient:
         self,
         client: JiraIssueSearchClient,
         *,
-        jql: str = DETECTION_JQL,
+        jql: str | None = None,
+        project_keys: Sequence[str] | None = None,
         fields: Sequence[str] = DEFAULT_DETECTION_FIELDS,
+        field_map: Mapping[str, str] | None = None,
     ) -> None:
         self._client = client
-        self._jql = jql
+        self._jql = jql or detection_jql(project_keys)
         self._fields = tuple(fields)
+        self._field_map = dict(
+            field_map if field_map is not None else getattr(client, "field_map", {})
+        )
 
     async def search_ai_ready_tickets(self) -> Sequence[JiraTicket]:
         """Search Jira and normalize candidate ai-ready tickets."""
@@ -73,9 +80,28 @@ class JiraDetectionSearchClient:
             fields=self._fields,
         )
         return [
-            _normalize_issue(issue)
+            _normalize_issue(issue, field_map=self._field_map)
             for issue in _coerce_issue_sequence(result)
         ]
+
+
+def detection_jql(project_keys: Sequence[str] | None = None) -> str:
+    """Build the ai-ready detection query for configured Jira projects."""
+
+    project_clause = "project in agentProjects()"
+    if project_keys:
+        cleaned = _clean_project_keys(project_keys)
+        if cleaned:
+            project_clause = f"project in ({', '.join(cleaned)})"
+    return (
+        f"{project_clause} "
+        f'AND status = "{STATUS_TODO}" '
+        f'AND labels = "{LABEL_AI_READY}" '
+        f'AND labels != "{LABEL_AI_CLAIMED}" '
+        f'AND labels != "{LABEL_AI_FAILED}" '
+        f'AND labels != "{LABEL_DO_NOT_AUTOMATE}" '
+        "ORDER BY priority DESC, created ASC"
+    )
 
 
 def _coerce_issue_sequence(
@@ -89,7 +115,11 @@ def _coerce_issue_sequence(
     return result
 
 
-def _normalize_issue(issue: JiraTicket | Mapping[str, Any]) -> JiraTicket:
+def _normalize_issue(
+    issue: JiraTicket | Mapping[str, Any],
+    *,
+    field_map: Mapping[str, str],
+) -> JiraTicket:
     if isinstance(issue, JiraTicket):
         return issue
 
@@ -103,7 +133,7 @@ def _normalize_issue(issue: JiraTicket | Mapping[str, Any]) -> JiraTicket:
     labels = _string_list(fields.get("labels"))
     assignee, assignee_fields = _assignee(fields.get("assignee"))
 
-    logical_fields = _logical_fields(fields)
+    logical_fields = _logical_fields(fields, field_map=field_map)
     logical_fields.update(assignee_fields)
 
     blockers = _blocking_issue_links(fields.get("issuelinks"))
@@ -122,7 +152,11 @@ def _normalize_issue(issue: JiraTicket | Mapping[str, Any]) -> JiraTicket:
     )
 
 
-def _logical_fields(fields: Mapping[str, Any]) -> dict[str, object]:
+def _logical_fields(
+    fields: Mapping[str, Any],
+    *,
+    field_map: Mapping[str, str],
+) -> dict[str, object]:
     excluded = {
         "summary",
         "description",
@@ -131,11 +165,24 @@ def _logical_fields(fields: Mapping[str, Any]) -> dict[str, object]:
         "assignee",
         "issuelinks",
     }
+    inverse_field_map = {jira_name: logical for logical, jira_name in field_map.items()}
     return {
-        str(key): value
+        inverse_field_map.get(str(key), str(key)): value
         for key, value in fields.items()
         if key not in excluded
     }
+
+
+def _clean_project_keys(project_keys: Sequence[str]) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in project_keys:
+        key = str(raw).strip().upper()
+        if not key or key in seen or _PROJECT_KEY_RE.match(key) is None:
+            continue
+        seen.add(key)
+        cleaned.append(key)
+    return cleaned
 
 
 def _assignee(value: object) -> tuple[str | None, dict[str, object]]:
@@ -291,4 +338,5 @@ __all__ = [
     "DETECTION_JQL",
     "JiraDetectionSearchClient",
     "JiraIssueSearchClient",
+    "detection_jql",
 ]

@@ -74,6 +74,10 @@ class SlackPoster(Protocol):
 
 
 ResumeCallback = Callable[[str, Any], Awaitable[Any] | Any]
+DryRunDecisionCallback = Callable[
+    [ExecutionApproval, Literal["approve", "reject"]],
+    Awaitable[Any] | Any,
+]
 
 
 class SQLiteExecutionApprovalStore:
@@ -403,12 +407,16 @@ class ExecutionApprovalCommandHandler:
         slack: SlackPoster | None = None,
         poster_user_id: str = "execution-approval",
         on_resumed: ResumeCallback | None = None,
+        dry_run: bool = False,
+        on_dry_run_decision: DryRunDecisionCallback | None = None,
     ) -> None:
         self._store = store
         self._graph = graph
         self._slack = slack
         self._poster_user_id = poster_user_id
         self._on_resumed = on_resumed
+        self._dry_run = dry_run
+        self._on_dry_run_decision = on_dry_run_decision
 
     def matches(self, text: str) -> bool:
         return _parse_command(text) is not None
@@ -435,8 +443,12 @@ class ExecutionApprovalCommandHandler:
         if approval is None:
             return None
 
-        graph_result = await self._resume(ticket_key, action)
-        await self._after_resume(ticket_key, graph_result)
+        if self._dry_run:
+            graph_result = _dry_run_result(approval, action)
+            await self._after_dry_run_decision(approval, action)
+        else:
+            graph_result = await self._resume(ticket_key, action)
+            await self._after_resume(ticket_key, graph_result)
         await self._post_ack(
             approval,
             action,
@@ -480,6 +492,17 @@ class ExecutionApprovalCommandHandler:
         if isawaitable(result):
             await result
 
+    async def _after_dry_run_decision(
+        self,
+        approval: ExecutionApproval,
+        action: Literal["approve", "reject"],
+    ) -> None:
+        if self._on_dry_run_decision is None:
+            return
+        result = self._on_dry_run_decision(approval, action)
+        if isawaitable(result):
+            await result
+
     async def _post_ack(
         self,
         approval: ExecutionApproval,
@@ -491,11 +514,12 @@ class ExecutionApprovalCommandHandler:
         if self._slack is None:
             return
         verb = "approved" if action == "approve" else "rejected"
+        suffix = " Dry-run mode stopped before implementation." if self._dry_run else ""
         await self._slack.post_thread_reply(
             channel or approval.slack_channel,
             thread_ts or approval.slack_thread_ts,
             self._poster_user_id,
-            f"Execution {verb} for {approval.ticket_key}.",
+            f"Execution {verb} for {approval.ticket_key}.{suffix}",
         )
 
 
@@ -526,6 +550,23 @@ def _decision_for_status(status: ApprovalStatus) -> ApprovalDecision:
         status="rejected",
         reason="execution approval rejected",
     )
+
+
+def _dry_run_result(
+    approval: ExecutionApproval,
+    action: Literal["approve", "reject"],
+) -> dict[str, object]:
+    approved = action == "approve"
+    return {
+        "ticket_key": approval.ticket_key,
+        "workflow_status": "completed" if approved else "escalated",
+        "execution_approved": approved,
+        "execution_approval_status": "approved" if approved else "rejected",
+        "escalation_reason": None
+        if approved
+        else "execution approval rejected in dry-run mode",
+        "visited_nodes": ["request_execution_approval", "dry_run"],
+    }
 
 
 def _stored_status(
@@ -724,6 +765,7 @@ __all__ = [
     "PendingApprovalResult",
     "SQLiteExecutionApprovalStore",
     "SlackExecutionApprovalService",
+    "DryRunDecisionCallback",
     "ResumeCallback",
     "is_execution_approval_command",
 ]
