@@ -11,6 +11,7 @@ from ticket_agent.domain.intake import (
 )
 from ticket_agent.intake.jira_writer import JiraWriter
 from ticket_agent.intake.proposal_store import PROPOSAL_TTL_SECONDS
+from ticket_agent.jira.client import JiraClientError
 from ticket_agent.jira.constants import (
     FIELD_AGENT_CAPABILITIES_NEEDED,
     FIELD_AGENT_RETRY_COUNT,
@@ -249,3 +250,79 @@ def test_write_adds_ai_ready_label_when_spec_lacks_it():
 
     ticket = client.tickets["AGENT-1"]
     assert LABEL_AI_READY in ticket.labels
+
+
+def test_write_retries_without_optional_fields_when_jira_screen_rejects_them():
+    client = FakeJiraClient(
+        [],
+        fail_on={
+            "create_issue": [
+                JiraClientError(
+                    "Jira request failed: POST /rest/api/3/issue returned 400: "
+                    "{\"errors\":{\"customfield_10042\":\"Field "
+                    "'customfield_10042' cannot be set. It is not on the "
+                    "appropriate screen, or unknown.\"}}"
+                ),
+                None,
+            ]
+        },
+    )
+    writer = JiraWriter(client)
+
+    result = asyncio.run(writer.write(_proposal()))
+
+    assert result.success is True
+    assert result.created_ticket_keys == ("AGENT-1",)
+    create_calls = [call for call in client.calls if call[0] == "create_issue"]
+    assert create_calls[0][2]["fields"][FIELD_SLACK_THREAD_TS] == "t1"
+    assert create_calls[1][2]["fields"] == {}
+    assert client.tickets["AGENT-1"].fields == {}
+    assert LABEL_AI_READY in client.tickets["AGENT-1"].labels
+
+
+def test_write_skips_optional_fields_after_first_screen_rejection():
+    proposal = _proposal(
+        tickets=[
+            TicketSpec(
+                summary="Ticket A",
+                labels=[LABEL_AI_READY],
+                capabilities_needed=["code.implement"],
+                repository="r",
+                repo_path="/r",
+            ),
+            TicketSpec(
+                summary="Ticket B",
+                labels=[LABEL_AI_READY],
+                capabilities_needed=["code.implement"],
+                repository="r",
+                repo_path="/r",
+            ),
+        ]
+    )
+    client = FakeJiraClient(
+        [],
+        fail_on={
+            "create_issue": [
+                None,
+                JiraClientError(
+                    "Jira request failed: POST /rest/api/3/issue returned 400: "
+                    "{\"errors\":{\"customfield_10046\":\"Field "
+                    "'customfield_10046' cannot be set. It is not on the "
+                    "appropriate screen, or unknown.\"}}"
+                ),
+                None,
+                None,
+            ]
+        },
+    )
+    writer = JiraWriter(client)
+
+    result = asyncio.run(writer.write(proposal))
+
+    assert result.created_epic_key == "AGENT-1"
+    assert result.created_ticket_keys == ("AGENT-2", "AGENT-3")
+    assert result.failed_items == ()
+    create_calls = [call for call in client.calls if call[0] == "create_issue"]
+    assert create_calls[1][2]["fields"][FIELD_SLACK_THREAD_TS] == "t1"
+    assert create_calls[2][2]["fields"] == {}
+    assert create_calls[3][2]["fields"] == {}

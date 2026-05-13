@@ -163,7 +163,7 @@ Ollama (optional fallback) is detected by HTTP probe at
 `localhost:11434`. No env var is needed; pull a Qwen model first:
 
 ```bash
-ollama pull qwen3.5:9b
+ollama pull qwen3.6:27b
 ```
 
 > v1 deliberately excludes MiniMax and GLM. Do not add provider keys for

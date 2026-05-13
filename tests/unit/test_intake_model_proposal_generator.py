@@ -60,12 +60,17 @@ def test_model_proposal_generator_builds_multi_ticket_proposal():
     assert proposal.assumptions == ["Existing auth provider is available"]
     assert proposal.effort_estimate == "M"
     assert [ticket.summary for ticket in proposal.tickets] == [
-        "Add login API",
-        "Add login UI",
+        "[agent-system] Add login API",
+        "[agent-system] Add login UI",
     ]
     assert proposal.tickets[0].labels == [LABEL_AI_READY]
     assert proposal.tickets[1].labels == ["frontend", LABEL_AI_READY]
     assert proposal.tickets[0].repository == "agent-system"
+    assert "Execution context:" in proposal.tickets[0].description
+    assert "- Jira project: AGENT" in proposal.tickets[0].description
+    assert "- Repository: agent-system" in proposal.tickets[0].description
+    assert "- Repository path: /home/agent" in proposal.tickets[0].description
+    assert "Acceptance checks:" in proposal.tickets[0].description
     assert router.calls == ["ticket.decompose"]
 
 
@@ -232,8 +237,8 @@ def test_model_tickets_truncated_to_max_tickets():
     assert proposal is not None
     assert len(proposal.tickets) == 5
     assert proposal.truncated_ticket_count == 2
-    assert proposal.tickets[0].summary == "Ticket 0"
-    assert proposal.tickets[4].summary == "Ticket 4"
+    assert proposal.tickets[0].summary == "[agent-system] Ticket 0"
+    assert proposal.tickets[4].summary == "[agent-system] Ticket 4"
 
 
 def test_model_tickets_default_max_is_five():

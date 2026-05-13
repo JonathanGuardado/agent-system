@@ -18,6 +18,8 @@ from ticket_agent.app import (
 from ticket_agent.intake.slack_listener import SlackEvent
 from ticket_agent.jira.constants import FIELD_AGENT_ASSIGNED_COMPONENT
 from ticket_agent.jira.constants import (
+    FIELD_REPOSITORY,
+    FIELD_REPO_PATH,
     LABEL_AI_CLAIMED,
     LABEL_AI_EXECUTION_APPROVED,
     LABEL_AI_READY,
@@ -406,28 +408,7 @@ def test_build_runtime_derives_repo_defaults_from_single_repo_contract(tmp_path)
     contract_dir = tmp_path / "contracts"
     contract_dir.mkdir()
     contract_dir.joinpath("agent-system.yaml").write_text(
-        "\n".join(
-            [
-                "repo:",
-                "  name: agent-system",
-                f"  root: {tmp_path / 'repo'}",
-                "  default_branch: main",
-                "language:",
-                "  primary: python",
-                "  package_manager: setuptools",
-                "commands:",
-                "  test:",
-                "    command: ['python', '-m', 'pytest']",
-                "    timeout_seconds: 30",
-                "    working_directory: .",
-                "  lint: null",
-                "  install: null",
-                "policy:",
-                "  dependency_install_allowed: false",
-                "source_dirs: ['src/']",
-                "test_dirs: ['tests/']",
-            ]
-        ),
+        _repo_contract_yaml(tmp_path / "repo"),
         encoding="utf-8",
     )
     runtime = build_runtime(
@@ -464,6 +445,52 @@ def test_build_runtime_derives_repo_defaults_from_single_repo_contract(tmp_path)
         assert result.proposal is not None
         assert result.proposal.tickets[0].repository == "agent-system"
         assert result.proposal.tickets[0].repo_path == str(tmp_path / "repo")
+    finally:
+        runtime.close()
+
+
+def test_build_runtime_uses_single_repo_default_for_execution_loader(tmp_path):
+    contract_dir = tmp_path / "repos"
+    contract_dir.mkdir()
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (contract_dir / "agent-system.yaml").write_text(
+        _repo_contract_yaml(repo_root),
+        encoding="utf-8",
+    )
+    jira_client = FakeJiraClient(
+        JiraTicket(
+            key="AGENT-123",
+            summary="Implement ticket with missing metadata",
+            description="Created before Jira custom fields were available.",
+            status=STATUS_TODO,
+            labels=[LABEL_AI_READY],
+            fields={},
+        )
+    )
+    runtime = build_runtime(
+        jira_client=jira_client,
+        slack=_FakeSlack(),
+        config=RuntimeConfig(
+            data_dir=tmp_path / "data",
+            intake_channel="C-INTAKE",
+            execution_approval_channel="C-INTAKE",
+            contract_dir=contract_dir,
+            jira_target_projects=("AGENT",),
+        ),
+        planner=_Planner(),
+        implementation=_Implementation(),
+        tests=_Tests(),
+        review=_Review(),
+        pull_request=_PullRequest(),
+        escalation=_Escalation(),
+    )
+
+    try:
+        assert asyncio.run(runtime.detector.poll_once()) == 1
+        assert asyncio.run(runtime.worker.run_once()) is True
+        assert FIELD_REPOSITORY not in jira_client.ticket("AGENT-123").fields
+        assert FIELD_REPO_PATH not in jira_client.ticket("AGENT-123").fields
     finally:
         runtime.close()
 
@@ -725,3 +752,28 @@ class _QuestionRouter:
         user_message = messages[-1]["content"].splitlines()[0]
         self.calls.append(user_message.removeprefix("user_message: "))
         return self._response
+
+
+def _repo_contract_yaml(repo_root) -> str:
+    return "\n".join(
+        [
+            "repo:",
+            "  name: agent-system",
+            f"  root: {repo_root}",
+            "  default_branch: main",
+            "language:",
+            "  primary: python",
+            "  package_manager: setuptools",
+            "commands:",
+            "  test:",
+            "    command: ['python', '-m', 'pytest']",
+            "    timeout_seconds: 30",
+            "    working_directory: .",
+            "  lint: null",
+            "  install: null",
+            "policy:",
+            "  dependency_install_allowed: false",
+            "source_dirs: ['src/']",
+            "test_dirs: ['tests/']",
+        ]
+    )

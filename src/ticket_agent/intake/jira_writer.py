@@ -52,6 +52,7 @@ class _WriteContext:
     created_epic_key: str | None = None
     created: list[str] = field(default_factory=list)
     failures: list[JiraWriteFailure] = field(default_factory=list)
+    optional_fields_disabled: bool = False
 
 
 class JiraWriter:
@@ -140,7 +141,11 @@ class JiraWriter:
         parent_key: str | None,
     ) -> None:
         labels = _normalize_labels(spec.labels)
-        fields = _build_fields(spec, proposal)
+        fields = (
+            {}
+            if context.optional_fields_disabled
+            else _build_fields(spec, proposal)
+        )
 
         try:
             ticket = await self._client.create_issue(
@@ -154,13 +159,40 @@ class JiraWriter:
                 parent_key=parent_key,
             )
         except Exception as exc:  # noqa: BLE001 - boundary call
-            context.failures.append(
-                JiraWriteFailure(spec=spec, reason=_error_message(exc))
-            )
-            return
+            if fields and _is_optional_field_create_error(exc):
+                context.optional_fields_disabled = True
+                try:
+                    ticket = await self._client.create_issue(
+                        context.project_key,
+                        summary=spec.summary,
+                        description=spec.description,
+                        issue_type=spec.issue_type,
+                        priority=spec.priority,
+                        labels=labels,
+                        fields={},
+                        parent_key=parent_key,
+                    )
+                except Exception as retry_exc:  # noqa: BLE001 - boundary call
+                    context.failures.append(
+                        JiraWriteFailure(spec=spec, reason=_error_message(retry_exc))
+                    )
+                    return
+            else:
+                context.failures.append(
+                    JiraWriteFailure(spec=spec, reason=_error_message(exc))
+                )
+                return
 
         await _ensure_ai_ready_label(self._client, ticket, labels)
         context.created.append(ticket.key)
+
+
+def _is_optional_field_create_error(exc: BaseException) -> bool:
+    message = _error_message(exc).lower()
+    return (
+        "cannot be set" in message
+        and ("appropriate screen" in message or "unknown" in message)
+    )
 
 
 def _required_project_key(proposal: Proposal) -> str:

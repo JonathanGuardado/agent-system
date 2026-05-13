@@ -123,6 +123,9 @@ class SlackIntakeListener:
         if not event.text.strip():
             self._emit_event("intake.slack_ignored", {"reason": "empty_text"})
             return None
+        if not event.thread_ts.strip():
+            self._emit_event("intake.slack_ignored", {"reason": "missing_thread_ts"})
+            return None
         is_wrong_channel = (
             self._intake_channel is not None
             and event.channel is not None

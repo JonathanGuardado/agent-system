@@ -6,7 +6,7 @@ from pathlib import Path
 
 from ai_model_selector import build_request_context
 from ai_model_selector.config_loader import load_capability_definitions
-from ai_model_selector.intent.models import CapabilityDefinition
+from ai_model_selector.intent.models import CapabilityDefinition, CapabilityResolution
 from ai_model_selector.intent.resolver import IntentResolver
 from ai_model_selector.models import ModelSelection as SelectorModelSelection
 from ai_model_selector.models import SelectionDecision
@@ -24,9 +24,14 @@ TASK_PROFILES_PATH = CONFIG_DIR / "task_profiles.yaml"
 class SelectorComponents:
     resolver: IntentResolver
     selector: DeterministicSelector
+    capability_definitions: tuple[CapabilityDefinition, ...] = ()
 
-    def select(self, capability: str) -> SelectionDecision:
-        resolution = self.resolver.resolve(capability)
+    def select(self, capability_or_text: str) -> SelectionDecision:
+        resolution = _resolve_capability_or_text(
+            self.resolver,
+            self.capability_definitions,
+            capability_or_text,
+        )
         context = build_request_context(resolution)
         return self.selector.select(context)
 
@@ -49,13 +54,21 @@ def _selector_components() -> tuple[
 
 @lru_cache(maxsize=1)
 def load_model_selector() -> SelectorComponents:
-    _, resolver, selector = _selector_components()
-    return SelectorComponents(resolver=resolver, selector=selector)
+    capability_definitions, resolver, selector = _selector_components()
+    return SelectorComponents(
+        resolver=resolver,
+        selector=selector,
+        capability_definitions=capability_definitions,
+    )
 
 
 def select_model_for_capability(capability_or_text: str) -> ModelSelection:
-    _, resolver, selector = _selector_components()
-    resolution = resolver.resolve(capability_or_text)
+    capability_definitions, resolver, selector = _selector_components()
+    resolution = _resolve_capability_or_text(
+        resolver,
+        capability_definitions,
+        capability_or_text,
+    )
     context = build_request_context(resolution)
     decision = selector.select(context)
     intent_confidence = resolution.confidence
@@ -69,6 +82,26 @@ def select_model_for_capability(capability_or_text: str) -> ModelSelection:
         intent_debug=intent_debug,
         selector_debug=tuple(decision.debug_reasons),
     )
+
+
+def _resolve_capability_or_text(
+    resolver: IntentResolver,
+    capability_definitions: tuple[CapabilityDefinition, ...],
+    capability_or_text: str,
+) -> CapabilityResolution:
+    value = capability_or_text.strip()
+    for definition in capability_definitions:
+        if value == definition.name:
+            return CapabilityResolution(
+                capability=definition.name,
+                confidence=1.0,
+                source="semantic",
+                ambiguous=False,
+                signals=dict(definition.default_signals),
+                candidates=(),
+                debug=(f"exact_capability:{definition.name}",),
+            )
+    return resolver.resolve(capability_or_text)
 
 
 def _to_model_endpoint(selection: SelectorModelSelection) -> ModelEndpoint:

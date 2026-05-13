@@ -31,8 +31,8 @@ models:
 
   - selection_tier: qwen-local
     provider: ollama
-    model_name: qwen-local
-    deployment_name: qwen3.5:9b
+    model_name: qwen3.6-27b
+    deployment_name: qwen3.6:27b
     role_tags: [router, trivial, fast]
     supports_tools: true
     supports_json: true

@@ -60,6 +60,60 @@ def test_load_uses_work_item_max_attempts_default_when_field_is_absent():
     assert work_item.max_attempts == 3
 
 
+def test_load_recovers_repo_context_from_description():
+    ticket = _ticket(
+        description=(
+            "Execution context:\n"
+            "- Jira project: SCRUM\n"
+            "- Repository: agent-system\n"
+            "- Repository path: /repos/agent-system\n\n"
+            "Scope:\nBuild the validation app."
+        ),
+        fields={},
+    )
+    loader = JiraWorkItemLoader(_FakeJiraClient(ticket))
+
+    work_item = asyncio.run(loader.load("AGENT-123"))
+
+    assert work_item.repository == "agent-system"
+    assert work_item.repo_path == "/repos/agent-system"
+
+
+def test_load_recovers_repository_from_scoped_summary_and_path_from_default():
+    ticket = _ticket(
+        summary="[agent-system] Implement validation app",
+        fields={},
+    )
+    loader = JiraWorkItemLoader(
+        _FakeJiraClient(ticket),
+        repo_defaults={
+            FIELD_REPOSITORY: "agent-system",
+            FIELD_REPO_PATH: "/repos/agent-system",
+        },
+    )
+
+    work_item = asyncio.run(loader.load("AGENT-123"))
+
+    assert work_item.repository == "agent-system"
+    assert work_item.repo_path == "/repos/agent-system"
+
+
+def test_load_uses_single_repo_default_when_ticket_has_no_repo_metadata():
+    ticket = _ticket(fields={})
+    loader = JiraWorkItemLoader(
+        _FakeJiraClient(ticket),
+        repo_defaults={
+            FIELD_REPOSITORY: "agent-system",
+            FIELD_REPO_PATH: "/repos/agent-system",
+        },
+    )
+
+    work_item = asyncio.run(loader.load("AGENT-123"))
+
+    assert work_item.repository == "agent-system"
+    assert work_item.repo_path == "/repos/agent-system"
+
+
 @pytest.mark.parametrize("missing_field", [FIELD_REPOSITORY, FIELD_REPO_PATH])
 def test_load_raises_clear_error_when_required_field_is_missing(missing_field: str):
     fields = {
@@ -123,8 +177,8 @@ def test_load_raises_clear_error_when_max_attempts_is_invalid(bad_value: object)
     )
 
 
-def _ticket(fields: dict[str, Any]) -> JiraTicket:
-    return JiraTicket(
+def _ticket(fields: dict[str, Any], **updates: Any) -> JiraTicket:
+    values = dict(
         key="AGENT-123",
         summary="Implement Jira execution",
         description="Wire execution state to Jira.",
@@ -133,6 +187,8 @@ def _ticket(fields: dict[str, Any]) -> JiraTicket:
         assignee=None,
         fields=fields,
     )
+    values.update(updates)
+    return JiraTicket(**values)
 
 
 class _FakeJiraClient:

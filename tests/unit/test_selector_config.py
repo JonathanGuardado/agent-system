@@ -55,8 +55,8 @@ CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
             "qwen-local",
             ("gemini-flash",),
             "ollama",
-            "qwen-local",
-            "qwen3.5:9b",
+            "qwen3.6-27b",
+            "qwen3.6:27b",
         ),
     ),
 )
@@ -88,8 +88,18 @@ def test_qwen_local_uses_ollama_provider_mapping():
 
     assert qwen.selection_tier == "qwen-local"
     assert qwen.provider == "ollama"
-    assert qwen.model_name == "qwen-local"
-    assert qwen.deployment_name == "qwen3.5:9b"
+    assert qwen.model_name == "qwen3.6-27b"
+    assert qwen.deployment_name == "qwen3.6:27b"
+
+
+def test_literal_capability_id_uses_that_capability_profile():
+    selection = select_model_for_capability("ticket.decompose")
+
+    assert selection.capability == "ticket.decompose"
+    assert selection.primary.provider == "deepseek"
+    assert selection.primary.deployment_name == "deepseek-v4-pro"
+    assert selection.fallback_deployments == ("gemini-2.5-flash", "qwen3.6:27b")
+    assert "exact_capability:ticket.decompose" in selection.intent_debug
 
 
 def test_v1_provider_defaults_are_deepseek_gemini_and_ollama_only():

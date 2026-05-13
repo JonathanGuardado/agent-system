@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 
 import pytest
 
@@ -55,6 +57,31 @@ def test_primary_model_succeeds():
         for attempt in response.attempts
     ]
     assert attempts == [("deepseek-v4-pro", "deepseek", True, None)]
+
+
+def test_default_selector_treats_literal_capability_as_capability_id():
+    provider = RecordingProvider(ProviderResponse(content="proposal"))
+
+    response = asyncio.run(
+        ModelRouter(
+            providers={"deepseek": provider},
+            timeout_s=30,
+        ).invoke(
+            capability="ticket.decompose",
+            messages=[{"role": "user", "content": "break this feature into tickets"}],
+        )
+    )
+
+    assert provider.calls == [
+        (
+            "deepseek-v4-pro",
+            [{"role": "user", "content": "break this feature into tickets"}],
+            30,
+        )
+    ]
+    assert response.capability == "ticket.decompose"
+    assert response.model == "deepseek-v4-pro"
+    assert response.provider == "deepseek"
 
 
 def test_primary_fails_and_fallback_succeeds():
@@ -126,7 +153,7 @@ def test_all_providers_fail_raises_all_backends_failed():
     assert attempts == [
         ("deepseek-v4-pro", "deepseek", False, "primary boom"),
         ("gemini-2.5-flash", "gemini", False, "gemini boom"),
-        ("qwen3.5:9b", "ollama", False, "ollama boom"),
+        ("qwen3.6:27b", "ollama", False, "ollama boom"),
     ]
 
 
@@ -184,6 +211,40 @@ def test_attempts_include_model_provider_success_error_and_latency():
     assert isinstance(response.attempts[1].latency_ms, int)
 
 
+def test_logs_model_provider_and_capability(caplog):
+    with caplog.at_level(logging.INFO, logger="ticket_agent.router.model_router"):
+        asyncio.run(
+            ModelRouter(
+                selector=FakeSelector(_selection(fallbacks=())),
+                providers={"deepseek": RecordingProvider()},
+            ).invoke(
+                capability="code.implement",
+                messages=[{"role": "user", "content": "implement OAuth login"}],
+                ticket_id="ABC-123",
+                metadata={"workflow_node": "unit-test"},
+            )
+        )
+
+    events = [json.loads(record.message) for record in caplog.records]
+    assert {
+        "event": "model.invoke_attempt_started",
+        "capability": "code.implement",
+        "requested_capability": "code.implement",
+        "provider": "deepseek",
+        "model": "deepseek-v4-pro",
+        "fallback_index": 0,
+        "fallback_used": False,
+        "ticket_id": "ABC-123",
+        "metadata": {"workflow_node": "unit-test"},
+    } in events
+    assert any(
+        event["event"] == "model.invoke_attempt_completed"
+        and event["model"] == "deepseek-v4-pro"
+        and event["provider"] == "deepseek"
+        for event in events
+    )
+
+
 class FakeSelector:
     def __init__(self, selection: ModelSelection) -> None:
         self._selection = selection
@@ -239,8 +300,8 @@ def _selection(
             ModelEndpoint(
                 selection_tier="qwen-local",
                 provider="ollama",
-                model_name="qwen-local",
-                deployment_name="qwen3.5:9b",
+                model_name="qwen3.6-27b",
+                deployment_name="qwen3.6:27b",
             ),
         )
         if fallbacks is None

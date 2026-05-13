@@ -102,7 +102,7 @@ OpenAI-compatible API.
 
 These are available on the HP:
 
-- Ollama + Qwen 3.5 9B
+- Ollama + Qwen 3.6 27B
   - Ollama runs at `localhost:11434`
   - Ollama/Qwen is optional local/simple fallback only.
 
@@ -321,7 +321,7 @@ models:
     model_id: gemini-2.5-flash
   qwen-local:
     provider: ollama
-    model_id: qwen3.5:9b
+    model_id: qwen3.6:27b
 ```
 
 ## Cost metadata

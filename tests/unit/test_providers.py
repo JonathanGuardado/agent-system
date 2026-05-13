@@ -142,7 +142,7 @@ def test_ollama_provider_sends_stream_and_think_false(monkeypatch):
 
     response = asyncio.run(
         OllamaProvider().chat(
-            model="qwen3.5:9b",
+            model="qwen3.6:27b",
             messages=messages,
             timeout_s=8,
         )
@@ -155,7 +155,7 @@ def test_ollama_provider_sends_stream_and_think_false(monkeypatch):
             "url": "http://localhost:11434/api/chat",
             "headers": None,
             "json": {
-                "model": "qwen3.5:9b",
+                "model": "qwen3.6:27b",
                 "messages": messages,
                 "stream": False,
                 "think": False,
@@ -170,7 +170,7 @@ def test_ollama_provider_sends_to_api_chat(monkeypatch):
         _response({"message": {"content": "local answer"}}),
     )
 
-    asyncio.run(OllamaProvider().chat("qwen3.5:9b", [], 30))
+    asyncio.run(OllamaProvider().chat("qwen3.6:27b", [], 30))
 
     assert fake_client.calls[0]["url"] == "http://localhost:11434/api/chat"
 
@@ -181,7 +181,7 @@ def test_ollama_provider_parses_content(monkeypatch):
         _response({"message": {"content": "ollama answer"}}),
     )
 
-    response = asyncio.run(OllamaProvider().chat("qwen3.5:9b", [], 30))
+    response = asyncio.run(OllamaProvider().chat("qwen3.6:27b", [], 30))
 
     assert response.content == "ollama answer"
 

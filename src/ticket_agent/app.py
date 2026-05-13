@@ -46,7 +46,10 @@ from ticket_agent.jira.constants import (
 )
 from ticket_agent.jira.execution_coordinator import JiraExecutionCoordinator
 from ticket_agent.jira.execution_service import JiraExecutionService
-from ticket_agent.jira.work_item_loader import JiraWorkItemLoader
+from ticket_agent.jira.work_item_loader import (
+    JiraWorkItemLoader,
+    repo_defaults_from_mapping,
+)
 from ticket_agent.locking.checkpointer import SQLiteCheckpointer
 from ticket_agent.locking.reconciler import reconcile_expired_locks
 from ticket_agent.locking.sqlite_store import SQLiteLockManager
@@ -300,7 +303,10 @@ def build_runtime(
         emit=emit,
     )
     jira_coordinator = JiraExecutionCoordinator(
-        JiraWorkItemLoader(jira_client),
+        JiraWorkItemLoader(
+            jira_client,
+            repo_defaults=repo_defaults_from_mapping(dict(repo_defaults)),
+        ),
         execution_service,
         runner,
         emit=emit,
@@ -649,9 +655,16 @@ class _MarkDoneCoordinator:
 
     async def run_ticket(self, ticket_key: str) -> Any:
         try:
-            return await self._coordinator.run_ticket(ticket_key)
-        finally:
+            result = await self._coordinator.run_ticket(ticket_key)
+        except Exception:
+            return None
+        if not _is_waiting_for_execution_approval_result(result):
             self._detector.mark_done(ticket_key)
+        return result
+
+
+def _is_waiting_for_execution_approval_result(result: object) -> bool:
+    return getattr(result, "workflow_status", None) == "waiting_for_approval"
 
 
 class _DryRunExecutionFinalizer:

@@ -422,7 +422,9 @@ def _format_proposal_message(proposal: Proposal, *, revised: bool = False) -> st
 
 
 def _format_ticket_line(index: int, ticket: TicketSpec) -> str:
-    repo = f" [{ticket.repository}]" if ticket.repository else ""
+    repo = ""
+    if ticket.repository and ticket.repository.lower() not in ticket.summary.lower():
+        repo = f" [{ticket.repository}]"
     return f"  {index}. {ticket.summary}{repo}"
 
 

@@ -167,6 +167,7 @@ class DeterministicProposalGenerator:
             mode=mode,
             text=text,
             capability=capability,
+            project_key=project_key,
             repository=repository,
             repo_path=repo_path,
         )
@@ -311,6 +312,8 @@ class ModelRouterProposalGenerator:
         tickets = [
             _ticket_spec_from_model_ticket(
                 ticket,
+                request_text=text,
+                project_key=project_key,
                 default_capability=request.resolution.capability,
                 default_repository=repository,
                 default_repo_path=repo_path,
@@ -370,6 +373,7 @@ def _build_ticket_specs(
     mode: IntakeMode,
     text: str,
     capability: str,
+    project_key: str | None,
     repository: str | None,
     repo_path: str | None,
 ) -> list[TicketSpec]:
@@ -380,8 +384,15 @@ def _build_ticket_specs(
     for summary in summaries:
         specs.append(
             TicketSpec(
-                summary=summary,
-                description=text,
+                summary=_scoped_summary(summary, repository),
+                description=_execution_ready_description(
+                    body=text,
+                    request_text=text,
+                    project_key=project_key,
+                    repository=repository,
+                    repo_path=repo_path,
+                    capabilities=capabilities_needed,
+                ),
                 issue_type="Task",
                 labels=[LABEL_AI_READY],
                 capabilities_needed=list(capabilities_needed),
@@ -395,6 +406,8 @@ def _build_ticket_specs(
 def _ticket_spec_from_model_ticket(
     ticket: _ModelTicketPayload,
     *,
+    request_text: str,
+    project_key: str | None,
     default_capability: str,
     default_repository: str | None,
     default_repo_path: str | None,
@@ -404,8 +417,15 @@ def _ticket_spec_from_model_ticket(
         ticket.capabilities_needed or [default_capability]
     )
     return TicketSpec(
-        summary=ticket.summary.strip(),
-        description=ticket.description.strip(),
+        summary=_scoped_summary(ticket.summary, default_repository),
+        description=_execution_ready_description(
+            body=ticket.description,
+            request_text=request_text,
+            project_key=project_key,
+            repository=default_repository,
+            repo_path=default_repo_path,
+            capabilities=capabilities,
+        ),
         issue_type=ticket.issue_type.strip() or "Task",
         priority=_clean_optional(ticket.priority),
         labels=labels,
@@ -440,6 +460,13 @@ def _model_proposal_messages(
                     f"capability: {request.resolution.capability}",
                     f"repo_defaults: {json.dumps(request.repo_defaults)}",
                     f"prior_proposal: {prior_json}",
+                    "Each ticket must be specific enough for an agent to execute "
+                    "without reading Slack: include concrete files/directories, "
+                    "scope boundaries, acceptance checks, and test expectations "
+                    "in the ticket description.",
+                    "Write ticket summaries as concise deliverables. The system "
+                    "will add trusted repository/project context; do not invent "
+                    "repositories or Jira projects.",
                     "Required JSON schema (omit project_key, epic_key, "
                     "repository, repo_path, slack_channel, slack_thread, "
                     "and Jira field IDs — the system sets these from trusted "
@@ -526,6 +553,50 @@ def _ordered_unique(values: Sequence[str]) -> list[str]:
         seen.add(cleaned)
         result.append(cleaned)
     return result
+
+
+def _scoped_summary(summary: str, repository: str | None) -> str:
+    cleaned = summary.strip()
+    if not repository:
+        return cleaned
+    repo = repository.strip()
+    if not repo or repo.lower() in cleaned.lower():
+        return cleaned
+    return f"[{repo}] {cleaned}"
+
+
+def _execution_ready_description(
+    *,
+    body: str,
+    request_text: str,
+    project_key: str | None,
+    repository: str | None,
+    repo_path: str | None,
+    capabilities: Sequence[str],
+) -> str:
+    context_lines = ["Execution context:"]
+    if project_key:
+        context_lines.append(f"- Jira project: {project_key}")
+    if repository:
+        context_lines.append(f"- Repository: {repository}")
+    if repo_path:
+        context_lines.append(f"- Repository path: {repo_path}")
+    if capabilities:
+        context_lines.append(f"- Capabilities: {', '.join(capabilities)}")
+
+    cleaned_body = body.strip() or request_text.strip()
+    sections = ["\n".join(context_lines)]
+    if cleaned_body:
+        sections.append(f"Scope:\n{cleaned_body}")
+    if request_text.strip() and request_text.strip() != cleaned_body:
+        sections.append(f"Original Slack request:\n{request_text.strip()}")
+    sections.append(
+        "Acceptance checks:\n"
+        "- Implement only the scoped changes for this ticket.\n"
+        "- Add or update focused tests for the requested behavior.\n"
+        "- Run the relevant test command and capture any remaining failures."
+    )
+    return "\n\n".join(sections)
 
 
 def _candidate_summaries(mode: IntakeMode, text: str) -> list[str]:

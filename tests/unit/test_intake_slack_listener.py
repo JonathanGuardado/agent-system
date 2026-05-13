@@ -124,6 +124,24 @@ def test_listener_ignores_messages_in_other_channels(tmp_path):
     assert slack.messages == []
 
 
+def test_listener_ignores_messages_without_thread_timestamp(tmp_path):
+    listener, _, slack = _build_listener(tmp_path)
+
+    result = asyncio.run(
+        listener.handle_event(
+            SlackEvent(
+                user_id="U1",
+                text="Add OAuth login to AGENT",
+                channel="C-INTAKE",
+                thread_ts="",
+            )
+        )
+    )
+
+    assert result is None
+    assert slack.messages == []
+
+
 def test_listener_routes_new_request_to_handle_new_request(tmp_path):
     listener, store, slack = _build_listener(tmp_path)
 
