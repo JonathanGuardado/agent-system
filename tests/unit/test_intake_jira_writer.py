@@ -217,6 +217,44 @@ def test_epic_create_failure_reports_all_child_tickets_failed():
     assert all("epic_create_failed" in item.reason for item in result.failed_items)
 
 
+def test_invalid_project_epic_failure_returns_clear_unsupported_result():
+    proposal = _proposal(
+        mode=IntakeMode.NEW_TICKETS,
+        project_key="LAB",
+        epic_summary="New app epic",
+        tickets=[
+            TicketSpec(
+                summary=f"Ticket {n}",
+                labels=[LABEL_AI_READY],
+                capabilities_needed=["ticket.decompose"],
+                repository="repo",
+                repo_path="/home/repo",
+            )
+            for n in (1, 2)
+        ],
+    )
+    client = FakeJiraClient(
+        [],
+        fail_on={
+            "create_issue": JiraClientError(
+                "Jira request failed: POST /rest/api/3/issue returned 400: "
+                '{"errors":{"project":"valid project is required"}}'
+            )
+        },
+    )
+    writer = JiraWriter(client)
+
+    result = asyncio.run(writer.write(proposal))
+
+    assert result.created_ticket_keys == ()
+    assert result.unsupported_reason is not None
+    assert "Jira project `LAB`" in result.unsupported_reason
+    assert len(result.failed_items) == 2
+    assert all(
+        "valid project is required" in item.reason for item in result.failed_items
+    )
+
+
 def test_new_project_returns_unsupported_result():
     proposal = _proposal(mode=IntakeMode.NEW_PROJECT)
     client = FakeJiraClient([])

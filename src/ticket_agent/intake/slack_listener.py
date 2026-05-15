@@ -247,7 +247,7 @@ class SlackSDKPoster:
     async def post_thread_reply(
         self,
         channel: str | None,
-        thread_ts: str,
+        thread_ts: str | None,
         user_id: str,
         text: str,
     ) -> None:
@@ -255,13 +255,14 @@ class SlackSDKPoster:
         target = channel or self._default_channel
         if not target:
             raise ValueError("post_thread_reply requires a channel")
+        kwargs = {"channel": target, "text": text}
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
         # slack_sdk's WebClient methods are sync; offload off the event loop
         # in real deployments. Tests use a fake poster instead.
         await asyncio.to_thread(
             self._client.chat_postMessage,
-            channel=target,
-            thread_ts=thread_ts,
-            text=text,
+            **kwargs,
         )
 
 

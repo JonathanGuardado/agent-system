@@ -312,7 +312,9 @@ def test_runtime_dry_run_execution_approval_stops_before_implementation(tmp_path
         assert routed is None
         assert implementation.calls == []
         assert LABEL_AI_EXECUTION_APPROVED in ticket.labels
+        assert LABEL_AI_READY not in ticket.labels
         assert LABEL_AI_CLAIMED not in ticket.labels
+        assert ticket.status == STATUS_TODO
         assert ticket.fields[FIELD_AGENT_ASSIGNED_COMPONENT] is None
         assert runtime.approval_store.get(ticket_key).status == "approved"
         assert jira_client.comments_for(ticket_key) == [

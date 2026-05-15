@@ -39,6 +39,34 @@ def test_execution_approval_posts_to_slack_and_pauses_before_implement(tmp_path)
         scenario.close()
 
 
+def test_execution_approval_without_thread_posts_channel_message(tmp_path):
+    scenario = _Scenario(tmp_path)
+
+    try:
+        result = asyncio.run(
+            scenario.graph.ainvoke(
+                TicketState(
+                    ticket_key="AGENT-123",
+                    summary="Add execution approval",
+                    slack_channel=None,
+                    slack_thread_ts="0000000",
+                ),
+                config={"configurable": {"thread_id": "AGENT-123"}},
+            )
+        )
+
+        assert "__interrupt__" in result
+        approval = scenario.store.get("AGENT-123")
+        assert approval is not None
+        assert approval.slack_channel == "C-EXEC"
+        assert approval.slack_thread_ts == ""
+        assert scenario.slack.messages
+        assert scenario.slack.messages[0][0] == "C-EXEC"
+        assert scenario.slack.messages[0][1] is None
+    finally:
+        scenario.close()
+
+
 def test_approve_command_resumes_graph_and_calls_implement(tmp_path):
     scenario = _Scenario(tmp_path)
 
@@ -275,12 +303,12 @@ class _Scenario:
 
 class _FakeSlack:
     def __init__(self) -> None:
-        self.messages: list[tuple[str | None, str, str, str]] = []
+        self.messages: list[tuple[str | None, str | None, str, str]] = []
 
     async def post_thread_reply(
         self,
         channel: str | None,
-        thread_ts: str,
+        thread_ts: str | None,
         user_id: str,
         text: str,
     ) -> None:

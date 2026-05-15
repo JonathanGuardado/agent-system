@@ -16,6 +16,7 @@ from ticket_agent.jira.constants import (
     LABEL_AI_CLAIMED,
     LABEL_AI_EXECUTION_APPROVED,
     LABEL_AI_FAILED,
+    LABEL_AI_READY,
     STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
     STATUS_TODO,
@@ -25,6 +26,7 @@ from ticket_agent.jira.models import JiraExecutionError
 _CLAIMED_LABELS = (LABEL_AI_CLAIMED,)
 _EXECUTION_APPROVED_LABELS = (LABEL_AI_EXECUTION_APPROVED,)
 _FAILED_LABELS = (LABEL_AI_FAILED,)
+_READY_LABELS = (LABEL_AI_READY,)
 _DRY_RUN_APPROVED_OPERATION = "mark_dry_run_approved"
 _MARK_CLAIMED_OPERATION = "mark_claimed"
 _MARK_FAILED_OPERATION = "mark_failed"
@@ -66,14 +68,11 @@ class JiraExecutionService:
                 lambda: self._client.add_labels(ticket_key, list(_CLAIMED_LABELS)),
             )
             failed_step = _STEP_UPDATE_FIELDS
-            await self._call_jira(
+            await self._update_agent_component(
                 _MARK_CLAIMED_OPERATION,
                 ticket_key,
                 failed_step,
-                lambda: self._client.update_fields(
-                    ticket_key,
-                    {FIELD_AGENT_ASSIGNED_COMPONENT: self._component_id},
-                ),
+                self._component_id,
             )
             failed_step = _STEP_TRANSITION_TICKET
             await self._call_jira(
@@ -101,9 +100,11 @@ class JiraExecutionService:
                     ),
                     (
                         "clear_agent_assigned_component",
-                        lambda: self._client.update_fields(
+                        lambda: self._update_agent_component(
+                            _MARK_CLAIMED_OPERATION,
                             ticket_key,
-                            {FIELD_AGENT_ASSIGNED_COMPONENT: None},
+                            failed_step,
+                            None,
                         ),
                     ),
                     (
@@ -142,14 +143,11 @@ class JiraExecutionService:
                 lambda: self._client.remove_labels(ticket_key, list(_CLAIMED_LABELS)),
             )
             failed_step = _STEP_UPDATE_FIELDS
-            await self._call_jira(
+            await self._update_agent_component(
                 _MARK_FAILED_OPERATION,
                 ticket_key,
                 failed_step,
-                lambda: self._client.update_fields(
-                    ticket_key,
-                    {FIELD_AGENT_ASSIGNED_COMPONENT: None},
-                ),
+                None,
             )
         except JiraExecutionError as exc:
             await self._add_partial_failure_comment(
@@ -187,14 +185,11 @@ class JiraExecutionService:
                 lambda: self._client.remove_labels(ticket_key, list(_CLAIMED_LABELS)),
             )
             failed_step = _STEP_UPDATE_FIELDS
-            await self._call_jira(
+            await self._update_agent_component(
                 _MARK_IN_REVIEW_OPERATION,
                 ticket_key,
                 failed_step,
-                lambda: self._client.update_fields(
-                    ticket_key,
-                    {FIELD_AGENT_ASSIGNED_COMPONENT: None},
-                ),
+                None,
             )
         except JiraExecutionError as exc:
             await self._add_partial_failure_comment(
@@ -233,6 +228,18 @@ class JiraExecutionService:
         await self._call_jira(
             _DRY_RUN_APPROVED_OPERATION,
             ticket_key,
+            _STEP_REMOVE_LABELS,
+            lambda: self._client.remove_labels(ticket_key, list(_READY_LABELS)),
+        )
+        await self._call_jira(
+            _DRY_RUN_APPROVED_OPERATION,
+            ticket_key,
+            _STEP_TRANSITION_TICKET,
+            lambda: self._client.transition_ticket(ticket_key, STATUS_TODO),
+        )
+        await self._call_jira(
+            _DRY_RUN_APPROVED_OPERATION,
+            ticket_key,
             _STEP_ADD_COMMENT,
             lambda: self._client.add_comment(
                 ticket_key,
@@ -259,9 +266,11 @@ class JiraExecutionService:
                 actions=(
                     (
                         "clear_agent_assigned_component",
-                        lambda: self._client.update_fields(
+                        lambda: self._update_agent_component(
+                            _MARK_RELEASED_OPERATION,
                             ticket_key,
-                            {FIELD_AGENT_ASSIGNED_COMPONENT: None},
+                            _STEP_UPDATE_FIELDS,
+                            None,
                         ),
                     ),
                 ),
@@ -275,14 +284,11 @@ class JiraExecutionService:
             raise
 
         try:
-            await self._call_jira(
+            await self._update_agent_component(
                 _MARK_RELEASED_OPERATION,
                 ticket_key,
                 _STEP_UPDATE_FIELDS,
-                lambda: self._client.update_fields(
-                    ticket_key,
-                    {FIELD_AGENT_ASSIGNED_COMPONENT: None},
-                ),
+                None,
             )
         except JiraExecutionError as exc:
             await self._add_partial_failure_comment(
@@ -292,6 +298,38 @@ class JiraExecutionService:
                 error=exc,
             )
             raise
+
+    async def _update_agent_component(
+        self,
+        method_name: str,
+        ticket_key: str,
+        failed_step: str,
+        value: str | None,
+    ) -> None:
+        try:
+            await self._client.update_fields(
+                ticket_key,
+                {FIELD_AGENT_ASSIGNED_COMPONENT: value},
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if _is_unsupported_optional_field_error(exc):
+                _LOGGER.info(
+                    "jira_optional_field_update_skipped",
+                    extra={
+                        "ticket_key": ticket_key,
+                        "operation": method_name,
+                        "failed_step": failed_step,
+                        "field": FIELD_AGENT_ASSIGNED_COMPONENT,
+                        "error": _error_message(exc),
+                    },
+                )
+                return
+            error = _error_message(exc)
+            raise JiraExecutionError(
+                f"{method_name} failed for {ticket_key}: {error}"
+            ) from exc
 
     async def _call_jira(
         self,
@@ -409,6 +447,14 @@ class JiraExecutionService:
 
 def _error_message(exc: BaseException) -> str:
     return str(exc) or exc.__class__.__name__
+
+
+def _is_unsupported_optional_field_error(exc: BaseException) -> bool:
+    message = _error_message(exc).lower()
+    return (
+        "cannot be set" in message
+        and ("appropriate screen" in message or "unknown" in message)
+    )
 
 
 def _claim_compensation_comment(failed_step: str, error: JiraExecutionError) -> str:

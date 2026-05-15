@@ -268,6 +268,39 @@ def test_mark_claimed_update_fields_failure_compensates_claim_and_component():
     ]
 
 
+def test_mark_claimed_ignores_agent_component_screen_rejection():
+    client = _FakeJiraClient(
+        _ticket(labels=[LABEL_AI_READY]),
+        fail_on={
+            "update_fields": [
+                RuntimeError(
+                    "Jira request failed: PUT /rest/api/3/issue/AGENT-123 "
+                    "returned 400: {\"errors\":{\"customfield_10041\":"
+                    "\"Field 'customfield_10041' cannot be set. It is not on "
+                    "the appropriate screen, or unknown.\"}}"
+                )
+            ]
+        },
+    )
+    service = JiraExecutionService(client, component_id="runner-1")
+
+    asyncio.run(service.mark_claimed("AGENT-123"))
+
+    assert client.calls == [
+        ("add_labels", "AGENT-123", [LABEL_AI_CLAIMED]),
+        (
+            "update_fields",
+            "AGENT-123",
+            {FIELD_AGENT_ASSIGNED_COMPONENT: "runner-1"},
+        ),
+        ("transition_ticket", "AGENT-123", STATUS_IN_PROGRESS),
+    ]
+    assert client.ticket.status == STATUS_IN_PROGRESS
+    assert client.ticket.labels == [LABEL_AI_READY, LABEL_AI_CLAIMED]
+    assert FIELD_AGENT_ASSIGNED_COMPONENT not in client.ticket.fields
+    assert client.comments == []
+
+
 def test_mark_claimed_transition_back_failure_preserves_original_error():
     client = _FakeJiraClient(
         _ticket(labels=[LABEL_AI_READY]),

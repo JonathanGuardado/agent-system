@@ -455,12 +455,21 @@ def _format_jira_failure_message(result: JiraWriteResult) -> str:
             "Could not write to Jira: "
             f"{result.unsupported_reason}. Reply with edits or `cancel`."
         )
-    failures = "; ".join(
-        f"{item.spec.summary}: {item.reason}" for item in result.failed_items
-    )
+    failures = _format_failures(result)
     return (
         "Could not create any Jira tickets. "
         f"Failures: {failures}. Reply with edits or `cancel`."
+    )
+
+
+def _format_failures(result: JiraWriteResult) -> str:
+    if not result.failed_items:
+        return "unknown Jira write failure"
+    reasons = {item.reason for item in result.failed_items}
+    if len(reasons) == 1:
+        return next(iter(reasons))
+    return "; ".join(
+        f"{item.spec.summary}: {item.reason}" for item in result.failed_items
     )
 
 

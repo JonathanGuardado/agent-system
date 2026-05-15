@@ -53,6 +53,7 @@ class _WriteContext:
     created: list[str] = field(default_factory=list)
     failures: list[JiraWriteFailure] = field(default_factory=list)
     optional_fields_disabled: bool = False
+    unsupported_reason: str | None = None
 
 
 class JiraWriter:
@@ -90,10 +91,13 @@ class JiraWriter:
                     created_epic_key=context.created_epic_key,
                     failed_items=tuple(context.failures),
                     partial=bool(context.created_epic_key),
+                    unsupported_reason=context.unsupported_reason,
                 )
 
         for spec in proposal.tickets:
             await self._write_one(spec, proposal, context, parent_key=parent_key)
+            if context.unsupported_reason is not None:
+                break
 
         partial = bool(context.created or context.created_epic_key) and bool(
             context.failures
@@ -104,6 +108,7 @@ class JiraWriter:
             created_ticket_keys=tuple(context.created),
             failed_items=tuple(context.failures),
             partial=partial,
+            unsupported_reason=context.unsupported_reason,
         )
 
     async def _create_epic(
@@ -124,6 +129,10 @@ class JiraWriter:
             )
         except Exception as exc:  # noqa: BLE001 - boundary call
             reason = f"epic_create_failed: {_error_message(exc)}"
+            if _is_invalid_project_create_error(exc):
+                context.unsupported_reason = _invalid_project_reason(
+                    context.project_key
+                )
             context.failures.extend(
                 JiraWriteFailure(spec=spec, reason=reason)
                 for spec in proposal.tickets
@@ -159,6 +168,14 @@ class JiraWriter:
                 parent_key=parent_key,
             )
         except Exception as exc:  # noqa: BLE001 - boundary call
+            if _is_invalid_project_create_error(exc):
+                context.unsupported_reason = _invalid_project_reason(
+                    context.project_key
+                )
+                context.failures.append(
+                    JiraWriteFailure(spec=spec, reason=_error_message(exc))
+                )
+                return
             if fields and _is_optional_field_create_error(exc):
                 context.optional_fields_disabled = True
                 try:
@@ -192,6 +209,22 @@ def _is_optional_field_create_error(exc: BaseException) -> bool:
     return (
         "cannot be set" in message
         and ("appropriate screen" in message or "unknown" in message)
+    )
+
+
+def _is_invalid_project_create_error(exc: BaseException) -> bool:
+    message = _error_message(exc).lower()
+    return (
+        "valid project is required" in message
+        or "no project could be found" in message
+    )
+
+
+def _invalid_project_reason(project_key: str) -> str:
+    return (
+        f"Jira project `{project_key}` is not valid or not accessible. "
+        "Create that Jira Software project first, or reply with edits using "
+        "an existing Jira project key."
     )
 
 

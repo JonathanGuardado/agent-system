@@ -66,11 +66,11 @@ class SlackPoster(Protocol):
     async def post_thread_reply(
         self,
         channel: str | None,
-        thread_ts: str,
+        thread_ts: str | None,
         user_id: str,
         text: str,
     ) -> None:
-        """Post a plain-text reply to a Slack thread."""
+        """Post a plain-text Slack message, optionally as a thread reply."""
 
 
 ResumeCallback = Callable[[str, Any], Awaitable[Any] | Any]
@@ -352,12 +352,13 @@ class SlackExecutionApprovalService:
         self._poster_user_id = poster_user_id
 
     async def request_approval(self, state: TicketState) -> ApprovalDecision:
+        thread_ts = _usable_thread_ts(state.slack_thread_ts) or _usable_thread_ts(
+            self._default_thread_ts
+        )
         pending = self._store.ensure_pending(
             ticket_key=state.ticket_key,
             slack_channel=state.slack_channel or self._default_channel,
-            slack_thread_ts=state.slack_thread_ts
-            or self._default_thread_ts
-            or state.ticket_key,
+            slack_thread_ts=thread_ts or "",
             plan_summary=_plan_summary(state),
             timeout=self._timeout,
         )
@@ -368,7 +369,7 @@ class SlackExecutionApprovalService:
         if pending.created:
             await self._slack.post_thread_reply(
                 approval.slack_channel,
-                approval.slack_thread_ts,
+                _usable_thread_ts(approval.slack_thread_ts),
                 self._poster_user_id,
                 _format_approval_message(approval, state),
             )
@@ -517,7 +518,7 @@ class ExecutionApprovalCommandHandler:
         suffix = " Dry-run mode stopped before implementation." if self._dry_run else ""
         await self._slack.post_thread_reply(
             channel or approval.slack_channel,
-            thread_ts or approval.slack_thread_ts,
+            _usable_thread_ts(thread_ts) or _usable_thread_ts(approval.slack_thread_ts),
             self._poster_user_id,
             f"Execution {verb} for {approval.ticket_key}.{suffix}",
         )
@@ -534,6 +535,17 @@ def _parse_command(text: str) -> tuple[Literal["approve", "reject"], str] | None
     action = match.group(1).lower()
     ticket_key = match.group(2).upper()
     return ("approve" if action == "approve" else "reject", ticket_key)
+
+
+def _usable_thread_ts(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if cleaned.lower() in {"0", "0000000", "none", "null"}:
+        return None
+    return cleaned
 
 
 def _decision_for_status(status: ApprovalStatus) -> ApprovalDecision:
