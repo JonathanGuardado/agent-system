@@ -420,7 +420,7 @@ class ExecutionApprovalCommandHandler:
         self._on_dry_run_decision = on_dry_run_decision
 
     def matches(self, text: str) -> bool:
-        return _parse_command(text) is not None
+        return _parse_commands(text) is not None
 
     async def handle_message(
         self,
@@ -429,13 +429,36 @@ class ExecutionApprovalCommandHandler:
         channel: str | None = None,
         thread_ts: str | None = None,
         user_id: str | None = None,
-    ) -> ExecutionApprovalCommandResult | None:
+    ) -> ExecutionApprovalCommandResult | tuple[ExecutionApprovalCommandResult, ...] | None:
         del user_id
-        command = _parse_command(text)
-        if command is None:
+        commands = _parse_commands(text)
+        if commands is None:
             return None
 
-        action, ticket_key = command
+        results: list[ExecutionApprovalCommandResult] = []
+        for action, ticket_key in commands:
+            result = await self._handle_one_command(
+                action,
+                ticket_key,
+                channel=channel,
+                thread_ts=thread_ts,
+            )
+            if result is not None:
+                results.append(result)
+        if not results:
+            return None
+        if len(results) == 1:
+            return results[0]
+        return tuple(results)
+
+    async def _handle_one_command(
+        self,
+        action: Literal["approve", "reject"],
+        ticket_key: str,
+        *,
+        channel: str | None,
+        thread_ts: str | None,
+    ) -> ExecutionApprovalCommandResult | None:
         approval = (
             self._store.mark_approved(ticket_key)
             if action == "approve"
@@ -525,16 +548,32 @@ class ExecutionApprovalCommandHandler:
 
 
 def is_execution_approval_command(text: str) -> bool:
-    return _parse_command(text) is not None
+    return _parse_commands(text) is not None
 
 
 def _parse_command(text: str) -> tuple[Literal["approve", "reject"], str] | None:
-    match = _COMMAND_RE.match(text)
+    cleaned = text.strip().strip("`*_~")
+    match = _COMMAND_RE.match(cleaned)
     if match is None:
         return None
     action = match.group(1).lower()
     ticket_key = match.group(2).upper()
     return ("approve" if action == "approve" else "reject", ticket_key)
+
+
+def _parse_commands(
+    text: str,
+) -> tuple[tuple[Literal["approve", "reject"], str], ...] | None:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None
+    commands: list[tuple[Literal["approve", "reject"], str]] = []
+    for line in lines:
+        command = _parse_command(line)
+        if command is None:
+            return None
+        commands.append(command)
+    return tuple(commands)
 
 
 def _usable_thread_ts(value: str | None) -> str | None:

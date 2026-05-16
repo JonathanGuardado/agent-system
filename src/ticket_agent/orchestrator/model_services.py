@@ -687,6 +687,15 @@ def _planning_messages(state: TicketState) -> list[dict[str, str]]:
                     f"repository: {state.repository or ''}",
                     f"repo_path: {state.repo_path or ''}",
                     f"max_attempts: {state.max_attempts}",
+                    "Plan only this Jira ticket's Ticket scope. Treat any "
+                    "Original Slack request text as background for product "
+                    "context, not as authorization to implement the whole "
+                    "request.",
+                    "Do not plan sibling tickets, duplicate the whole app, "
+                    "invent a different framework, or create a different "
+                    "repository/app path than the ticket context implies.",
+                    "files_to_modify entries must be paths relative to repo_path "
+                    "and should stay inside the ticket's scoped app/module.",
                     "Required JSON schema:",
                     (
                         '{"plan": "string", '

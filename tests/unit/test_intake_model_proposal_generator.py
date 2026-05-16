@@ -70,8 +70,15 @@ def test_model_proposal_generator_builds_multi_ticket_proposal():
     assert "- Jira project: AGENT" in proposal.tickets[0].description
     assert "- Repository: agent-system" in proposal.tickets[0].description
     assert "- Repository path: /home/agent" in proposal.tickets[0].description
+    assert "Related tickets in this proposal" in proposal.tickets[0].description
+    assert "Add login UI: Create the Slack-requested login UI" in (
+        proposal.tickets[0].description
+    )
     assert "Acceptance checks:" in proposal.tickets[0].description
     assert router.calls == ["ticket.decompose"]
+    prompt = router.call_messages[0][1]["content"]
+    assert "Tickets must be mutually exclusive slices" in prompt
+    assert "do not make multiple tickets that each build the whole app" in prompt
 
 
 def test_model_proposal_generator_falls_back_on_invalid_model_response():
@@ -92,6 +99,103 @@ def test_model_proposal_generator_falls_back_on_invalid_model_response():
     assert proposal.title == "Add OAuth login to AGENT"
     assert len(proposal.tickets) == 1
     assert proposal.tickets[0].labels == [LABEL_AI_READY]
+
+
+def test_model_proposal_generator_falls_back_on_model_timeout():
+    router = _HangingRouter()
+
+    proposal = asyncio.run(
+        ModelRouterProposalGenerator(
+            router,
+            fallback=DeterministicProposalGenerator(
+                clock=_clock,
+                proposal_id_factory=lambda: "prop-timeout-fallback",
+            ),
+            model_timeout_s=0.01,
+        ).generate(_request("Add OAuth login to AGENT"))
+    ).proposal
+
+    assert proposal is not None
+    assert proposal.proposal_id == "prop-timeout-fallback"
+    assert proposal.project_key == "AGENT"
+    assert proposal.tickets[0].summary == "[agent-system] Add OAuth login to AGENT"
+    assert router.calls == ["ticket.decompose"]
+
+
+def test_deterministic_proposal_generator_truncates_to_max_tickets():
+    text = "\n".join(
+        [
+            "Break this AGENT work into tickets:",
+            "- Ticket 1",
+            "- Ticket 2",
+            "- Ticket 3",
+            "- Ticket 4",
+            "- Ticket 5",
+            "- Ticket 6",
+        ]
+    )
+
+    proposal = DeterministicProposalGenerator(
+        clock=_clock,
+        proposal_id_factory=lambda: "prop-deterministic-truncated",
+    ).generate(
+        _request(
+            text,
+            mode=IntakeMode.NEW_TICKETS,
+            capability="ticket.decompose",
+        )
+    ).proposal
+
+    assert proposal is not None
+    assert len(proposal.tickets) == 5
+    assert proposal.truncated_ticket_count == 1
+    assert proposal.tickets[-1].summary == "[agent-system] Ticket 5"
+
+
+def test_deterministic_generator_uses_bullets_not_headings_as_ticket_slices():
+    text = "\n".join(
+        [
+            "Create Ofertas SV for LAB.",
+            "",
+            "Core goal:",
+            "Help users discover local deals.",
+            "",
+            "Main features:",
+            "- Homepage with featured deals",
+            "- Search and filters",
+            "- Favorites page",
+            "- Submit-a-deal form",
+            "",
+            "Design:",
+            "Use Spanish UI copy and USD prices.",
+        ]
+    )
+
+    proposal = DeterministicProposalGenerator(
+        clock=_clock,
+        proposal_id_factory=lambda: "prop-bullet-slices",
+    ).generate(
+        _request(
+            text,
+            mode=IntakeMode.NEW_PROJECT,
+            capability="architecture.design",
+        )
+    ).proposal
+
+    assert proposal is not None
+    assert [ticket.summary for ticket in proposal.tickets] == [
+        "[agent-system] Homepage with featured deals",
+        "[agent-system] Search and filters",
+        "[agent-system] Favorites page",
+        "[agent-system] Submit-a-deal form",
+    ]
+    assert all("Core goal:" not in ticket.summary for ticket in proposal.tickets)
+    first_description = proposal.tickets[0].description
+    assert "Ticket scope:\nHomepage with featured deals" in first_description
+    assert "Original Slack request (background only" in first_description
+    assert "Related tickets in this proposal" in first_description
+    assert "- Search and filters" in first_description
+    assert "Do not implement sibling tickets" in first_description
 
 
 def test_model_proposal_generator_revision_preserves_prior_context():
@@ -296,6 +400,24 @@ class _Router:
 
     def __post_init__(self) -> None:
         self.calls: list[str] = []
+        self.call_messages: list[list[dict[str, str]]] = []
+
+    async def invoke(
+        self,
+        capability: str,
+        messages: list[dict[str, str]],
+        **kwargs: Any,
+    ) -> Any:
+        del kwargs
+        self.calls.append(capability)
+        self.call_messages.append(messages)
+        return self.response
+
+
+@dataclass
+class _HangingRouter:
+    def __post_init__(self) -> None:
+        self.calls: list[str] = []
 
     async def invoke(
         self,
@@ -305,4 +427,5 @@ class _Router:
     ) -> Any:
         del messages, kwargs
         self.calls.append(capability)
-        return self.response
+        await asyncio.sleep(60)
+        return {"title": "Too late", "tickets": [{"summary": "Too late"}]}

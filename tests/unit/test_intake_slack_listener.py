@@ -250,18 +250,39 @@ def test_listener_logs_question_answer_model_metadata(tmp_path):
     )
 
     assert result is None
-    assert events == [
-        (
-            "intake.question_answered",
-            {
-                "thread_ts": "t-question",
-                "model": "gpt-4.1-mini",
-                "provider": "openai",
-                "capability": "trivial.respond",
-                "fallback_used": False,
-            },
-        )
-    ]
+    assert events[0] == (
+        "intake.slack_event_received",
+        {
+            "channel": "C-INTAKE",
+            "thread_ts": "t-question",
+            "is_bot": False,
+            "has_user_id": True,
+            "text_length": 34,
+            "text_word_count": 7,
+        },
+    )
+    assert (
+        "intake.slack_routed",
+        {
+            "channel": "C-INTAKE",
+            "thread_ts": "t-question",
+            "is_bot": False,
+            "has_user_id": True,
+            "text_length": 34,
+            "text_word_count": 7,
+            "route": "channel_question_answer",
+        },
+    ) in events
+    assert (
+        "intake.question_answered",
+        {
+            "thread_ts": "t-question",
+            "model": "gpt-4.1-mini",
+            "provider": "openai",
+            "capability": "trivial.respond",
+            "fallback_used": False,
+        },
+    ) in events
 
 
 def test_listener_routes_dm_greeting_when_intake_channel_is_configured(tmp_path):
@@ -586,6 +607,18 @@ def test_event_from_slack_payload_uses_thread_ts_when_present():
 
     assert event.thread_ts == "1700000000.0001"
     assert event.is_bot is False
+
+
+def test_event_from_slack_payload_strips_leading_app_mention():
+    payload = {
+        "user": "U1",
+        "text": "<@U-BOT> create a proposal for AGENT",
+        "channel": "C1",
+        "ts": "1700000005.0002",
+    }
+    event = event_from_slack_payload(payload)
+
+    assert event.text == "create a proposal for AGENT"
 
 
 def test_slack_sdk_poster_offloads_sync_web_client(monkeypatch):

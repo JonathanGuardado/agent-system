@@ -9,6 +9,7 @@ from ticket_agent.orchestrator.execution_approval import (
     ExecutionApprovalCommandHandler,
     SQLiteExecutionApprovalStore,
     SlackExecutionApprovalService,
+    is_execution_approval_command,
 )
 from ticket_agent.orchestrator.graph import build_ticket_graph
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
@@ -92,6 +93,59 @@ def test_approve_command_resumes_graph_and_calls_implement(tmp_path):
         assert approval.status == "approved"
     finally:
         scenario.close()
+
+
+def test_multiline_approval_commands_are_handled_as_batch(tmp_path):
+    store = SQLiteExecutionApprovalStore(tmp_path / "approvals.sqlite3")
+    slack = _FakeSlack()
+    store.create_pending(
+        ticket_key="AGENT-123",
+        slack_channel="C-EXEC",
+        slack_thread_ts="thr-1",
+        plan_summary="Review first plan.",
+    )
+    store.create_pending(
+        ticket_key="AGENT-456",
+        slack_channel="C-EXEC",
+        slack_thread_ts="thr-2",
+        plan_summary="Review second plan.",
+    )
+    handler = ExecutionApprovalCommandHandler(
+        store=store,
+        graph=_NeverCalledGraph(),
+        slack=slack,
+        dry_run=True,
+    )
+
+    try:
+        result = asyncio.run(
+            handler.handle_message(
+                text="approve AGENT-123\napprove AGENT-456",
+                channel="C-EXEC",
+                thread_ts="approval-thread",
+                user_id="U1",
+            )
+        )
+
+        assert isinstance(result, tuple)
+        assert [item.ticket_key for item in result] == ["AGENT-123", "AGENT-456"]
+        assert store.get("AGENT-123").status == "approved"
+        assert store.get("AGENT-456").status == "approved"
+        assert [message[3] for message in slack.messages[-2:]] == [
+            "Execution approved for AGENT-123. Dry-run mode stopped before implementation.",
+            "Execution approved for AGENT-456. Dry-run mode stopped before implementation.",
+        ]
+    finally:
+        store.close()
+
+
+def test_multiline_approval_command_matcher_rejects_mixed_text():
+    assert is_execution_approval_command(
+        "approve AGENT-123\nreject AGENT-456"
+    ) is True
+    assert is_execution_approval_command(
+        "approve AGENT-123\nplease also do something else"
+    ) is False
 
 
 def test_reject_command_resumes_graph_and_escalates_without_implement(tmp_path):
@@ -313,6 +367,12 @@ class _FakeSlack:
         text: str,
     ) -> None:
         self.messages.append((channel, thread_ts, user_id, text))
+
+
+class _NeverCalledGraph:
+    async def ainvoke(self, graph_input: Any, config: dict[str, Any]) -> Any:
+        del graph_input, config
+        raise AssertionError("dry-run approval should not resume the graph")
 
 
 class _Planner:

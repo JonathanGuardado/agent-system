@@ -8,8 +8,10 @@ can replace :class:`DeterministicProposalGenerator` without changes to
 
 from __future__ import annotations
 
+import asyncio
 import re
 import json
+import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -29,6 +31,8 @@ from ticket_agent.domain.intake import (
 from ticket_agent.intake.proposal_store import PROPOSAL_TTL_SECONDS
 from ticket_agent.jira.constants import LABEL_AI_READY
 
+
+_LOGGER = logging.getLogger(__name__)
 
 Clock = Callable[[], datetime]
 ProposalIdFactory = Callable[[], str]
@@ -121,10 +125,14 @@ class DeterministicProposalGenerator:
         clock: Clock | None = None,
         proposal_id_factory: ProposalIdFactory | None = None,
         ttl_seconds: int = PROPOSAL_TTL_SECONDS,
+        max_tickets: int = MAX_TICKETS,
     ) -> None:
+        if max_tickets < 1:
+            raise ValueError("max_tickets must be at least 1")
         self._clock = clock or _utcnow
         self._proposal_id_factory = proposal_id_factory or _default_proposal_id
         self._ttl_seconds = ttl_seconds
+        self._max_tickets = max_tickets
 
     def generate(
         self,
@@ -163,6 +171,8 @@ class DeterministicProposalGenerator:
             return ProposalDraft(clarification=clarification)
 
         capability = request.resolution.capability
+        summaries = _candidate_summaries(mode, text)
+        truncated_ticket_count = max(0, len(summaries) - self._max_tickets)
         tickets = _build_ticket_specs(
             mode=mode,
             text=text,
@@ -170,6 +180,7 @@ class DeterministicProposalGenerator:
             project_key=project_key,
             repository=repository,
             repo_path=repo_path,
+            summaries=summaries[: self._max_tickets],
         )
 
         title = _proposal_title(text)
@@ -197,6 +208,7 @@ class DeterministicProposalGenerator:
             title=title,
             summary=summary,
             tickets=tickets,
+            truncated_ticket_count=truncated_ticket_count,
             revision_count=revision_count,
             status=ProposalStatus.AWAITING_CONFIRMATION,
             created_at=created_at,
@@ -218,11 +230,14 @@ class ModelRouterProposalGenerator:
         ttl_seconds: int = PROPOSAL_TTL_SECONDS,
         min_model_words: int = 4,
         max_tickets: int = MAX_TICKETS,
+        model_timeout_s: float | None = 10.0,
     ) -> None:
         if min_model_words < 1:
             raise ValueError("min_model_words must be at least 1")
         if max_tickets < 1:
             raise ValueError("max_tickets must be at least 1")
+        if model_timeout_s is not None and model_timeout_s <= 0:
+            raise ValueError("model_timeout_s must be positive")
         self._model_router = model_router
         self._fallback = fallback or DeterministicProposalGenerator(
             clock=clock,
@@ -234,6 +249,7 @@ class ModelRouterProposalGenerator:
         self._ttl_seconds = ttl_seconds
         self._min_model_words = min_model_words
         self._max_tickets = max_tickets
+        self._model_timeout_s = model_timeout_s
 
     async def generate(
         self,
@@ -245,18 +261,64 @@ class ModelRouterProposalGenerator:
             return await self._fallback_generate(request, prior)
 
         try:
-            response = await self._model_router.invoke(
+            invocation = self._model_router.invoke(
                 "ticket.decompose",
                 _model_proposal_messages(request, prior),
                 ticket_id=None,
                 metadata={"workflow_node": "intake_proposal"},
             )
+            if self._model_timeout_s is not None:
+                response = await asyncio.wait_for(
+                    invocation,
+                    timeout=self._model_timeout_s,
+                )
+            else:
+                response = await invocation
             payload = _coerce_model_payload(response)
             model_payload = _ModelProposalPayload.model_validate(payload)
             return self._proposal_from_payload(request, prior, model_payload)
-        except (ValidationError, ValueError, TypeError, RuntimeError, KeyError):
+        except TimeoutError:
+            _log_proposal_event(
+                "intake.proposal_model_fallback",
+                {
+                    "reason": "model_timeout",
+                    "timeout_s": self._model_timeout_s,
+                    "word_count": len(text.split()),
+                    "mode": request.resolution.mode.value,
+                    "capability": request.resolution.capability,
+                },
+                level=logging.WARNING,
+            )
             return await self._fallback_generate(request, prior)
-        except Exception:
+        except (
+            ValidationError,
+            ValueError,
+            TypeError,
+            RuntimeError,
+            KeyError,
+        ) as exc:
+            _log_proposal_event(
+                "intake.proposal_model_fallback",
+                {
+                    "reason": exc.__class__.__name__,
+                    "word_count": len(text.split()),
+                    "mode": request.resolution.mode.value,
+                    "capability": request.resolution.capability,
+                },
+                level=logging.WARNING,
+            )
+            return await self._fallback_generate(request, prior)
+        except Exception as exc:
+            _log_proposal_event(
+                "intake.proposal_model_fallback",
+                {
+                    "reason": exc.__class__.__name__,
+                    "word_count": len(text.split()),
+                    "mode": request.resolution.mode.value,
+                    "capability": request.resolution.capability,
+                },
+                level=logging.WARNING,
+            )
             return await self._fallback_generate(request, prior)
 
     async def _fallback_generate(
@@ -309,6 +371,10 @@ class ModelRouterProposalGenerator:
         # Truncate to max_tickets before building specs.
         raw_tickets = payload.tickets[: self._max_tickets]
         truncated_ticket_count = max(0, len(payload.tickets) - len(raw_tickets))
+        sibling_payloads = [
+            (ticket.summary, ticket.description)
+            for ticket in raw_tickets
+        ]
         tickets = [
             _ticket_spec_from_model_ticket(
                 ticket,
@@ -317,6 +383,10 @@ class ModelRouterProposalGenerator:
                 default_capability=request.resolution.capability,
                 default_repository=repository,
                 default_repo_path=repo_path,
+                sibling_scopes=_sibling_scopes_for(
+                    ticket.summary,
+                    sibling_payloads,
+                ),
             )
             for ticket in raw_tickets
         ]
@@ -376,22 +446,29 @@ def _build_ticket_specs(
     project_key: str | None,
     repository: str | None,
     repo_path: str | None,
+    summaries: Sequence[str] | None = None,
 ) -> list[TicketSpec]:
-    summaries = _candidate_summaries(mode, text)
+    summaries = (
+        list(summaries)
+        if summaries is not None
+        else _candidate_summaries(mode, text)
+    )
     capabilities_needed = [capability]
 
     specs: list[TicketSpec] = []
+    sibling_payloads = [(summary, "") for summary in summaries]
     for summary in summaries:
         specs.append(
             TicketSpec(
                 summary=_scoped_summary(summary, repository),
                 description=_execution_ready_description(
-                    body=text,
+                    body=summary,
                     request_text=text,
                     project_key=project_key,
                     repository=repository,
                     repo_path=repo_path,
                     capabilities=capabilities_needed,
+                    sibling_scopes=_sibling_scopes_for(summary, sibling_payloads),
                 ),
                 issue_type="Task",
                 labels=[LABEL_AI_READY],
@@ -411,6 +488,7 @@ def _ticket_spec_from_model_ticket(
     default_capability: str,
     default_repository: str | None,
     default_repo_path: str | None,
+    sibling_scopes: Sequence[tuple[str, str]] = (),
 ) -> TicketSpec:
     labels = _ordered_unique([*ticket.labels, LABEL_AI_READY])
     capabilities = _ordered_unique(
@@ -425,6 +503,7 @@ def _ticket_spec_from_model_ticket(
             repository=default_repository,
             repo_path=default_repo_path,
             capabilities=capabilities,
+            sibling_scopes=sibling_scopes,
         ),
         issue_type=ticket.issue_type.strip() or "Task",
         priority=_clean_optional(ticket.priority),
@@ -464,6 +543,11 @@ def _model_proposal_messages(
                     "without reading Slack: include concrete files/directories, "
                     "scope boundaries, acceptance checks, and test expectations "
                     "in the ticket description.",
+                    "Tickets must be mutually exclusive slices. For a single "
+                    "app MVP, do not make multiple tickets that each build the "
+                    "whole app; create one foundation/app-shell ticket and "
+                    "separate feature tickets for homepage, search/filtering, "
+                    "favorites, forms, data, or tests as needed.",
                     "Write ticket summaries as concise deliverables. The system "
                     "will add trusted repository/project context; do not invent "
                     "repositories or Jira projects.",
@@ -555,6 +639,39 @@ def _ordered_unique(values: Sequence[str]) -> list[str]:
     return result
 
 
+def _log_proposal_event(
+    event_name: str,
+    payload: Mapping[str, object],
+    *,
+    level: int = logging.INFO,
+) -> None:
+    _LOGGER.log(
+        level,
+        json.dumps(
+            {"event": event_name, **_jsonable_mapping(payload)},
+            sort_keys=True,
+        ),
+    )
+
+
+def _jsonable_mapping(payload: Mapping[str, object]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in payload.items():
+        if value is None or isinstance(value, str | int | float | bool):
+            result[str(key)] = value
+        elif isinstance(value, Mapping):
+            result[str(key)] = _jsonable_mapping(value)
+        elif isinstance(value, list | tuple):
+            result[str(key)] = [
+                item if item is None or isinstance(item, str | int | float | bool)
+                else str(item)
+                for item in value
+            ]
+        else:
+            result[str(key)] = str(value)
+    return result
+
+
 def _scoped_summary(summary: str, repository: str | None) -> str:
     cleaned = summary.strip()
     if not repository:
@@ -573,6 +690,7 @@ def _execution_ready_description(
     repository: str | None,
     repo_path: str | None,
     capabilities: Sequence[str],
+    sibling_scopes: Sequence[tuple[str, str]] = (),
 ) -> str:
     context_lines = ["Execution context:"]
     if project_key:
@@ -587,16 +705,50 @@ def _execution_ready_description(
     cleaned_body = body.strip() or request_text.strip()
     sections = ["\n".join(context_lines)]
     if cleaned_body:
-        sections.append(f"Scope:\n{cleaned_body}")
+        sections.append(f"Ticket scope:\n{cleaned_body}")
     if request_text.strip() and request_text.strip() != cleaned_body:
-        sections.append(f"Original Slack request:\n{request_text.strip()}")
+        sections.append(
+            "Original Slack request (background only; do not implement work "
+            f"outside Ticket scope):\n{request_text.strip()}"
+        )
+    if sibling_scopes:
+        sections.append(
+            "Related tickets in this proposal (coordination only; do not "
+            "implement them here):\n" + _format_sibling_scopes(sibling_scopes)
+        )
     sections.append(
         "Acceptance checks:\n"
-        "- Implement only the scoped changes for this ticket.\n"
+        "- Implement only the Ticket scope for this ticket.\n"
+        "- Do not implement sibling tickets or the full original request unless "
+        "this ticket explicitly scopes that work.\n"
         "- Add or update focused tests for the requested behavior.\n"
         "- Run the relevant test command and capture any remaining failures."
     )
     return "\n\n".join(sections)
+
+
+def _sibling_scopes_for(
+    current_summary: str,
+    ticket_scopes: Sequence[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    current = current_summary.strip()
+    siblings: list[tuple[str, str]] = []
+    for summary, description in ticket_scopes:
+        cleaned_summary = summary.strip()
+        if not cleaned_summary or cleaned_summary == current:
+            continue
+        siblings.append((cleaned_summary, description.strip()))
+    return siblings
+
+
+def _format_sibling_scopes(scopes: Sequence[tuple[str, str]]) -> str:
+    lines: list[str] = []
+    for summary, description in scopes:
+        if description:
+            lines.append(f"- {summary}: {description}")
+        else:
+            lines.append(f"- {summary}")
+    return "\n".join(lines)
 
 
 def _candidate_summaries(mode: IntakeMode, text: str) -> list[str]:
@@ -612,18 +764,18 @@ def _candidate_summaries(mode: IntakeMode, text: str) -> list[str]:
 
 
 def _split_into_items(text: str) -> list[str]:
-    items: list[str] = []
+    bullet_items: list[str] = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        cleaned = re.sub(r"^[\-\*\d\.\)\s]+", "", line).strip()
-        if cleaned:
-            items.append(cleaned)
-    if len(items) >= 3 and items[0].endswith(":"):
-        items = items[1:]
-    if len(items) >= 2:
-        return items
+        bullet = re.match(r"^(?:[-*]|\d+[.)])\s+(.+?)\s*$", line)
+        if bullet is not None:
+            cleaned = bullet.group(1).strip()
+            if cleaned:
+                bullet_items.append(cleaned)
+    if len(bullet_items) >= 2:
+        return bullet_items
 
     if " and " in text.lower():
         parts = re.split(r"\s+and\s+", text, flags=re.IGNORECASE)

@@ -65,6 +65,7 @@ from ticket_agent.orchestrator.graph import build_persistent_ticket_graph
 from ticket_agent.orchestrator.jira_services import JiraEscalationService
 from ticket_agent.orchestrator.local_services import (
     AdapterTestService,
+    AutoApprovalService,
     LocalImplementationService,
 )
 from ticket_agent.orchestrator.model_services import (
@@ -133,10 +134,12 @@ class RuntimeConfig:
     heartbeat_interval_s: float = 600.0
     reconcile_interval_seconds: float = 300.0
     reconcile_batch_size: int | None = None
+    intake_model_timeout_s: float = 10.0
     contract_dir: Path = Path("config/repos")
     pull_request_base_branch: str = "main"
     jira_target_projects: tuple[str, ...] = ()
     execution_mode: str = "execute"
+    execution_approval_policy: str = "auto"
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,10 +263,11 @@ def build_runtime(
     )
     node_runner = TicketNodeRunner(
         planner=planner or ModelRouterPlannerService(router),
-        approval=SlackExecutionApprovalService(
-            store=approval_store,
-            slack=slack,
-            default_channel=approval_channel,
+        approval=_execution_approval_service(
+            runtime_config,
+            approval_store,
+            slack,
+            approval_channel,
         ),
         implementation=implementation
         or LocalImplementationService(
@@ -320,6 +324,7 @@ def build_runtime(
     proposal_generator = ModelRouterProposalGenerator(
         router,
         fallback=DeterministicProposalGenerator(),
+        model_timeout_s=runtime_config.intake_model_timeout_s,
     )
     approval_flow = ApprovalFlow(
         resolver=IntakeIntentResolver(),
@@ -610,6 +615,11 @@ def load_app_config(
             merged_env,
             "AGENT_SYSTEM_RECONCILE_BATCH_SIZE",
         ),
+        intake_model_timeout_s=_float_env(
+            merged_env,
+            "AGENT_SYSTEM_INTAKE_MODEL_TIMEOUT_SECONDS",
+            default=10.0,
+        ),
         contract_dir=Path(
             _first_env(
                 merged_env,
@@ -626,6 +636,11 @@ def load_app_config(
         jira_target_projects=_jira_target_projects(merged_env),
         execution_mode=_env_value(merged_env, "AGENT_SYSTEM_EXECUTION_MODE")
         or "execute",
+        execution_approval_policy=_env_value(
+            merged_env,
+            "AGENT_SYSTEM_EXECUTION_APPROVAL_POLICY",
+        )
+        or "auto",
     )
     _validate_runtime_config(runtime_config)
 
@@ -882,6 +897,10 @@ def _validate_runtime_config(config: RuntimeConfig) -> None:
     _positive("AGENT_SYSTEM_MAX_BACKOFF_SECONDS", config.max_backoff_seconds)
     _positive("AGENT_SYSTEM_HEARTBEAT_INTERVAL_SECONDS", config.heartbeat_interval_s)
     _positive(
+        "AGENT_SYSTEM_INTAKE_MODEL_TIMEOUT_SECONDS",
+        config.intake_model_timeout_s,
+    )
+    _positive(
         "AGENT_SYSTEM_RECONCILE_INTERVAL_SECONDS",
         config.reconcile_interval_seconds,
     )
@@ -896,6 +915,28 @@ def _validate_runtime_config(config: RuntimeConfig) -> None:
         raise StartupConfigError(
             "AGENT_SYSTEM_EXECUTION_MODE must be either 'execute' or 'dry_run'"
         )
+    if config.execution_approval_policy not in {"auto", "slack"}:
+        raise StartupConfigError(
+            "AGENT_SYSTEM_EXECUTION_APPROVAL_POLICY must be either 'auto' or 'slack'"
+        )
+
+
+def _execution_approval_service(
+    config: RuntimeConfig,
+    approval_store: SQLiteExecutionApprovalStore,
+    slack: SlackPoster,
+    approval_channel: str,
+) -> Any:
+    if (
+        config.execution_mode == "dry_run"
+        or config.execution_approval_policy == "slack"
+    ):
+        return SlackExecutionApprovalService(
+            store=approval_store,
+            slack=slack,
+            default_channel=approval_channel,
+        )
+    return AutoApprovalService()
 
 
 def _positive(name: str, value: float) -> None:
@@ -1092,11 +1133,13 @@ def _runtime_payload(runtime: AgentSystemRuntime) -> dict[str, Any]:
         "poll_interval_seconds": config.poll_interval_seconds,
         "max_backoff_seconds": config.max_backoff_seconds,
         "heartbeat_interval_seconds": config.heartbeat_interval_s,
+        "intake_model_timeout_seconds": config.intake_model_timeout_s,
         "reconcile_interval_seconds": config.reconcile_interval_seconds,
         "repo_config_path": str(config.contract_dir),
         "pull_request_base_branch": config.pull_request_base_branch,
         "jira_target_projects": list(config.jira_target_projects),
         "execution_mode": config.execution_mode,
+        "execution_approval_policy": config.execution_approval_policy,
         "intake_channel_configured": bool(config.intake_channel),
         "execution_approval_channel_configured": bool(
             config.execution_approval_channel

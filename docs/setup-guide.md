@@ -58,6 +58,7 @@ app does not need a public URL.
    minimum:
 
    - `chat:write`
+   - `channels:read`
    - `channels:history`
    - `groups:history`
    - `im:history`
@@ -66,11 +67,18 @@ app does not need a public URL.
 
 5. Install the app to the workspace. Copy the **Bot User OAuth Token**
    (starts with `xoxb-`). This is your `SLACK_BOT_TOKEN`.
-6. To use the app as a direct-message assistant for non-ticket Jira
+6. Under **Event Subscriptions**, subscribe the bot to message events:
+
+   - `message.channels` for public intake channels.
+   - `message.groups` for private intake channels.
+   - `message.im` for direct-message Q&A.
+   - `app_mention` if you want tagged channel requests to work too.
+
+7. To use the app as a direct-message assistant for non-ticket Jira
    questions, enable the app's messages tab / direct messages in Slack app
-   configuration and subscribe the app to message events for DMs.
-7. Invite the bot to the intake channel and the execution-approval channel.
-8. Copy each channel's ID (Slack → channel → **View channel details** → copy
+   configuration.
+8. Invite the bot to the intake channel and the execution-approval channel.
+9. Copy each channel's ID (Slack → channel → **View channel details** → copy
    the `C…` ID at the bottom).
 
 ### Variables
@@ -80,7 +88,7 @@ app does not need a public URL.
 | `SLACK_BOT_TOKEN` | Bot user OAuth token (`xoxb-…`). | Slack app → OAuth & Permissions. |
 | `SLACK_APP_TOKEN` | App-level token (`xapp-…`) with `connections:write`. | Slack app → Basic Information → App-Level Tokens. |
 | `AGENT_SYSTEM_INTAKE_CHANNEL` | Channel ID where humans request work. | Slack channel details. |
-| `AGENT_SYSTEM_EXECUTION_APPROVAL_CHANNEL` | Channel ID where the bot asks for execution approval. | Slack channel details. May be the same channel as intake. |
+| `AGENT_SYSTEM_EXECUTION_APPROVAL_CHANNEL` | Channel ID where the bot asks for execution approval when Slack execution approvals are enabled. | Slack channel details. May be the same channel as intake. |
 
 ---
 
@@ -185,9 +193,11 @@ sane for local development.
 | `AGENT_SYSTEM_POLL_INTERVAL_SECONDS` | `30` | How often detection polls Jira for `ai-ready` tickets. |
 | `AGENT_SYSTEM_MAX_BACKOFF_SECONDS` | `300` | Upper bound for poll backoff. Must be ≥ `POLL_INTERVAL_SECONDS`. |
 | `AGENT_SYSTEM_HEARTBEAT_INTERVAL_SECONDS` | `600` | How often the active worker refreshes its lock heartbeat. |
+| `AGENT_SYSTEM_INTAKE_MODEL_TIMEOUT_SECONDS` | `10` | Max seconds to wait for model-assisted proposal drafting before falling back to deterministic proposal generation. |
 | `AGENT_SYSTEM_RECONCILE_INTERVAL_SECONDS` | `300` | How often the reconciler clears stale locks/checkpoints. |
 | `AGENT_SYSTEM_PULL_REQUEST_BASE_BRANCH` | `main` | Base branch every agent PR targets. |
 | `AGENT_SYSTEM_EXECUTION_MODE` | `execute` | Use `dry_run` for the first vertical-slice test so approval stops before implementation. |
+| `AGENT_SYSTEM_EXECUTION_APPROVAL_POLICY` | `auto` | Use `slack` to require a second per-ticket Slack approval after planning. `dry_run` always pauses for Slack approval. |
 
 Optional:
 

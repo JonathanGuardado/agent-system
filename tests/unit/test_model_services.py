@@ -45,6 +45,35 @@ def test_planner_calls_router_and_parses_dict_response():
     }
 
 
+def test_planner_prompt_limits_scope_to_ticket_not_original_request():
+    router = _FakeRouter(
+        {
+            "ticket.decompose": {
+                "plan": "Build only the favorites page.",
+                "files_to_modify": ["apps/ofertas-sv/src/pages/favorites.tsx"],
+            }
+        }
+    )
+    state = _state(
+        summary="[agent-system] Favorites page",
+        description=(
+            "Execution context:\n"
+            "- Repository: agent-system\n\n"
+            "Ticket scope:\nFavorites page\n\n"
+            "Original Slack request (background only; do not implement work "
+            "outside Ticket scope):\nBuild all Ofertas SV features."
+        ),
+    )
+
+    asyncio.run(ModelRouterPlannerService(router).plan(state))
+
+    prompt = router.calls[0].messages[1]["content"]
+    assert "Plan only this Jira ticket's Ticket scope" in prompt
+    assert "Original Slack request text as background" in prompt
+    assert "Do not plan sibling tickets" in prompt
+    assert "files_to_modify entries must be paths relative to repo_path" in prompt
+
+
 def test_planner_parses_json_string_response():
     router = _FakeRouter(
         {

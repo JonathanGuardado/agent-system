@@ -41,6 +41,10 @@ proposal first; Jira tickets are created only after someone replies `approve`
 in that proposal thread. Reply `cancel` to discard a proposal, or describe
 edits to revise it.
 
+The Slack app must subscribe to channel message events for this to work:
+`message.channels` for public channels, `message.groups` for private channels,
+and `message.im` for direct-message Q&A.
+
 Non-ticket questions can be asked in the intake channel or in a direct message
 with the app. Use natural question phrasing or an explicit prefix:
 
@@ -79,7 +83,7 @@ The important MVP boundaries are:
 - Locks prevent multiple workers from claiming the same ticket.
 - Tool adapters provide constrained local file, shell, test, and git access.
 - The model router centralizes all LLM calls behind one internal interface.
-- LangGraph sequences planning, plain-text execution approval, file-only
+- LangGraph sequences planning, optional plain-text execution approval, file-only
   implementation, tests, review, pull request creation, escalation, and
   reporting.
 
@@ -207,9 +211,14 @@ The primary variables for local Slack/Jira runs are:
   - `GEMINI_API_KEY`
 - Repo contract path:
   - `AGENT_SYSTEM_REPO_CONFIG_PATH` (defaults to `config/repos`)
+- Intake proposal generation:
+  - `AGENT_SYSTEM_INTAKE_MODEL_TIMEOUT_SECONDS` (defaults to `10`)
 - Execution mode:
   - `AGENT_SYSTEM_EXECUTION_MODE=dry_run` for the first Slack/Jira slice so
     execution approval records Jira/Slack state without attempting code changes
+  - `AGENT_SYSTEM_EXECUTION_APPROVAL_POLICY=slack` if you want a second
+    per-ticket approval after planning; otherwise proposal approval is enough
+    in execute mode
 
 Local prerequisites that are not environment variables:
 

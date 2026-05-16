@@ -255,8 +255,23 @@ def test_invalid_project_epic_failure_returns_clear_unsupported_result():
     )
 
 
-def test_new_project_returns_unsupported_result():
+def test_new_project_with_existing_project_creates_tickets():
     proposal = _proposal(mode=IntakeMode.NEW_PROJECT)
+    client = FakeJiraClient([])
+    writer = JiraWriter(client)
+
+    result = asyncio.run(writer.write(proposal))
+
+    assert result.success is True
+    assert result.created_ticket_keys == ("AGENT-1",)
+    assert result.unsupported_reason is None
+    create_calls = [call for call in client.calls if call[0] == "create_issue"]
+    assert len(create_calls) == 1
+    assert create_calls[0][1] == "AGENT"
+
+
+def test_write_without_project_key_returns_unsupported_result():
+    proposal = _proposal(project_key=None)
     client = FakeJiraClient([])
     writer = JiraWriter(client)
 
@@ -264,8 +279,9 @@ def test_new_project_returns_unsupported_result():
 
     assert result.created_ticket_keys == ()
     assert result.unsupported_reason is not None
-    assert result.partial is True
-    # No Jira create calls were made.
+    assert "existing Jira project key" in result.unsupported_reason
+    assert len(result.failed_items) == 1
+    assert result.failed_items[0].reason == "missing_project_key"
     assert all(call[0] != "create_issue" for call in client.calls)
 
 

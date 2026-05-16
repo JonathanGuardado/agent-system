@@ -17,9 +17,10 @@ adapter) and feed messages directly via :meth:`handle_event`.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -114,6 +115,10 @@ class SlackIntakeListener:
     async def handle_event(self, event: SlackEvent) -> ApprovalResult | None:
         """Process one Slack event. Returns ``None`` for ignored messages."""
 
+        self._emit_event(
+            "intake.slack_event_received",
+            _slack_event_log_payload(event),
+        )
         if event.is_bot:
             self._emit_event("intake.slack_ignored", {"reason": "bot_message"})
             return None
@@ -142,6 +147,13 @@ class SlackIntakeListener:
             self._execution_approval_handler is not None
             and self._execution_approval_handler.matches(event.text)
         ):
+            self._emit_event(
+                "intake.slack_routed",
+                {
+                    **_slack_event_log_payload(event),
+                    "route": "execution_approval",
+                },
+            )
             await self._execution_approval_handler.handle_message(
                 text=event.text,
                 channel=event.channel,
@@ -156,6 +168,14 @@ class SlackIntakeListener:
 
         active = self._store.get_active_for_thread(event.user_id, event.thread_ts)
         if active is not None:
+            self._emit_event(
+                "intake.slack_routed",
+                {
+                    **_slack_event_log_payload(event),
+                    "route": "proposal_reply",
+                    "proposal_id": active.proposal_id,
+                },
+            )
             return await self._approval_flow.handle_reply(
                 user_id=event.user_id,
                 thread_ts=event.thread_ts,
@@ -163,6 +183,13 @@ class SlackIntakeListener:
                 channel=event.channel,
             )
         if self._is_dm(event) and self._question_answer_handler is not None:
+            self._emit_event(
+                "intake.slack_routed",
+                {
+                    **_slack_event_log_payload(event),
+                    "route": "dm_question_answer",
+                },
+            )
             answer = await self._question_answer_handler.handle_message(
                 text=event.text,
                 channel=event.channel,
@@ -178,6 +205,13 @@ class SlackIntakeListener:
             self._question_answer_handler is not None
             and self._question_answer_handler.matches(event.text)
         ):
+            self._emit_event(
+                "intake.slack_routed",
+                {
+                    **_slack_event_log_payload(event),
+                    "route": "channel_question_answer",
+                },
+            )
             answer = await self._question_answer_handler.handle_message(
                 text=event.text,
                 channel=event.channel,
@@ -189,6 +223,13 @@ class SlackIntakeListener:
                 _question_answer_log_payload(event.thread_ts, answer),
             )
             return None
+        self._emit_event(
+            "intake.slack_routed",
+            {
+                **_slack_event_log_payload(event),
+                "route": "new_request",
+            },
+        )
         return await self._approval_flow.handle_new_request(
             user_id=event.user_id,
             thread_ts=event.thread_ts,
@@ -217,11 +258,22 @@ def _question_answer_log_payload(
     return payload
 
 
+def _slack_event_log_payload(event: SlackEvent) -> dict[str, object]:
+    return {
+        "channel": event.channel,
+        "thread_ts": event.thread_ts,
+        "is_bot": event.is_bot,
+        "has_user_id": bool(event.user_id and event.user_id.strip()),
+        "text_length": len(event.text),
+        "text_word_count": len(event.text.split()),
+    }
+
+
 def event_from_slack_payload(payload: dict[str, Any]) -> SlackEvent:
     """Translate a raw Slack message event payload into :class:`SlackEvent`."""
 
     user_id = payload.get("user")
-    text = str(payload.get("text") or "")
+    text = _strip_leading_mention(str(payload.get("text") or ""))
     channel = payload.get("channel")
     thread_ts = payload.get("thread_ts") or payload.get("ts") or ""
     bot_id = payload.get("bot_id")
@@ -235,6 +287,13 @@ def event_from_slack_payload(payload: dict[str, Any]) -> SlackEvent:
         thread_ts=str(thread_ts),
         is_bot=is_bot,
     )
+
+
+def _strip_leading_mention(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("<@") and ">" in stripped:
+        return stripped.split(">", maxsplit=1)[1].strip()
+    return text
 
 
 class SlackSDKPoster:
@@ -308,7 +367,8 @@ class SlackSocketModeService:
             if req.type != "events_api":
                 return
             payload = (req.payload or {}).get("event") or {}
-            if payload.get("type") != "message":
+            _log_socket_event("slack.socket_event_received", payload)
+            if payload.get("type") not in {"message", "app_mention"}:
                 return
 
             event = event_from_slack_payload(payload)
@@ -337,6 +397,25 @@ class SlackSocketModeService:
             for future in tuple(pending):
                 future.cancel()
             await asyncio.to_thread(socket_client.close)
+
+
+def _log_socket_event(event_name: str, payload: Mapping[str, Any]) -> None:
+    _LOGGER.info(
+        json.dumps(
+            {
+                "event": event_name,
+                "slack_event_type": payload.get("type"),
+                "slack_event_subtype": payload.get("subtype"),
+                "channel": payload.get("channel"),
+                "thread_ts": payload.get("thread_ts") or payload.get("ts"),
+                "has_user_id": bool(payload.get("user")),
+                "is_bot": bool(payload.get("bot_id"))
+                or payload.get("subtype") == "bot_message",
+                "text_length": len(str(payload.get("text") or "")),
+            },
+            sort_keys=True,
+        )
+    )
 
 
 def load_slack_env() -> tuple[str, str, str]:

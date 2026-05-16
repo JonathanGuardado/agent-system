@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ticket_agent.domain.intake import IntakeMode, Proposal, TicketSpec
+from ticket_agent.domain.intake import Proposal, TicketSpec
 from ticket_agent.jira.client import JiraClient
 from ticket_agent.jira.constants import (
     FIELD_AGENT_CAPABILITIES_NEEDED,
@@ -63,18 +63,20 @@ class JiraWriter:
         self._client = client
 
     async def write(self, proposal: Proposal) -> JiraWriteResult:
-        if proposal.mode == IntakeMode.NEW_PROJECT:
+        project_key = _optional_project_key(proposal)
+        if project_key is None:
             return JiraWriteResult(
-                project_key=proposal.project_key,
-                unsupported_reason="creating new Jira projects is not supported in v1",
-                partial=True,
+                project_key=None,
+                unsupported_reason=(
+                    "an existing Jira project key is required; creating brand-new "
+                    "Jira projects is not supported in v1"
+                ),
                 failed_items=tuple(
-                    JiraWriteFailure(spec=spec, reason="new_project_unsupported")
+                    JiraWriteFailure(spec=spec, reason="missing_project_key")
                     for spec in proposal.tickets
                 ),
             )
 
-        project_key = _required_project_key(proposal)
         if not proposal.tickets:
             return JiraWriteResult(
                 project_key=project_key,
@@ -228,12 +230,9 @@ def _invalid_project_reason(project_key: str) -> str:
     )
 
 
-def _required_project_key(proposal: Proposal) -> str:
+def _optional_project_key(proposal: Proposal) -> str | None:
     if not proposal.project_key:
-        raise ValueError(
-            f"proposal {proposal.proposal_id} cannot be written to Jira "
-            "without a project_key"
-        )
+        return None
     return proposal.project_key
 
 

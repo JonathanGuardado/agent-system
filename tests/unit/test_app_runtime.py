@@ -49,6 +49,7 @@ def test_build_runtime_wires_execution_approval_commands_into_listener(tmp_path)
             data_dir=tmp_path,
             intake_channel="C-INTAKE",
             execution_approval_channel="C-INTAKE",
+            execution_approval_policy="slack",
         ),
         planner=_Planner(),
         implementation=implementation,
@@ -212,25 +213,8 @@ def test_fake_slack_to_jira_to_execution_pr_path(tmp_path):
         assert asyncio.run(runtime.detector.poll_once()) == 2
         assert asyncio.run(runtime.worker.run_once()) is True
 
-        pending = runtime.approval_store.get("AGENT-2")
-        assert pending is not None
-        assert pending.status == "pending"
-        assert implementation.calls == []
-
-        routed = asyncio.run(
-            runtime.listener.handle_event(
-                SlackEvent(
-                    user_id="U1",
-                    text="approve AGENT-2",
-                    channel="C-INTAKE",
-                    thread_ts="intake-thread",
-                )
-            )
-        )
-
-        assert routed is None
+        assert runtime.approval_store.get("AGENT-2") is None
         assert implementation.calls == ["AGENT-2"]
-        assert runtime.approval_store.get("AGENT-2").status == "approved"
         assert jira_client.ticket("AGENT-2").status == STATUS_IN_REVIEW
         assert any(
             "https://github.test/acme/repo/pull/1" in message
@@ -534,9 +518,11 @@ def test_load_app_config_reads_env_file_and_runtime_options(tmp_path):
                 f"AGENT_SYSTEM_DATA_DIR={data_dir}",
                 "AGENT_SYSTEM_COMPONENT_ID=runner-1",
                 "AGENT_SYSTEM_POLL_INTERVAL_SECONDS=0.25",
+                "AGENT_SYSTEM_INTAKE_MODEL_TIMEOUT_SECONDS=3.5",
                 "AGENT_SYSTEM_RECONCILE_INTERVAL_SECONDS=0.5",
                 "AGENT_SYSTEM_REPO_CONFIG_PATH=config/test-repos",
                 "AGENT_SYSTEM_EXECUTION_MODE=dry_run",
+                "AGENT_SYSTEM_EXECUTION_APPROVAL_POLICY=slack",
             ]
         ),
         encoding="utf-8",
@@ -550,10 +536,12 @@ def test_load_app_config_reads_env_file_and_runtime_options(tmp_path):
     assert config.runtime.intake_channel == "C-INTAKE"
     assert config.runtime.execution_approval_channel == "C-EXEC"
     assert config.runtime.poll_interval_seconds == 0.25
+    assert config.runtime.intake_model_timeout_s == 3.5
     assert config.runtime.reconcile_interval_seconds == 0.5
     assert str(config.runtime.contract_dir) == "config/test-repos"
     assert config.runtime.jira_target_projects == ("AGENT", "OPS")
     assert config.runtime.execution_mode == "dry_run"
+    assert config.runtime.execution_approval_policy == "slack"
     assert config.jira_target_projects == ("AGENT", "OPS")
     assert config.jira_field_map[FIELD_AGENT_ASSIGNED_COMPONENT] == "customfield_10001"
 
