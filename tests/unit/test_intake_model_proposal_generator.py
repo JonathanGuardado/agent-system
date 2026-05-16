@@ -79,6 +79,7 @@ def test_model_proposal_generator_builds_multi_ticket_proposal():
     prompt = router.call_messages[0][1]["content"]
     assert "Tickets must be mutually exclusive slices" in prompt
     assert "do not make multiple tickets that each build the whole app" in prompt
+    assert "Return at most 5 tickets" in prompt
 
 
 def test_model_proposal_generator_falls_back_on_invalid_model_response():
@@ -122,7 +123,7 @@ def test_model_proposal_generator_falls_back_on_model_timeout():
     assert router.calls == ["ticket.decompose"]
 
 
-def test_deterministic_proposal_generator_truncates_to_max_tickets():
+def test_deterministic_proposal_generator_compacts_overlong_ticket_list():
     text = "\n".join(
         [
             "Break this AGENT work into tickets:",
@@ -148,8 +149,8 @@ def test_deterministic_proposal_generator_truncates_to_max_tickets():
 
     assert proposal is not None
     assert len(proposal.tickets) == 5
-    assert proposal.truncated_ticket_count == 1
-    assert proposal.tickets[-1].summary == "[agent-system] Ticket 5"
+    assert proposal.truncated_ticket_count == 0
+    assert "Ticket 6" in "\n".join(ticket.description for ticket in proposal.tickets)
 
 
 def test_deterministic_generator_uses_bullets_not_headings_as_ticket_slices():
@@ -318,8 +319,8 @@ def test_single_configured_project_wins_over_source_paths_and_html_word():
     assert proposal.tickets[0].repo_path == "/home/agent-system"
 
 
-def test_model_tickets_truncated_to_max_tickets():
-    """Model output exceeding max_tickets is truncated deterministically."""
+def test_model_tickets_compacted_to_max_tickets():
+    """Model output exceeding max_tickets is compacted without omitting work."""
     seven_tickets = [
         {"summary": f"Ticket {i}", "description": ""} for i in range(7)
     ]
@@ -340,9 +341,10 @@ def test_model_tickets_truncated_to_max_tickets():
 
     assert proposal is not None
     assert len(proposal.tickets) == 5
-    assert proposal.truncated_ticket_count == 2
-    assert proposal.tickets[0].summary == "[agent-system] Ticket 0"
-    assert proposal.tickets[4].summary == "[agent-system] Ticket 4"
+    assert proposal.truncated_ticket_count == 0
+    description_text = "\n".join(ticket.description for ticket in proposal.tickets)
+    assert "Ticket 5" in description_text
+    assert "Ticket 6" in description_text
 
 
 def test_model_tickets_default_max_is_five():
@@ -362,7 +364,7 @@ def test_model_tickets_default_max_is_five():
 
     assert proposal is not None
     assert len(proposal.tickets) == MAX_TICKETS
-    assert proposal.truncated_ticket_count == 1
+    assert proposal.truncated_ticket_count == 0
 
 
 def _request(

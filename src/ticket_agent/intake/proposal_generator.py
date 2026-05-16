@@ -36,6 +36,7 @@ _LOGGER = logging.getLogger(__name__)
 
 Clock = Callable[[], datetime]
 ProposalIdFactory = Callable[[], str]
+SummarySlice = str | tuple[str, str]
 
 
 _PROJECT_KEY_PATTERN = re.compile(r"\b([A-Z][A-Z0-9]{1,9})(?:-\d+)?\b")
@@ -172,7 +173,10 @@ class DeterministicProposalGenerator:
 
         capability = request.resolution.capability
         summaries = _candidate_summaries(mode, text)
-        truncated_ticket_count = max(0, len(summaries) - self._max_tickets)
+        compacted_summaries = _compact_overlong_summaries(
+            summaries,
+            max_tickets=self._max_tickets,
+        )
         tickets = _build_ticket_specs(
             mode=mode,
             text=text,
@@ -180,7 +184,7 @@ class DeterministicProposalGenerator:
             project_key=project_key,
             repository=repository,
             repo_path=repo_path,
-            summaries=summaries[: self._max_tickets],
+            summaries=compacted_summaries,
         )
 
         title = _proposal_title(text)
@@ -208,7 +212,7 @@ class DeterministicProposalGenerator:
             title=title,
             summary=summary,
             tickets=tickets,
-            truncated_ticket_count=truncated_ticket_count,
+            truncated_ticket_count=0,
             revision_count=revision_count,
             status=ProposalStatus.AWAITING_CONFIRMATION,
             created_at=created_at,
@@ -368,9 +372,11 @@ class ModelRouterProposalGenerator:
         if clarification is not None:
             return ProposalDraft(clarification=clarification)
 
-        # Truncate to max_tickets before building specs.
-        raw_tickets = payload.tickets[: self._max_tickets]
-        truncated_ticket_count = max(0, len(payload.tickets) - len(raw_tickets))
+        raw_tickets = _compact_overlong_model_tickets(
+            payload.tickets,
+            max_tickets=self._max_tickets,
+        )
+        truncated_ticket_count = 0
         sibling_payloads = [
             (ticket.summary, ticket.description)
             for ticket in raw_tickets
@@ -446,7 +452,7 @@ def _build_ticket_specs(
     project_key: str | None,
     repository: str | None,
     repo_path: str | None,
-    summaries: Sequence[str] | None = None,
+    summaries: Sequence[SummarySlice] | None = None,
 ) -> list[TicketSpec]:
     summaries = (
         list(summaries)
@@ -456,19 +462,24 @@ def _build_ticket_specs(
     capabilities_needed = [capability]
 
     specs: list[TicketSpec] = []
-    sibling_payloads = [(summary, "") for summary in summaries]
+    sibling_payloads = [
+        (_summary_slice_title(summary), _summary_slice_body(summary))
+        for summary in summaries
+    ]
     for summary in summaries:
+        title = _summary_slice_title(summary)
+        body = _summary_slice_body(summary)
         specs.append(
             TicketSpec(
-                summary=_scoped_summary(summary, repository),
+                summary=_scoped_summary(title, repository),
                 description=_execution_ready_description(
-                    body=summary,
+                    body=body,
                     request_text=text,
                     project_key=project_key,
                     repository=repository,
                     repo_path=repo_path,
                     capabilities=capabilities_needed,
-                    sibling_scopes=_sibling_scopes_for(summary, sibling_payloads),
+                    sibling_scopes=_sibling_scopes_for(title, sibling_payloads),
                 ),
                 issue_type="Task",
                 labels=[LABEL_AI_READY],
@@ -515,6 +526,282 @@ def _ticket_spec_from_model_ticket(
     )
 
 
+_COMPACT_TICKET_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Set up app foundation and data model",
+        (
+            "setup",
+            "set up",
+            "scaffold",
+            "project structure",
+            "architecture",
+            "model",
+            "data",
+            "mock",
+            "demo",
+            "i18n",
+            "locale",
+            "layout",
+            "route",
+            "style",
+            "responsive",
+            "spanish",
+            "usd",
+        ),
+    ),
+    (
+        "Build homepage and deal presentation",
+        (
+            "homepage",
+            "home page",
+            "featured",
+            "deal card",
+            "deal cards",
+            "card",
+            "cards",
+            "status",
+            "label",
+            "price",
+            "store",
+            "discount",
+            "source",
+            "expiration",
+            "location",
+        ),
+    ),
+    (
+        "Implement search, filters, categories, and near-me",
+        (
+            "search",
+            "filter",
+            "filters",
+            "category",
+            "categories",
+            "city",
+            "department",
+            "online",
+            "in-store",
+            "in store",
+            "near me",
+            "gps",
+        ),
+    ),
+    (
+        "Add favorites and saved-deal persistence",
+        (
+            "favorite",
+            "favorites",
+            "saved",
+            "save",
+            "local storage",
+            "localstorage",
+            "persistence",
+            "persist",
+        ),
+    ),
+    (
+        "Build submit-deal flow, admin readiness, and tests",
+        (
+            "submit",
+            "suggest",
+            "form",
+            "admin",
+            "review",
+            "test",
+            "tests",
+            "unit",
+            "integration",
+        ),
+    ),
+)
+
+
+def _compact_overlong_model_tickets(
+    tickets: Sequence[_ModelTicketPayload],
+    *,
+    max_tickets: int,
+) -> list[_ModelTicketPayload]:
+    if len(tickets) <= max_tickets:
+        return list(tickets)
+
+    grouped: list[list[_ModelTicketPayload]] = [
+        [] for _summary, _keywords in _COMPACT_TICKET_GROUPS
+    ]
+    overflow: list[_ModelTicketPayload] = []
+    for ticket in tickets:
+        index = _compact_group_index(ticket)
+        if index is None:
+            overflow.append(ticket)
+        else:
+            grouped[index].append(ticket)
+
+    for ticket in overflow:
+        target = min(range(len(grouped)), key=lambda idx: len(grouped[idx]))
+        grouped[target].append(ticket)
+
+    compacted = [
+        _compact_ticket_group(summary, group)
+        for (summary, _keywords), group in zip(_COMPACT_TICKET_GROUPS, grouped)
+        if group
+    ]
+    if not compacted:
+        compacted = [
+            _compact_ticket_group(
+                f"Implement MVP slice {index + 1}",
+                group,
+            )
+            for index, group in enumerate(_chunk_sequence(tickets, max_tickets))
+        ]
+
+    while len(compacted) > max_tickets:
+        tail = compacted.pop()
+        previous = compacted[-1]
+        compacted[-1] = _ModelTicketPayload(
+            summary=previous.summary,
+            description="\n".join(
+                part for part in [previous.description, tail.description] if part
+            ),
+            issue_type=previous.issue_type,
+            priority=previous.priority,
+            labels=_ordered_unique([*previous.labels, *tail.labels]),
+            capabilities_needed=_ordered_unique(
+                [*previous.capabilities_needed, *tail.capabilities_needed]
+            ),
+        )
+    return compacted
+
+
+def _compact_group_index(ticket: _ModelTicketPayload) -> int | None:
+    haystack = f"{ticket.summary}\n{ticket.description}".lower()
+    for index, (_summary, keywords) in enumerate(_COMPACT_TICKET_GROUPS):
+        if any(keyword in haystack for keyword in keywords):
+            return index
+    return None
+
+
+def _compact_ticket_group(
+    summary: str,
+    tickets: Sequence[_ModelTicketPayload],
+) -> _ModelTicketPayload:
+    if len(tickets) == 1:
+        return tickets[0]
+
+    descriptions = ["Includes:"]
+    labels: list[str] = []
+    capabilities: list[str] = []
+    priority: str | None = None
+    for ticket in tickets:
+        detail = ticket.summary.strip()
+        description = ticket.description.strip()
+        if description:
+            detail = f"{detail}: {description}"
+        descriptions.append(f"- {detail}")
+        labels.extend(ticket.labels)
+        capabilities.extend(ticket.capabilities_needed)
+        priority = priority or _clean_optional(ticket.priority)
+
+    return _ModelTicketPayload(
+        summary=summary,
+        description="\n".join(descriptions),
+        issue_type=tickets[0].issue_type.strip() or "Task",
+        priority=priority,
+        labels=_ordered_unique(labels),
+        capabilities_needed=_ordered_unique(capabilities),
+    )
+
+
+def _chunk_sequence(
+    values: Sequence[_ModelTicketPayload],
+    count: int,
+) -> list[list[_ModelTicketPayload]]:
+    chunks: list[list[_ModelTicketPayload]] = [[] for _ in range(count)]
+    for index, value in enumerate(values):
+        chunks[index % count].append(value)
+    return [chunk for chunk in chunks if chunk]
+
+
+def _compact_overlong_summaries(
+    summaries: Sequence[str],
+    *,
+    max_tickets: int,
+) -> list[SummarySlice]:
+    if len(summaries) <= max_tickets:
+        return list(summaries)
+
+    grouped: list[list[str]] = [
+        [] for _summary, _keywords in _COMPACT_TICKET_GROUPS
+    ]
+    overflow: list[str] = []
+    for summary in summaries:
+        index = _summary_group_index(summary)
+        if index is None:
+            overflow.append(summary)
+        else:
+            grouped[index].append(summary)
+
+    for summary in overflow:
+        target = min(range(len(grouped)), key=lambda idx: len(grouped[idx]))
+        grouped[target].append(summary)
+
+    compacted: list[SummarySlice] = [
+        _compact_summary_group(group_summary, group)
+        for (group_summary, _keywords), group in zip(_COMPACT_TICKET_GROUPS, grouped)
+        if group
+    ]
+    if not compacted:
+        compacted = [
+            _compact_summary_group(
+                f"Implement MVP slice {index + 1}",
+                group,
+            )
+            for index, group in enumerate(_chunk_summaries(summaries, max_tickets))
+        ]
+
+    while len(compacted) > max_tickets:
+        tail = compacted.pop()
+        previous_title = _summary_slice_title(compacted[-1])
+        previous_body = _summary_slice_body(compacted[-1])
+        tail_body = _summary_slice_body(tail)
+        compacted[-1] = (
+            previous_title,
+            "\n".join(part for part in [previous_body, tail_body] if part),
+        )
+    return compacted
+
+
+def _summary_group_index(summary: str) -> int | None:
+    haystack = summary.lower()
+    for index, (_group_summary, keywords) in enumerate(_COMPACT_TICKET_GROUPS):
+        if any(keyword in haystack for keyword in keywords):
+            return index
+    return None
+
+
+def _compact_summary_group(summary: str, items: Sequence[str]) -> SummarySlice:
+    if len(items) == 1:
+        return items[0]
+    return summary, "Includes:\n" + "\n".join(f"- {item}" for item in items)
+
+
+def _chunk_summaries(values: Sequence[str], count: int) -> list[list[str]]:
+    chunks: list[list[str]] = [[] for _ in range(count)]
+    for index, value in enumerate(values):
+        chunks[index % count].append(value)
+    return [chunk for chunk in chunks if chunk]
+
+
+def _summary_slice_title(summary: SummarySlice) -> str:
+    if isinstance(summary, tuple):
+        return summary[0]
+    return summary
+
+
+def _summary_slice_body(summary: SummarySlice) -> str:
+    if isinstance(summary, tuple):
+        return summary[1]
+    return summary
+
+
 def _model_proposal_messages(
     request: ProposalRequest,
     prior: Proposal | None,
@@ -548,6 +835,9 @@ def _model_proposal_messages(
                     "whole app; create one foundation/app-shell ticket and "
                     "separate feature tickets for homepage, search/filtering, "
                     "favorites, forms, data, or tests as needed.",
+                    f"Return at most {MAX_TICKETS} tickets. If the request has "
+                    "more details than that, group related details into complete "
+                    "MVP slices instead of emitting one ticket per bullet.",
                     "Write ticket summaries as concise deliverables. The system "
                     "will add trusted repository/project context; do not invent "
                     "repositories or Jira projects.",
