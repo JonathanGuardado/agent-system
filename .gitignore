@@ -8,3 +8,4 @@ dist/
 build/
 .claude/
 .agent-system-data/
+.worktrees/

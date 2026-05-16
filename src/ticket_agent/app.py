@@ -857,7 +857,7 @@ def _runtime_repo_defaults(
         return {}
     for path in sorted(contract_dir.glob("*.yaml")):
         try:
-            contracts.append(load_repo_contract(path))
+            contracts.append((path, load_repo_contract(path)))
         except Exception:  # noqa: BLE001 - smoke/runtime preflight reports details
             continue
     if not contracts or not config.jira_target_projects:
@@ -865,7 +865,7 @@ def _runtime_repo_defaults(
 
     defaults: dict[str, Mapping[str, str]] = {}
     if len(contracts) == 1:
-        contract = contracts[0]
+        _path, contract = contracts[0]
         for project_key in config.jira_target_projects:
             defaults[project_key] = {
                 "repository": contract.repo.name,
@@ -873,13 +873,20 @@ def _runtime_repo_defaults(
             }
         return defaults
 
-    contracts_by_name = {contract.repo.name.upper(): contract for contract in contracts}
+    contracts_by_name = {
+        contract.repo.name.upper(): contract for _path, contract in contracts
+    }
     contracts_by_stem = {
-        Path(contract.repo.name).stem.upper(): contract for contract in contracts
+        Path(contract.repo.name).stem.upper(): contract for _path, contract in contracts
+    }
+    contracts_by_file_stem = {
+        path.stem.upper(): contract for path, contract in contracts
     }
     for project_key in config.jira_target_projects:
-        contract = contracts_by_name.get(project_key) or contracts_by_stem.get(
-            project_key
+        contract = (
+            contracts_by_file_stem.get(project_key)
+            or contracts_by_name.get(project_key)
+            or contracts_by_stem.get(project_key)
         )
         if contract is None:
             continue

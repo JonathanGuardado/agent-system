@@ -435,6 +435,59 @@ def test_build_runtime_derives_repo_defaults_from_single_repo_contract(tmp_path)
         runtime.close()
 
 
+def test_build_runtime_derives_repo_defaults_from_contract_file_stem(tmp_path):
+    contract_dir = tmp_path / "contracts"
+    contract_dir.mkdir()
+    lab_repo = tmp_path / "ofertas-sv"
+    agent_repo = tmp_path / "agent-system"
+    lab_repo.mkdir()
+    agent_repo.mkdir()
+    contract_dir.joinpath("agent-system.yaml").write_text(
+        _repo_contract_yaml(agent_repo),
+        encoding="utf-8",
+    )
+    contract_dir.joinpath("lab.yaml").write_text(
+        _repo_contract_yaml(lab_repo, repo_name="ofertas-sv"),
+        encoding="utf-8",
+    )
+    runtime = build_runtime(
+        jira_client=FakeJiraClient([]),
+        slack=_FakeSlack(),
+        config=RuntimeConfig(
+            data_dir=tmp_path / "data",
+            intake_channel="C-INTAKE",
+            execution_approval_channel="C-INTAKE",
+            contract_dir=contract_dir,
+            jira_target_projects=("LAB",),
+        ),
+        planner=_Planner(),
+        implementation=_Implementation(),
+        tests=_Tests(),
+        review=_Review(),
+        pull_request=_PullRequest(),
+        escalation=_Escalation(),
+    )
+
+    try:
+        result = asyncio.run(
+            runtime.listener.handle_event(
+                SlackEvent(
+                    user_id="U1",
+                    text="Create Ofertas SV for LAB",
+                    channel="C-INTAKE",
+                    thread_ts="lab-contract-thread",
+                )
+            )
+        )
+
+        assert result is not None
+        assert result.proposal is not None
+        assert result.proposal.tickets[0].repository == "ofertas-sv"
+        assert result.proposal.tickets[0].repo_path == str(lab_repo)
+    finally:
+        runtime.close()
+
+
 def test_build_runtime_uses_single_repo_default_for_execution_loader(tmp_path):
     contract_dir = tmp_path / "repos"
     contract_dir.mkdir()
@@ -744,11 +797,11 @@ class _QuestionRouter:
         return self._response
 
 
-def _repo_contract_yaml(repo_root) -> str:
+def _repo_contract_yaml(repo_root, *, repo_name: str = "agent-system") -> str:
     return "\n".join(
         [
             "repo:",
-            "  name: agent-system",
+            f"  name: {repo_name}",
             f"  root: {repo_root}",
             "  default_branch: main",
             "language:",

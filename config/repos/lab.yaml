@@ -1,0 +1,57 @@
+repo:
+  name: ofertas-sv
+  root: ~/repos/ofertas-sv
+  default_branch: main
+
+language:
+  primary: typescript
+  package_manager: npm
+
+commands:
+  test:
+    command: ["bash", "-lc", "if [ -f package.json ]; then npm test; else echo 'no package.json yet'; fi"]
+    timeout_seconds: 180
+    working_directory: "."
+  lint:
+    command: ["bash", "-lc", "if [ -f package.json ]; then npm run lint --if-present; else echo 'no package.json yet'; fi"]
+    timeout_seconds: 180
+    working_directory: "."
+  install: null
+
+policy:
+  dependency_install_allowed: false
+  config_paths_allowed:
+    - package.json
+    - package-lock.json
+    - tsconfig.json
+    - next.config.js
+    - next.config.mjs
+    - postcss.config.js
+    - tailwind.config.js
+    - tailwind.config.ts
+    - eslint.config.js
+    - eslint.config.mjs
+    - vitest.config.ts
+    - public/
+  protected_paths:
+    - .github/
+    - Dockerfile
+    - docker-compose.yml
+    - docker-compose.yaml
+    - .env
+    - secrets/
+    - ~/config/
+
+source_dirs:
+  - app/
+  - components/
+  - data/
+  - lib/
+  - pages/
+  - public/
+  - src/
+  - styles/
+
+test_dirs:
+  - __tests__/
+  - tests/
