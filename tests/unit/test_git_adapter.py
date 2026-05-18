@@ -99,21 +99,33 @@ def test_push_rejects_branch_outside_agent_namespace(tmp_path):
         GitAdapter().push(repo, "feature/ABC-123")
 
 
+def test_push_reports_missing_origin_before_raw_git_failure(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+
+    with pytest.raises(PushError, match="remote 'origin' is not configured"):
+        GitAdapter().push(repo, "agent/ABC-123/12345678")
+
+
 def test_push_does_not_use_force(tmp_path, monkeypatch):
     repo = _init_repo(tmp_path / "repo")
     calls: list[tuple[str, ...]] = []
 
     def fake_run(command, **kwargs):
         calls.append(tuple(command))
+        if tuple(command) == ("git", "remote", "get-url", "origin"):
+            return subprocess.CompletedProcess(command, 0, "git@github.test:acme/repo.git\n", "")
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     GitAdapter().push(repo, "agent/ABC-123/12345678")
 
-    assert calls == [("git", "push", "origin", "agent/ABC-123/12345678")]
-    assert "--force" not in calls[0]
-    assert "-f" not in calls[0]
+    assert calls == [
+        ("git", "remote", "get-url", "origin"),
+        ("git", "push", "origin", "agent/ABC-123/12345678"),
+    ]
+    assert "--force" not in calls[1]
+    assert "-f" not in calls[1]
 
 
 def test_cleanup_rejects_path_outside_repo_worktrees(tmp_path):

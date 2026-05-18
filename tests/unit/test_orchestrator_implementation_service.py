@@ -112,6 +112,55 @@ def test_local_implementation_service_uses_contract_repo_root_when_repo_path_mis
     assert result["implementation_result"]["status"] == "prepared"
 
 
+def test_local_implementation_service_finds_contract_by_declared_repo_name(
+    tmp_path,
+):
+    contract_dir = tmp_path / "contracts"
+    contract_dir.mkdir()
+    (contract_dir / "lab.yaml").write_text("repo contract placeholder\n")
+    repo_path = tmp_path / "ofertas-sv"
+    worktree_path = repo_path / ".worktrees" / "LAB-123"
+    calls: dict[str, Any] = {"contract_paths": []}
+    git = _FakeGit(
+        WorktreeInfo(
+            repo_path=repo_path,
+            worktree_path=worktree_path,
+            branch_name="agent/LAB-123/abcdef12",
+            ticket_key="LAB-123",
+            lock_id="abcdef12",
+        )
+    )
+
+    def load_contract(path: Path) -> RepoContract:
+        calls["contract_paths"].append(path.name)
+        if path.name == "ofertas-sv.yaml":
+            raise FileNotFoundError(path)
+        return _contract(repo_name="ofertas-sv", repo_root=str(repo_path))
+
+    service = LocalImplementationService(
+        contract_dir=contract_dir,
+        contract_loader=load_contract,
+        git=git,
+        file_adapter_factory=_file_adapter_factory(calls),
+        lock_id_factory=lambda state: "abcdef12",
+    )
+
+    result = asyncio.run(
+        service.implement(
+            TicketState(
+                ticket_key="LAB-123",
+                summary="Implement feature",
+                repository="ofertas-sv",
+                repo_path=str(repo_path),
+            )
+        )
+    )
+
+    assert calls["contract_paths"] == ["ofertas-sv.yaml", "lab.yaml"]
+    assert git.calls == [(repo_path, "LAB-123", "abcdef12")]
+    assert result["implementation_result"]["status"] == "prepared"
+
+
 def test_local_implementation_service_uses_short_state_lock_for_branch_but_preserves_lock_id(
     tmp_path,
 ):
@@ -342,9 +391,9 @@ def _file_adapter_factory(calls: dict[str, Any]):
     return build
 
 
-def _contract(repo_root: str = ".") -> RepoContract:
+def _contract(repo_root: str = ".", *, repo_name: str = "example") -> RepoContract:
     return RepoContract(
-        repo=RepoInfo(name="example", root=repo_root, default_branch="main"),
+        repo=RepoInfo(name=repo_name, root=repo_root, default_branch="main"),
         language=LanguageInfo(primary="python", package_manager="pip"),
         commands=RepoCommands(
             test=CommandSpec(

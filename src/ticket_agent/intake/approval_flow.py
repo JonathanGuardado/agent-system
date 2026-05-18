@@ -267,12 +267,12 @@ class ApprovalFlow:
         text: str,
         channel: str | None,
     ) -> ApprovalResult:
-        merged_text = _merge_revision_text(proposal, text)
-        resolution = self._resolver.resolve(merged_text)
+        edit_resolution = self._resolver.resolve(text)
+        resolution = _revision_resolution(proposal, edit_resolution)
         request = ProposalRequest(
             slack_user_id=proposal.slack_user_id,
             slack_thread_ts=proposal.slack_thread_ts,
-            text=merged_text,
+            text=text.strip(),
             resolution=resolution,
             slack_channel=channel or proposal.slack_channel,
             repo_defaults=self._repo_defaults,
@@ -362,14 +362,26 @@ async def _generate_proposal(
     return draft
 
 
-def _merge_revision_text(proposal: Proposal, edit_text: str) -> str:
-    pieces: list[str] = []
-    if proposal.summary:
-        pieces.append(proposal.summary)
-    pieces.append(edit_text.strip())
-    if proposal.project_key and proposal.project_key not in edit_text:
-        pieces.append(f"(project {proposal.project_key})")
-    return "\n".join(piece for piece in pieces if piece)
+def _revision_resolution(
+    proposal: Proposal,
+    edit_resolution,
+):
+    return edit_resolution.model_copy(
+        update={
+            "mode": proposal.mode,
+            "capability": _proposal_capability(proposal)
+            or edit_resolution.capability,
+            "requires_clarification": False,
+            "clarification_question": None,
+        }
+    )
+
+
+def _proposal_capability(proposal: Proposal) -> str | None:
+    for ticket in proposal.tickets:
+        if ticket.capabilities_needed:
+            return ticket.capabilities_needed[0]
+    return None
 
 
 def _format_proposal_message(proposal: Proposal, *, revised: bool = False) -> str:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,8 @@ from typing import Any
 import yaml
 
 from ticket_agent.domain.errors import RepoContractError
+
+_LOGGER = logging.getLogger(__name__)
 
 
 DEFAULT_PROTECTED_PATHS = (
@@ -250,3 +253,181 @@ def _parse_required_string(raw: Any, label: str) -> str:
     if not isinstance(raw, str) or not raw:
         raise RepoContractError(f"{label} must be a non-empty string")
     return raw
+
+
+# ---------------------------------------------------------------------------
+# Auto-scaffolding
+# ---------------------------------------------------------------------------
+
+
+def scaffold_repo_contract(
+    *,
+    repo_name: str,
+    repo_path: str | None,
+    contract_path: Path,
+) -> RepoContract:
+    """Generate a minimal repo contract, write it to contract_path, and return it.
+
+    Detects language from the repo on disk when it already exists; falls back
+    to Python/pip defaults so brand-new repos get a usable starting point.
+    """
+    effective_root = repo_path or f"~/repos/{repo_name}"
+    resolved_root = Path(effective_root).expanduser()
+
+    language, package_manager = _detect_language(resolved_root)
+    test_cmd = _scaffold_test_command(language, package_manager)
+    lint_cmd = _scaffold_lint_command(language)
+    source_dirs, test_dirs = _scaffold_dirs(language)
+
+    contract = RepoContract(
+        repo=RepoInfo(
+            name=repo_name,
+            root=effective_root,
+            default_branch="main",
+        ),
+        language=LanguageInfo(
+            primary=language,
+            package_manager=package_manager,
+        ),
+        commands=RepoCommands(
+            test=test_cmd,
+            lint=lint_cmd,
+            install=None,
+        ),
+        policy=ExecutionPolicy(
+            dependency_install_allowed=False,
+            config_paths_allowed=(),
+            protected_paths=DEFAULT_PROTECTED_PATHS,
+        ),
+        source_dirs=source_dirs,
+        test_dirs=test_dirs,
+    )
+
+    contract_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_contract_yaml(contract, contract_path)
+    _LOGGER.warning(
+        "auto-scaffolded repo contract for %r at %s — review and edit as needed",
+        repo_name,
+        contract_path,
+    )
+    return contract
+
+
+def _detect_language(repo_root: Path) -> tuple[str, str]:
+    if not repo_root.exists():
+        return "python", "pip"
+    if (repo_root / "package.json").exists():
+        if (repo_root / "pnpm-lock.yaml").exists():
+            return "javascript", "pnpm"
+        if (repo_root / "yarn.lock").exists():
+            return "javascript", "yarn"
+        return "javascript", "npm"
+    if (repo_root / "pyproject.toml").exists():
+        return "python", "poetry"
+    if (repo_root / "setup.py").exists() or (repo_root / "requirements.txt").exists():
+        return "python", "pip"
+    if (repo_root / "go.mod").exists():
+        return "go", "go"
+    if (repo_root / "Cargo.toml").exists():
+        return "rust", "cargo"
+    return "python", "pip"
+
+
+def _scaffold_test_command(language: str, package_manager: str) -> CommandSpec:
+    if language == "python":
+        return CommandSpec(
+            command=("python", "-m", "pytest", "tests/", "-x", "-q"),
+            timeout_seconds=120,
+            working_directory=".",
+        )
+    if language == "javascript":
+        return CommandSpec(
+            command=(package_manager, "test"),
+            timeout_seconds=120,
+            working_directory=".",
+        )
+    if language == "go":
+        return CommandSpec(
+            command=("go", "test", "./..."),
+            timeout_seconds=120,
+            working_directory=".",
+        )
+    if language == "rust":
+        return CommandSpec(
+            command=("cargo", "test"),
+            timeout_seconds=300,
+            working_directory=".",
+        )
+    return CommandSpec(
+        command=("echo", "no-tests-configured"),
+        timeout_seconds=10,
+        working_directory=".",
+    )
+
+
+def _scaffold_lint_command(language: str) -> CommandSpec | None:
+    if language == "python":
+        return CommandSpec(
+            command=("python", "-m", "ruff", "check", "src/"),
+            timeout_seconds=60,
+            working_directory=".",
+        )
+    return None
+
+
+def _scaffold_dirs(language: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if language == "go":
+        return ((".",), (".",))
+    return (("src/",), ("tests/",))
+
+
+def _write_contract_yaml(contract: RepoContract, path: Path) -> None:
+    lines = [
+        "# Auto-scaffolded by agent-system — review and edit as needed.",
+        "repo:",
+        f"  name: {contract.repo.name}",
+        f"  root: {contract.repo.root}",
+        f"  default_branch: {contract.repo.default_branch}",
+        "",
+        "language:",
+        f"  primary: {contract.language.primary}",
+        f"  package_manager: {contract.language.package_manager}",
+        "",
+        "commands:",
+        "  test:",
+        f"    command: {list(contract.commands.test.command)}",
+        f"    timeout_seconds: {contract.commands.test.timeout_seconds}",
+        f"    working_directory: \"{contract.commands.test.working_directory}\"",
+    ]
+    if contract.commands.lint:
+        lines += [
+            "  lint:",
+            f"    command: {list(contract.commands.lint.command)}",
+            f"    timeout_seconds: {contract.commands.lint.timeout_seconds}",
+            f"    working_directory: \"{contract.commands.lint.working_directory}\"",
+        ]
+    else:
+        lines.append("  lint: null")
+    lines.append("  install: null")
+    lines += [
+        "",
+        "policy:",
+        "  dependency_install_allowed: false",
+        "  config_paths_allowed: []",
+        "  protected_paths:",
+    ]
+    for p in contract.policy.protected_paths:
+        lines.append(f"    - {p}")
+    lines += [
+        "",
+        "source_dirs:",
+    ]
+    for d in contract.source_dirs:
+        lines.append(f"  - {d}")
+    lines += [
+        "",
+        "test_dirs:",
+    ]
+    for d in contract.test_dirs:
+        lines.append(f"  - {d}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")

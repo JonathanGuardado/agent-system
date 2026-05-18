@@ -60,6 +60,15 @@ def _resolution_new_feature() -> IntakeResolution:
     )
 
 
+def _resolution_new_project() -> IntakeResolution:
+    return IntakeResolution(
+        mode=IntakeMode.NEW_PROJECT,
+        capability="architecture.design",
+        model_primary="deepseek-v4-pro",
+        model_fallbacks=("gemini-2.5-flash",),
+    )
+
+
 def _resolution_direct() -> IntakeResolution:
     return IntakeResolution(
         mode=IntakeMode.DIRECT_TICKET,
@@ -174,6 +183,54 @@ def test_edit_reply_revises_proposal(tmp_path):
     assert persisted is not None
     assert persisted.revision_count == 1
     assert len(slack.messages) == 1
+
+
+def test_edit_reply_preserves_prior_mode_and_updates_target_ticket(tmp_path):
+    flow, store, slack, _, resolver = _build_flow(
+        tmp_path,
+        resolutions=[_resolution_new_project(), _resolution_new_feature()],
+        repo_defaults={
+            "LAB": {
+                "repository": "ofertas-sv",
+                "repo_path": "/home/ofertas-sv",
+            }
+        },
+    )
+    request_text = "\n".join(
+        ["Create Ofertas SV for LAB"]
+        + [f"- Slice {index}" for index in range(1, 11)]
+    )
+
+    asyncio.run(
+        flow.handle_new_request(
+            user_id="U1",
+            thread_ts="t1",
+            text=request_text,
+        )
+    )
+    slack.messages.clear()
+
+    result = asyncio.run(
+        flow.handle_reply(
+            user_id="U1",
+            thread_ts="t1",
+            text=(
+                "ticket 10 could be better, maybe something better, maybe "
+                "use a scheduled job for searching in the web for deals everyday"
+            ),
+        )
+    )
+
+    assert result.outcome == ApprovalOutcome.PROPOSAL_REVISED
+    assert result.proposal is not None
+    assert result.proposal.mode == IntakeMode.NEW_PROJECT
+    assert len(result.proposal.tickets) == 10
+    assert result.proposal.tickets[9].summary == (
+        "[ofertas-sv] Add scheduled job for daily deal discovery"
+    )
+    assert "Revision request:" in result.proposal.tickets[9].description
+    assert resolver.calls[1].startswith("ticket 10 could be better")
+    assert "Mode: new_project" in slack.messages[0][3]
 
 
 def test_cancel_marks_cancelled_and_does_not_call_jira_writer(tmp_path):

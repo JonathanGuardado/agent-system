@@ -87,6 +87,7 @@ class GitAdapter:
     def push(self, worktree_path: str | Path, branch_name: str) -> None:
         worktree = Path(worktree_path).resolve(strict=True)
         _validate_push_branch(branch_name)
+        _require_origin_remote(worktree)
 
         result = self._run_git(("push", "origin", branch_name), cwd=worktree)
         if result.returncode != 0:
@@ -146,6 +147,22 @@ class GitAdapter:
 def _failure_message(result: subprocess.CompletedProcess[str]) -> str:
     output = result.stderr.strip() or result.stdout.strip()
     return output or f"git exited with return code {result.returncode}"
+
+
+def _require_origin_remote(worktree: Path) -> None:
+    result = subprocess.run(
+        ("git", "remote", "get-url", "origin"),
+        cwd=worktree,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return
+    raise PushError(
+        "git remote 'origin' is not configured for "
+        f"{worktree}; configure a GitHub remote before AI execution can open PRs"
+    )
 
 
 def _validate_safe_ref_component(value: str, label: str) -> None:

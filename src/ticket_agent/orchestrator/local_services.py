@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import inspect
+import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-import re
 from typing import Any, Awaitable, Protocol
 from uuid import uuid4
 
@@ -16,12 +17,18 @@ from ticket_agent.adapters.local.file_adapter import LocalFileAdapter
 from ticket_agent.adapters.local.git_adapter import GitAdapter
 from ticket_agent.adapters.local.shell_adapter import LocalShellAdapter
 from ticket_agent.adapters.local.test_adapter import LocalTestAdapter
-from ticket_agent.config.repo_contract import RepoContract, load_repo_contract
+from ticket_agent.config.repo_contract import (
+    RepoContract,
+    load_repo_contract,
+    scaffold_repo_contract,
+)
 from ticket_agent.domain.errors import (
     AgentSystemError,
     RepoContractError,
 )
 from ticket_agent.domain.git import WorktreeInfo
+
+_LOGGER = logging.getLogger(__name__)
 from ticket_agent.orchestrator.git_services import (
     GhPullRequestOpener,
     GitPullRequestPort,
@@ -78,6 +85,44 @@ _DEFAULT_CONTRACT_DIR = Path("config/repos")
 _SAFE_LOCK_ID_CHARS = re.compile(r"[^A-Za-z0-9_-]+")
 
 
+def _load_or_scaffold_contract(
+    state: TicketState,
+    contract_path: Path,
+    contract_loader: ContractLoader,
+) -> tuple[RepoContract | None, str | None]:
+    """Load the contract at contract_path, scaffolding it if it doesn't exist yet.
+
+    Returns (contract, None) on success, (None, error_message) on failure.
+    """
+    try:
+        return contract_loader(contract_path), None
+    except FileNotFoundError:
+        matched = _find_matching_contract(
+            state,
+            contract_path.parent,
+            contract_loader,
+            skip_path=contract_path,
+        )
+        if matched is not None:
+            return matched, None
+    except (RepoContractError, YAMLError, OSError) as exc:
+        return None, f"repo contract missing or invalid: {exc}"
+
+    repo_name = _repo_name(state)
+    if repo_name is None:
+        return None, "repository or repo_path is required to scaffold repo contract"
+
+    try:
+        contract = scaffold_repo_contract(
+            repo_name=repo_name,
+            repo_path=state.repo_path,
+            contract_path=contract_path,
+        )
+        return contract, None
+    except (RepoContractError, OSError) as exc:
+        return None, f"repo contract scaffolding failed: {exc}"
+
+
 class LocalImplementationService:
     """Prepare local implementation adapters without invoking an LLM."""
 
@@ -105,12 +150,13 @@ class LocalImplementationService:
                 "repository or repo_path is required to load repo contract"
             )
 
-        try:
-            contract = self._contract_loader(contract_path)
-        except (FileNotFoundError, RepoContractError, YAMLError, OSError) as exc:
-            return _failed_implementation_update(
-                f"repo contract missing or invalid: {exc}"
-            )
+        contract, err = _load_or_scaffold_contract(
+            state,
+            contract_path,
+            self._contract_loader,
+        )
+        if err is not None:
+            return _failed_implementation_update(err)
 
         repo_path = _repo_path(state, contract)
         if repo_path is None:
@@ -178,7 +224,11 @@ class AdapterTestService:
             )
 
         try:
-            contract = self._contract_loader(contract_path)
+            contract = _load_contract_for_state(
+                state,
+                contract_path,
+                self._contract_loader,
+            )
         except (FileNotFoundError, RepoContractError, YAMLError, OSError) as exc:
             return _failed_result(f"repo contract missing or invalid: {exc}")
 
@@ -238,6 +288,76 @@ def _contract_path(state: TicketState, contract_dir: Path) -> Path | None:
     if repo_name is None:
         return None
     return contract_dir / f"{repo_name}.yaml"
+
+
+def _load_contract_for_state(
+    state: TicketState,
+    contract_path: Path,
+    contract_loader: ContractLoader,
+) -> RepoContract:
+    try:
+        return contract_loader(contract_path)
+    except FileNotFoundError:
+        matched = _find_matching_contract(
+            state,
+            contract_path.parent,
+            contract_loader,
+            skip_path=contract_path,
+        )
+        if matched is not None:
+            return matched
+        raise
+
+
+def _find_matching_contract(
+    state: TicketState,
+    contract_dir: Path,
+    contract_loader: ContractLoader,
+    *,
+    skip_path: Path,
+) -> RepoContract | None:
+    repo_name = _repo_name(state)
+    repo_path = _state_repo_path(state)
+    if repo_name is None and repo_path is None:
+        return None
+
+    for candidate in sorted(contract_dir.glob("*.yaml")):
+        if candidate == skip_path:
+            continue
+        try:
+            contract = contract_loader(candidate)
+        except (FileNotFoundError, RepoContractError, YAMLError, OSError):
+            continue
+        if _contract_matches_state(
+            contract,
+            repo_name=repo_name,
+            repo_path=repo_path,
+        ):
+            return contract
+    return None
+
+
+def _contract_matches_state(
+    contract: RepoContract,
+    *,
+    repo_name: str | None,
+    repo_path: Path | None,
+) -> bool:
+    if (
+        repo_name is not None
+        and _normalize_repo_name(contract.repo.name) == repo_name
+    ):
+        return True
+    if repo_path is not None:
+        contract_root = Path(contract.repo.root).expanduser().resolve(strict=False)
+        return contract_root == repo_path
+    return False
+
+
+def _state_repo_path(state: TicketState) -> Path | None:
+    if not state.repo_path:
+        return None
+    return Path(state.repo_path).expanduser().resolve(strict=False)
 
 
 def _repo_name(state: TicketState) -> str | None:

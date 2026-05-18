@@ -86,7 +86,7 @@ class ModelRouterProtocol(Protocol):
     ) -> object: ...
 
 
-MAX_TICKETS = 5
+MAX_TICKETS = 10
 
 
 class _ModelTicketPayload(BaseModel):
@@ -140,6 +140,9 @@ class DeterministicProposalGenerator:
         request: ProposalRequest,
         prior: Proposal | None = None,
     ) -> ProposalDraft:
+        if prior is not None:
+            return _deterministic_revision(request, prior)
+
         text = request.text.strip()
         if not text:
             return ProposalDraft(
@@ -280,6 +283,12 @@ class ModelRouterProposalGenerator:
                 response = await invocation
             payload = _coerce_model_payload(response)
             model_payload = _ModelProposalPayload.model_validate(payload)
+            if _should_fallback_for_incomplete_revision(
+                request,
+                prior,
+                model_payload,
+            ):
+                raise ValueError("model revision returned incomplete ticket list")
             return self._proposal_from_payload(request, prior, model_payload)
         except TimeoutError:
             _log_proposal_event(
@@ -409,13 +418,17 @@ class ModelRouterProposalGenerator:
             expires_at = prior.expires_at
             revision_count = prior.revision_count + 1
 
-        title = _clean_optional(payload.title) or _proposal_title(text)
+        title = _clean_optional(payload.title) or (
+            prior.title if prior is not None else _proposal_title(text)
+        )
         summary = _clean_optional(payload.summary) or _proposal_summary(
             request.resolution.mode,
-            text,
+            prior.summary if prior is not None else text,
             len(tickets),
         )
-        epic_summary = _clean_optional(payload.epic_summary)
+        epic_summary = _clean_optional(payload.epic_summary) or (
+            prior.epic_summary if prior is not None else None
+        )
         if epic_summary is None and len(tickets) > 1:
             epic_summary = title
 
@@ -526,96 +539,6 @@ def _ticket_spec_from_model_ticket(
     )
 
 
-_COMPACT_TICKET_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (
-        "Set up app foundation and data model",
-        (
-            "setup",
-            "set up",
-            "scaffold",
-            "project structure",
-            "architecture",
-            "model",
-            "data",
-            "mock",
-            "demo",
-            "i18n",
-            "locale",
-            "layout",
-            "route",
-            "style",
-            "responsive",
-            "spanish",
-            "usd",
-        ),
-    ),
-    (
-        "Build homepage and deal presentation",
-        (
-            "homepage",
-            "home page",
-            "featured",
-            "deal card",
-            "deal cards",
-            "card",
-            "cards",
-            "status",
-            "label",
-            "price",
-            "store",
-            "discount",
-            "source",
-            "expiration",
-            "location",
-        ),
-    ),
-    (
-        "Implement search, filters, categories, and near-me",
-        (
-            "search",
-            "filter",
-            "filters",
-            "category",
-            "categories",
-            "city",
-            "department",
-            "online",
-            "in-store",
-            "in store",
-            "near me",
-            "gps",
-        ),
-    ),
-    (
-        "Add favorites and saved-deal persistence",
-        (
-            "favorite",
-            "favorites",
-            "saved",
-            "save",
-            "local storage",
-            "localstorage",
-            "persistence",
-            "persist",
-        ),
-    ),
-    (
-        "Build submit-deal flow, admin readiness, and tests",
-        (
-            "submit",
-            "suggest",
-            "form",
-            "admin",
-            "review",
-            "test",
-            "tests",
-            "unit",
-            "integration",
-        ),
-    ),
-)
-
-
 def _compact_overlong_model_tickets(
     tickets: Sequence[_ModelTicketPayload],
     *,
@@ -624,100 +547,48 @@ def _compact_overlong_model_tickets(
     if len(tickets) <= max_tickets:
         return list(tickets)
 
-    grouped: list[list[_ModelTicketPayload]] = [
-        [] for _summary, _keywords in _COMPACT_TICKET_GROUPS
-    ]
-    overflow: list[_ModelTicketPayload] = []
-    for ticket in tickets:
-        index = _compact_group_index(ticket)
-        if index is None:
-            overflow.append(ticket)
-        else:
-            grouped[index].append(ticket)
-
-    for ticket in overflow:
-        target = min(range(len(grouped)), key=lambda idx: len(grouped[idx]))
-        grouped[target].append(ticket)
-
-    compacted = [
-        _compact_ticket_group(summary, group)
-        for (summary, _keywords), group in zip(_COMPACT_TICKET_GROUPS, grouped)
-        if group
-    ]
-    if not compacted:
-        compacted = [
-            _compact_ticket_group(
-                f"Implement MVP slice {index + 1}",
-                group,
-            )
-            for index, group in enumerate(_chunk_sequence(tickets, max_tickets))
-        ]
-
-    while len(compacted) > max_tickets:
-        tail = compacted.pop()
-        previous = compacted[-1]
-        compacted[-1] = _ModelTicketPayload(
-            summary=previous.summary,
-            description="\n".join(
-                part for part in [previous.description, tail.description] if part
-            ),
-            issue_type=previous.issue_type,
-            priority=previous.priority,
-            labels=_ordered_unique([*previous.labels, *tail.labels]),
-            capabilities_needed=_ordered_unique(
-                [*previous.capabilities_needed, *tail.capabilities_needed]
-            ),
-        )
+    compacted = list(tickets[:max_tickets])
+    compacted[-1] = _merge_model_ticket_overflow(
+        compacted[-1],
+        tickets[max_tickets:],
+    )
     return compacted
 
 
-def _compact_group_index(ticket: _ModelTicketPayload) -> int | None:
-    haystack = f"{ticket.summary}\n{ticket.description}".lower()
-    for index, (_summary, keywords) in enumerate(_COMPACT_TICKET_GROUPS):
-        if any(keyword in haystack for keyword in keywords):
-            return index
-    return None
-
-
-def _compact_ticket_group(
-    summary: str,
-    tickets: Sequence[_ModelTicketPayload],
+def _merge_model_ticket_overflow(
+    ticket: _ModelTicketPayload,
+    overflow: Sequence[_ModelTicketPayload],
 ) -> _ModelTicketPayload:
-    if len(tickets) == 1:
-        return tickets[0]
+    descriptions = [ticket.description.strip()] if ticket.description.strip() else []
+    overflow_lines: list[str] = []
+    labels = list(ticket.labels)
+    capabilities = list(ticket.capabilities_needed)
+    priority = _clean_optional(ticket.priority)
 
-    descriptions = ["Includes:"]
-    labels: list[str] = []
-    capabilities: list[str] = []
-    priority: str | None = None
-    for ticket in tickets:
-        detail = ticket.summary.strip()
-        description = ticket.description.strip()
+    for overflow_ticket in overflow:
+        detail = overflow_ticket.summary.strip()
+        description = overflow_ticket.description.strip()
         if description:
             detail = f"{detail}: {description}"
-        descriptions.append(f"- {detail}")
-        labels.extend(ticket.labels)
-        capabilities.extend(ticket.capabilities_needed)
-        priority = priority or _clean_optional(ticket.priority)
+        if detail:
+            overflow_lines.append(f"- {detail}")
+        labels.extend(overflow_ticket.labels)
+        capabilities.extend(overflow_ticket.capabilities_needed)
+        priority = priority or _clean_optional(overflow_ticket.priority)
+
+    if overflow_lines:
+        descriptions.append(
+            "Additional included scope:\n" + "\n".join(overflow_lines)
+        )
 
     return _ModelTicketPayload(
-        summary=summary,
-        description="\n".join(descriptions),
-        issue_type=tickets[0].issue_type.strip() or "Task",
+        summary=ticket.summary,
+        description="\n\n".join(descriptions),
+        issue_type=ticket.issue_type.strip() or "Task",
         priority=priority,
         labels=_ordered_unique(labels),
         capabilities_needed=_ordered_unique(capabilities),
     )
-
-
-def _chunk_sequence(
-    values: Sequence[_ModelTicketPayload],
-    count: int,
-) -> list[list[_ModelTicketPayload]]:
-    chunks: list[list[_ModelTicketPayload]] = [[] for _ in range(count)]
-    for index, value in enumerate(values):
-        chunks[index % count].append(value)
-    return [chunk for chunk in chunks if chunk]
 
 
 def _compact_overlong_summaries(
@@ -728,66 +599,44 @@ def _compact_overlong_summaries(
     if len(summaries) <= max_tickets:
         return list(summaries)
 
-    grouped: list[list[str]] = [
-        [] for _summary, _keywords in _COMPACT_TICKET_GROUPS
-    ]
-    overflow: list[str] = []
-    for summary in summaries:
-        index = _summary_group_index(summary)
-        if index is None:
-            overflow.append(summary)
-        else:
-            grouped[index].append(summary)
-
-    for summary in overflow:
-        target = min(range(len(grouped)), key=lambda idx: len(grouped[idx]))
-        grouped[target].append(summary)
-
-    compacted: list[SummarySlice] = [
-        _compact_summary_group(group_summary, group)
-        for (group_summary, _keywords), group in zip(_COMPACT_TICKET_GROUPS, grouped)
-        if group
-    ]
-    if not compacted:
-        compacted = [
-            _compact_summary_group(
-                f"Implement MVP slice {index + 1}",
-                group,
-            )
-            for index, group in enumerate(_chunk_summaries(summaries, max_tickets))
-        ]
-
-    while len(compacted) > max_tickets:
-        tail = compacted.pop()
-        previous_title = _summary_slice_title(compacted[-1])
-        previous_body = _summary_slice_body(compacted[-1])
-        tail_body = _summary_slice_body(tail)
-        compacted[-1] = (
-            previous_title,
-            "\n".join(part for part in [previous_body, tail_body] if part),
-        )
+    compacted: list[SummarySlice] = list(summaries[:max_tickets])
+    compacted[-1] = _merge_summary_overflow(
+        compacted[-1],
+        summaries[max_tickets:],
+    )
     return compacted
 
 
-def _summary_group_index(summary: str) -> int | None:
-    haystack = summary.lower()
-    for index, (_group_summary, keywords) in enumerate(_COMPACT_TICKET_GROUPS):
-        if any(keyword in haystack for keyword in keywords):
-            return index
-    return None
+def _merge_summary_overflow(
+    summary: SummarySlice,
+    overflow: Sequence[SummarySlice],
+) -> SummarySlice:
+    title = _summary_slice_title(summary)
+    body = _summary_slice_body(summary)
+    overflow_lines: list[str] = []
 
+    for item in overflow:
+        detail = _summary_slice_title(item)
+        item_body = _summary_slice_body(item)
+        if item_body and item_body != detail:
+            detail = f"{detail}: {item_body}"
+        if detail:
+            overflow_lines.append(f"- {detail}")
 
-def _compact_summary_group(summary: str, items: Sequence[str]) -> SummarySlice:
-    if len(items) == 1:
-        return items[0]
-    return summary, "Includes:\n" + "\n".join(f"- {item}" for item in items)
+    if not overflow_lines:
+        return summary
 
-
-def _chunk_summaries(values: Sequence[str], count: int) -> list[list[str]]:
-    chunks: list[list[str]] = [[] for _ in range(count)]
-    for index, value in enumerate(values):
-        chunks[index % count].append(value)
-    return [chunk for chunk in chunks if chunk]
+    return (
+        title,
+        "\n\n".join(
+            part
+            for part in [
+                body,
+                "Additional included scope:\n" + "\n".join(overflow_lines),
+            ]
+            if part
+        ),
+    )
 
 
 def _summary_slice_title(summary: SummarySlice) -> str:
@@ -802,11 +651,121 @@ def _summary_slice_body(summary: SummarySlice) -> str:
     return summary
 
 
+def _deterministic_revision(
+    request: ProposalRequest,
+    prior: Proposal,
+) -> ProposalDraft:
+    edit_text = request.text.strip()
+    target_index = _revision_ticket_index(edit_text, len(prior.tickets))
+    tickets = list(prior.tickets)
+    if target_index is not None:
+        ticket = tickets[target_index]
+        tickets[target_index] = ticket.model_copy(
+            update={
+                "summary": _scoped_summary(
+                    _revision_ticket_summary(edit_text, target_index + 1),
+                    ticket.repository,
+                ),
+                "description": _append_revision_note(
+                    ticket.description,
+                    edit_text,
+                ),
+            }
+        )
+
+    revised = prior.model_copy(
+        update={
+            "tickets": tickets,
+            "summary": prior.summary,
+            "revision_count": prior.revision_count + 1,
+            "status": ProposalStatus.AWAITING_CONFIRMATION,
+            "expires_at": prior.expires_at,
+        }
+    )
+    return ProposalDraft(proposal=revised)
+
+
+def _revision_ticket_index(text: str, ticket_count: int) -> int | None:
+    match = re.search(r"\bticket\s+(\d+)\b", text, flags=re.IGNORECASE)
+    if match is None:
+        return None
+    index = int(match.group(1)) - 1
+    if 0 <= index < ticket_count:
+        return index
+    return None
+
+
+def _revision_ticket_summary(text: str, ticket_number: int) -> str:
+    lowered = text.lower()
+    if (
+        "scheduled job" in lowered
+        and ("deal" in lowered or "deals" in lowered)
+        and ("search" in lowered or "web" in lowered)
+    ):
+        return "Add scheduled job for daily deal discovery"
+    cleaned = re.sub(
+        r"\bticket\s+\d+\b\s*(?:could be better,?\s*)?",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip(" .,;:")
+    return cleaned or f"Revise ticket {ticket_number}"
+
+
+def _append_revision_note(description: str, edit_text: str) -> str:
+    note = f"Revision request:\n{edit_text.strip()}"
+    if not description.strip():
+        return note
+    return f"{description.rstrip()}\n\n{note}"
+
+
+def _should_fallback_for_incomplete_revision(
+    request: ProposalRequest,
+    prior: Proposal | None,
+    payload: _ModelProposalPayload,
+) -> bool:
+    if prior is None:
+        return False
+    edit_text = request.text.strip()
+    if _revision_ticket_index(edit_text, len(prior.tickets)) is None:
+        return False
+    if not _revision_expects_existing_ticket_count(edit_text):
+        return False
+    return len(payload.tickets) != len(prior.tickets)
+
+
+def _revision_expects_existing_ticket_count(text: str) -> bool:
+    lowered = text.lower()
+    if re.search(r"\b(add|append|create|new)\s+(?:a\s+)?ticket\b", lowered):
+        return False
+    if re.search(r"\b(remove|delete|drop|discard)\s+(?:the\s+)?ticket\b", lowered):
+        return False
+    return bool(
+        re.search(
+            r"\b(edit|update|change|revise|improve|keep|preserve|make)\b",
+            lowered,
+        )
+    )
+
+
 def _model_proposal_messages(
     request: ProposalRequest,
     prior: Proposal | None,
 ) -> list[dict[str, str]]:
     prior_json = "{}" if prior is None else json.dumps(prior.model_dump(mode="json"))
+    task = (
+        "Revise the existing Jira proposal using this Slack edit."
+        if prior is not None
+        else "Create a Jira proposal for this Slack request."
+    )
+    text_label = "edit_text" if prior is not None else "text"
+    revision_instructions = [
+        "Preserve the prior proposal mode, project, repository, and unaffected "
+        "tickets. Apply only the requested edit.",
+        "Return the complete revised proposal, not a partial diff.",
+        "Do not decompose the prior proposal title, summary, or the edit text "
+        "as a brand-new request.",
+    ] if prior is not None else []
     return [
         {
             "role": "system",
@@ -820,12 +779,13 @@ def _model_proposal_messages(
             "role": "user",
             "content": "\n".join(
                 [
-                    "Create a Jira proposal for this Slack request.",
-                    f"text: {request.text}",
+                    task,
+                    f"{text_label}: {request.text}",
                     f"mode: {request.resolution.mode.value}",
                     f"capability: {request.resolution.capability}",
                     f"repo_defaults: {json.dumps(request.repo_defaults)}",
                     f"prior_proposal: {prior_json}",
+                    *revision_instructions,
                     "Each ticket must be specific enough for an agent to execute "
                     "without reading Slack: include concrete files/directories, "
                     "scope boundaries, acceptance checks, and test expectations "

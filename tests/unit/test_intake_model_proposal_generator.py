@@ -79,7 +79,7 @@ def test_model_proposal_generator_builds_multi_ticket_proposal():
     prompt = router.call_messages[0][1]["content"]
     assert "Tickets must be mutually exclusive slices" in prompt
     assert "do not make multiple tickets that each build the whole app" in prompt
-    assert "Return at most 5 tickets" in prompt
+    assert "Return at most 10 tickets" in prompt
 
 
 def test_model_proposal_generator_falls_back_on_invalid_model_response():
@@ -125,15 +125,8 @@ def test_model_proposal_generator_falls_back_on_model_timeout():
 
 def test_deterministic_proposal_generator_compacts_overlong_ticket_list():
     text = "\n".join(
-        [
-            "Break this AGENT work into tickets:",
-            "- Ticket 1",
-            "- Ticket 2",
-            "- Ticket 3",
-            "- Ticket 4",
-            "- Ticket 5",
-            "- Ticket 6",
-        ]
+        ["Break this AGENT work into tickets:"]
+        + [f"- Ticket {index}" for index in range(1, 13)]
     )
 
     proposal = DeterministicProposalGenerator(
@@ -148,9 +141,11 @@ def test_deterministic_proposal_generator_compacts_overlong_ticket_list():
     ).proposal
 
     assert proposal is not None
-    assert len(proposal.tickets) == 5
+    assert len(proposal.tickets) == 10
     assert proposal.truncated_ticket_count == 0
-    assert "Ticket 6" in "\n".join(ticket.description for ticket in proposal.tickets)
+    description_text = "\n".join(ticket.description for ticket in proposal.tickets)
+    assert "Ticket 11" in description_text
+    assert "Ticket 12" in description_text
 
 
 def test_deterministic_generator_uses_bullets_not_headings_as_ticket_slices():
@@ -220,7 +215,7 @@ def test_model_proposal_generator_revision_preserves_prior_context():
     )
 
     revised = asyncio.run(
-        ModelRouterProposalGenerator(router, clock=_clock).generate(
+        ModelRouterProposalGenerator(router, clock=_clock, min_model_words=1).generate(
             _request("Use SAML instead"),
             prior=prior,
         )
@@ -232,6 +227,75 @@ def test_model_proposal_generator_revision_preserves_prior_context():
     assert revised.project_key == "AGENT"
     assert revised.tickets[0].repository == "agent-system"
     assert revised.tickets[0].repo_path == "/home/agent"
+    prompt = router.call_messages[0][1]["content"]
+    assert "Revise the existing Jira proposal" in prompt
+    assert "edit_text: Use SAML instead" in prompt
+    assert "Return the complete revised proposal, not a partial diff." in prompt
+
+
+def test_model_revision_falls_back_when_targeted_edit_returns_partial_proposal():
+    prior_text = "\n".join(
+        ["Create an AGENT project"]
+        + [f"- Existing ticket {index}" for index in range(1, 11)]
+    )
+    prior = DeterministicProposalGenerator(
+        clock=_clock,
+        proposal_id_factory=lambda: "prop-prior",
+    ).generate(
+        _request(
+            prior_text,
+            mode=IntakeMode.NEW_PROJECT,
+            capability="architecture.design",
+        )
+    ).proposal
+    assert prior is not None
+    assert len(prior.tickets) == 10
+
+    router = _Router(
+        {
+            "title": "Mode: new_project; tickets: 10",
+            "tickets": [
+                {
+                    "summary": "Mode: new_project; tickets: 10",
+                    "description": "Create an AGENT project",
+                },
+                {
+                    "summary": "promotions",
+                    "description": "keep the first 9 tickets",
+                },
+                {
+                    "summary": "the offers found will be the main source of data",
+                    "description": "",
+                },
+            ],
+        }
+    )
+
+    revised = asyncio.run(
+        ModelRouterProposalGenerator(router, clock=_clock, min_model_words=1).generate(
+            _request(
+                "keep the first 9 tickets, but edit the ticket 10, make it "
+                "better: use a scheduled job for searching in the web for "
+                "deals everyday and the offers found will be the main source "
+                "of data",
+                mode=IntakeMode.NEW_PROJECT,
+                capability="architecture.design",
+            ),
+            prior=prior,
+        )
+    ).proposal
+
+    assert revised is not None
+    assert revised.proposal_id == prior.proposal_id
+    assert revised.revision_count == 1
+    assert revised.mode == IntakeMode.NEW_PROJECT
+    assert len(revised.tickets) == 10
+    assert revised.tickets[:9] == prior.tickets[:9]
+    assert revised.tickets[9].summary == (
+        "[agent-system] Add scheduled job for daily deal discovery"
+    )
+    assert "Revision request:" in revised.tickets[9].description
+    assert "Mode: new_project; tickets: 10" not in revised.tickets[0].summary
 
 
 def test_model_provided_project_key_cannot_override_trusted_context():
@@ -347,14 +411,16 @@ def test_model_tickets_compacted_to_max_tickets():
     assert "Ticket 6" in description_text
 
 
-def test_model_tickets_default_max_is_five():
-    """Default max_tickets is MAX_TICKETS (5)."""
+def test_model_tickets_default_max_is_ten():
+    """Default max_tickets is MAX_TICKETS (10)."""
     from ticket_agent.intake.proposal_generator import MAX_TICKETS
 
-    assert MAX_TICKETS == 5
+    assert MAX_TICKETS == 10
 
-    six_tickets = [{"summary": f"Ticket {i}", "description": ""} for i in range(6)]
-    router = _Router({"title": "Project", "tickets": six_tickets})
+    twelve_tickets = [
+        {"summary": f"Ticket {i}", "description": ""} for i in range(12)
+    ]
+    router = _Router({"title": "Project", "tickets": twelve_tickets})
 
     proposal = asyncio.run(
         ModelRouterProposalGenerator(router, clock=_clock).generate(
@@ -365,6 +431,9 @@ def test_model_tickets_default_max_is_five():
     assert proposal is not None
     assert len(proposal.tickets) == MAX_TICKETS
     assert proposal.truncated_ticket_count == 0
+    description_text = "\n".join(ticket.description for ticket in proposal.tickets)
+    assert "Ticket 10" in description_text
+    assert "Ticket 11" in description_text
 
 
 def _request(

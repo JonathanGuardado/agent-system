@@ -146,6 +146,63 @@ def test_adapter_test_service_loads_contract_from_repo_path_when_repository_miss
     assert calls["contract_path"] == Path("config/repos/agent-system.yaml")
 
 
+def test_adapter_test_service_finds_contract_by_declared_repo_name(tmp_path):
+    contract_dir = tmp_path / "contracts"
+    contract_dir.mkdir()
+    (contract_dir / "lab.yaml").write_text("repo contract placeholder\n")
+    worktree_path = tmp_path / "worktree"
+    repo_path = tmp_path / "ofertas-sv"
+    calls: dict[str, Any] = {"adapter_calls": [], "contract_paths": []}
+    contract = _contract(repo_name="ofertas-sv", repo_root=str(repo_path))
+
+    def load_contract(path: Path) -> RepoContract:
+        calls["contract_paths"].append(path.name)
+        if path.name == "ofertas-sv.yaml":
+            raise FileNotFoundError(path)
+        return contract
+
+    def shell_factory(worktree: Path, loaded_contract: RepoContract) -> _FakeShell:
+        calls["worktree_path"] = worktree
+        calls["shell_contract"] = loaded_contract
+        return _FakeShell(worktree)
+
+    def adapter_factory(
+        shell: _FakeShell,
+        loaded_contract: RepoContract,
+    ) -> _FakeTestAdapter:
+        calls["adapter_shell"] = shell
+        calls["adapter_contract"] = loaded_contract
+        return _FakeTestAdapter(
+            CommandResult(
+                command=("npm", "test"),
+                returncode=0,
+                stdout="ok\n",
+                stderr="",
+            ),
+            calls["adapter_calls"],
+        )
+
+    service = AdapterTestService(
+        contract_dir=contract_dir,
+        contract_loader=load_contract,
+        shell_factory=shell_factory,
+        adapter_factory=adapter_factory,
+    )
+    state = TicketState(
+        ticket_key="LAB-123",
+        summary="Run adapter tests",
+        repository="ofertas-sv",
+        repo_path=str(repo_path),
+        worktree_path=str(worktree_path),
+    )
+
+    result = asyncio.run(service.run_tests(state))
+
+    assert result["tests_passed"] is True
+    assert calls["contract_paths"] == ["ofertas-sv.yaml", "lab.yaml"]
+    assert calls["shell_contract"] is contract
+
+
 @pytest.mark.parametrize(
     "contract_error",
     [
@@ -232,9 +289,13 @@ def _service_for(
     )
 
 
-def _contract() -> RepoContract:
+def _contract(
+    *,
+    repo_name: str = "example",
+    repo_root: str = ".",
+) -> RepoContract:
     return RepoContract(
-        repo=RepoInfo(name="example", root=".", default_branch="main"),
+        repo=RepoInfo(name=repo_name, root=repo_root, default_branch="main"),
         language=LanguageInfo(primary="python", package_manager="pip"),
         commands=RepoCommands(
             test=CommandSpec(
