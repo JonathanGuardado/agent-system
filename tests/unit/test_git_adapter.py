@@ -75,6 +75,30 @@ def test_commit_returns_valid_sha_when_files_changed(tmp_path):
     assert _git(("rev-parse", "HEAD"), cwd=info.worktree_path) == sha
 
 
+def test_commit_excludes_generated_dependency_directories(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    adapter = GitAdapter()
+    info = adapter.create_worktree(repo, "ABC-123", "12345678")
+    (info.worktree_path / "src").mkdir()
+    (info.worktree_path / "src" / "app.tsx").write_text("export {}\n", encoding="utf-8")
+    generated = info.worktree_path / "node_modules" / "@next" / "swc"
+    generated.mkdir(parents=True)
+    (generated / "next-swc.node").write_bytes(b"large generated binary")
+
+    sha = adapter.commit(info.worktree_path, "Add app")
+
+    changed = _git(
+        ("diff-tree", "--no-commit-id", "--name-only", "-r", sha),
+        cwd=info.worktree_path,
+    )
+    assert "src/app.tsx" in changed.splitlines()
+    assert "node_modules/@next/swc/next-swc.node" not in changed.splitlines()
+    assert "node_modules/@next/swc/next-swc.node" in _git(
+        ("status", "--short", "--untracked-files=all"),
+        cwd=info.worktree_path,
+    )
+
+
 def test_commit_raises_no_changes_to_commit_error_when_clean(tmp_path):
     repo = _init_repo(tmp_path / "repo")
     adapter = GitAdapter()

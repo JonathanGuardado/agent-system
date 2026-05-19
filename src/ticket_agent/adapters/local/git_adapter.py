@@ -19,6 +19,13 @@ from ticket_agent.domain.git import WorktreeInfo
 
 _SAFE_REF_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 _PROTECTED_BRANCHES = frozenset({"main", "master", "develop"})
+_GENERATED_COMMIT_EXCLUDES = (
+    "node_modules",
+    ".next",
+    "dist",
+    "build",
+    "coverage",
+)
 
 
 class GitAdapter:
@@ -68,6 +75,8 @@ class GitAdapter:
         add_result = self._run_git(("add", "-A"), cwd=worktree)
         if add_result.returncode != 0:
             raise GitAdapterError(_failure_message(add_result))
+
+        _unstage_generated_paths(worktree, timeout_seconds=self._default_timeout_seconds)
 
         diff_result = self._run_git(("diff", "--cached", "--quiet"), cwd=worktree)
         if diff_result.returncode == 0:
@@ -147,6 +156,24 @@ class GitAdapter:
 def _failure_message(result: subprocess.CompletedProcess[str]) -> str:
     output = result.stderr.strip() or result.stdout.strip()
     return output or f"git exited with return code {result.returncode}"
+
+
+def _unstage_generated_paths(worktree: Path, *, timeout_seconds: int) -> None:
+    existing = [
+        path for path in _GENERATED_COMMIT_EXCLUDES if (worktree / path).exists()
+    ]
+    if not existing:
+        return
+    result = subprocess.run(
+        ("git", "reset", "--quiet", "--", *existing),
+        cwd=worktree,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+    )
+    if result.returncode != 0:
+        raise GitAdapterError(_failure_message(result))
 
 
 def _require_origin_remote(worktree: Path) -> None:
