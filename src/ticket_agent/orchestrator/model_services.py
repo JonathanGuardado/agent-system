@@ -212,10 +212,31 @@ class IterativeImplementationService:
     async def implement_context(self, context: Any) -> dict[str, Any]:
         """Run against a prepared LocalImplementationService context."""
 
-        return await self._run_loop(context.state, context.files)
+        state = context.state.model_copy(
+            update={
+                "repo_path": str(context.repo_path),
+                "worktree_path": str(context.worktree_path),
+            }
+        )
+        return await self._run_loop(
+            state,
+            context.files,
+            repo_contract=context.contract,
+        )
 
-    async def _run_loop(self, state: TicketState, files: Any) -> dict[str, Any]:
-        repo_context = self._repo_context_builder.build(state)
+    async def _run_loop(
+        self,
+        state: TicketState,
+        files: Any,
+        *,
+        repo_contract: Any | None = None,
+    ) -> dict[str, Any]:
+        context_builder = (
+            self._repo_context_builder
+            if repo_contract is None
+            else RepoContextBuilder(repo_contract=repo_contract)
+        )
+        repo_context = context_builder.build(state)
         messages = _implementation_loop_messages(state, repo_context)
         changed_files: list[str] = []
 
@@ -300,7 +321,17 @@ class IterativeImplementationService:
         try:
             if tool_call.action == "read_file":
                 path = tool_call.args["path"]
-                content = files.read_text(path)
+                try:
+                    content = files.read_text(path)
+                except FileNotFoundError:
+                    return {
+                        "ok": True,
+                        "action": "read_file",
+                        "path": path,
+                        "missing": True,
+                        "content": "",
+                        "truncated": False,
+                    }
                 return {
                     "ok": True,
                     "action": "read_file",
@@ -737,6 +768,7 @@ def _implementation_messages(
         user_lines.append(f"previous_test_failure: {failed_test_excerpt}")
     user_lines.extend(
         [
+            *_write_policy_prompt_lines(repo_context),
             "Required JSON schema:",
             (
                 '{"summary": "string", "operations": ['
@@ -791,6 +823,7 @@ def _implementation_loop_messages(
         user_lines.append(f"previous_test_failure: {failed_test_excerpt}")
     user_lines.extend(
         [
+            *_write_policy_prompt_lines(repo_context),
             "Tool call schema:",
             '{"action": "read_file", "args": {"path": "relative/path.py"}}',
             '{"action": "list_dir", "args": {"path": "src"}}',
@@ -826,6 +859,30 @@ def _implementation_loop_messages(
             "role": "user",
             "content": "\n".join(user_lines),
         },
+    ]
+
+
+def _write_policy_prompt_lines(repo_context: RepoContext) -> list[str]:
+    contract = repo_context.repo_contract
+    if contract is None:
+        return []
+
+    return [
+        "Repo contract write policy:",
+        (
+            "Write source files only under source_dirs or test_dirs: "
+            f"{_json_for_prompt(list(contract.source_dirs + contract.test_dirs))}."
+        ),
+        (
+            "Write root-level config/static files only when the exact path is "
+            "listed in config_paths_allowed: "
+            f"{_json_for_prompt(list(contract.config_paths_allowed))}."
+        ),
+        (
+            "Do not invent top-level directories outside those allowed lists; "
+            "choose an existing allowed source directory such as src/, app/, "
+            "components/, lib/, data/, pages/, public/, or styles/ when present."
+        ),
     ]
 
 

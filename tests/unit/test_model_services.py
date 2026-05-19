@@ -7,7 +7,16 @@ from typing import Any
 
 import pytest
 
+from ticket_agent.config.repo_contract import (
+    CommandSpec,
+    ExecutionPolicy,
+    LanguageInfo,
+    RepoCommands,
+    RepoContract,
+    RepoInfo,
+)
 from ticket_agent.orchestrator.graph import build_ticket_graph
+from ticket_agent.orchestrator.local_services import ImplementationContext
 from ticket_agent.orchestrator.model_services import (
     IterativeImplementationService,
     ModelRouterImplementationService,
@@ -783,6 +792,47 @@ def test_iterative_implementation_lists_directory_through_adapter(tmp_path):
     )
 
 
+def test_iterative_implementation_can_write_after_reading_missing_file(tmp_path):
+    adapter = _LoopFileAdapter(missing_reads={"src/App.tsx"})
+    router = _SequenceRouter(
+        {
+            "code.implement": [
+                {"action": "read_file", "args": {"path": "src/App.tsx"}},
+                {
+                    "action": "write_file",
+                    "args": {
+                        "path": "src/App.tsx",
+                        "content": "export default function App() { return null; }\n",
+                    },
+                },
+                {
+                    "action": "finish",
+                    "args": {"summary": "Created App component."},
+                },
+            ]
+        }
+    )
+
+    result = asyncio.run(
+        IterativeImplementationService(
+            router,
+            _AdapterFactory(adapter),
+        ).implement(_state(worktree_path=str(tmp_path)))
+    )
+
+    implementation_result = result["implementation_result"]
+    assert implementation_result["status"] == "success"
+    assert implementation_result["changed_files"] == ["src/App.tsx"]
+    assert adapter.reads == ["src/App.tsx"]
+    assert adapter.writes == [
+        ("src/App.tsx", "export default function App() { return null; }\n")
+    ]
+    assert any(
+        '"missing": true' in message["content"]
+        for message in router.calls[1].messages
+    )
+
+
 def test_iterative_implementation_returns_failed_result_for_path_escape(tmp_path):
     router = _SequenceRouter(
         {
@@ -938,6 +988,44 @@ def test_iterative_implementation_includes_failed_test_excerpt_on_retry(tmp_path
     assert "previous_test_failure" in user_message
     assert "AssertionError: page_size ignored" in user_message
     assert "current_implementation_attempt: 2" in user_message
+
+
+def test_iterative_implementation_context_includes_contract_write_policy(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "feature.ts").write_text("export const value = 1;\n")
+    adapter = _LoopFileAdapter()
+    router = _SequenceRouter(
+        {
+            "code.implement": [
+                {
+                    "action": "finish",
+                    "args": {"summary": "No edits required."},
+                }
+            ]
+        }
+    )
+    contract = _repo_contract(str(tmp_path))
+    context = ImplementationContext(
+        state=_state(),
+        contract=contract,
+        repo_path=tmp_path,
+        worktree_path=tmp_path,
+        branch_name="agent/AGENT-123/lock",
+        lock_id="lock",
+        files=adapter,
+    )
+
+    asyncio.run(
+        IterativeImplementationService(router, _AdapterFactory(adapter))
+        .implement_context(context)
+    )
+
+    user_message = router.calls[0].messages[1]["content"]
+    assert "Repo contract write policy" in user_message
+    assert "source_dirs" in user_message
+    assert "src/" in user_message
+    assert "config_paths_allowed" in user_message
+    assert "Do not invent top-level directories" in user_message
 
 
 def test_iterative_graph_retry_uses_failed_test_excerpt_then_opens_pr(tmp_path):
@@ -1097,6 +1185,29 @@ def _state(**updates: Any) -> TicketState:
     return TicketState(**values)
 
 
+def _repo_contract(repo_root: str) -> RepoContract:
+    return RepoContract(
+        repo=RepoInfo(name="agent-system", root=repo_root, default_branch="main"),
+        language=LanguageInfo(primary="typescript", package_manager="npm"),
+        commands=RepoCommands(
+            test=CommandSpec(
+                command=("npm", "test"),
+                timeout_seconds=120,
+                working_directory=".",
+            ),
+            lint=None,
+            install=None,
+        ),
+        policy=ExecutionPolicy(
+            dependency_install_allowed=False,
+            config_paths_allowed=("package.json", "vite.config.js"),
+            protected_paths=(".env",),
+        ),
+        source_dirs=("src/",),
+        test_dirs=("tests/",),
+    )
+
+
 @dataclass(frozen=True)
 class _ObjectEnvelope:
     content: Any
@@ -1164,10 +1275,12 @@ class _LoopFileAdapter:
         self,
         *,
         reads: dict[str, str] | None = None,
+        missing_reads: set[str] | None = None,
         files: tuple[str, ...] = (),
         error: Exception | None = None,
     ) -> None:
         self._read_values = reads or {}
+        self._missing_reads = missing_reads or set()
         self._files = files
         self._error = error
         self.reads: list[str] = []
@@ -1179,6 +1292,8 @@ class _LoopFileAdapter:
         if self._error is not None:
             raise self._error
         self.reads.append(path)
+        if path in self._missing_reads:
+            raise FileNotFoundError(path)
         return self._read_values.get(path, "")
 
     def list_files(self, path: str = ".") -> tuple[str, ...]:

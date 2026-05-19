@@ -7,7 +7,12 @@ from ticket_agent.adapters.local.test_adapter import LocalTestAdapter
 from ticket_agent.config.repo_contract import load_repo_contract
 
 
-def _write_contract(tmp_path, commands: str):
+def _write_contract(
+    tmp_path,
+    commands: str,
+    *,
+    dependency_install_allowed: bool = False,
+):
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     contract_path = worktree / "ticket-agent.yaml"
@@ -26,7 +31,7 @@ commands:
 {commands}
 
 policy:
-  dependency_install_allowed: false
+  dependency_install_allowed: {str(dependency_install_allowed).lower()}
   config_paths_allowed: []
 
 source_dirs:
@@ -64,6 +69,56 @@ def test_test_adapter_run_tests_uses_contract_commands_test(tmp_path):
 
     assert result.ok
     assert result.stdout == "tests ran\n"
+
+
+def test_test_adapter_runs_install_before_tests_when_policy_allows(tmp_path):
+    worktree, contract = _write_contract(
+        tmp_path,
+        f"""
+  test:
+    command: [{sys.executable!r}, "-c", "from pathlib import Path; assert Path('installed').exists(); print('tests ran')"]
+    timeout_seconds: 5
+    working_directory: "."
+  lint: null
+  install:
+    command: [{sys.executable!r}, "-c", "from pathlib import Path; Path('installed').write_text('yes'); print('install ran')"]
+    timeout_seconds: 5
+    working_directory: "."
+""",
+        dependency_install_allowed=True,
+    )
+    tests = LocalTestAdapter(_shell(worktree), contract)
+
+    result = tests.run_tests()
+
+    assert result.ok
+    assert result.stdout == "tests ran\n"
+    assert (worktree / "installed").read_text(encoding="utf-8") == "yes"
+
+
+def test_test_adapter_returns_install_failure_without_running_tests(tmp_path):
+    worktree, contract = _write_contract(
+        tmp_path,
+        f"""
+  test:
+    command: [{sys.executable!r}, "-c", "print('tests should not run')"]
+    timeout_seconds: 5
+    working_directory: "."
+  lint: null
+  install:
+    command: [{sys.executable!r}, "-c", "import sys; print('install failed'); sys.exit(7)"]
+    timeout_seconds: 5
+    working_directory: "."
+""",
+        dependency_install_allowed=True,
+    )
+    tests = LocalTestAdapter(_shell(worktree), contract)
+
+    result = tests.run_tests()
+
+    assert not result.ok
+    assert result.returncode == 7
+    assert result.stdout == "install failed\n"
 
 
 def test_test_adapter_run_lint_uses_contract_commands_lint_when_present(tmp_path):

@@ -376,9 +376,15 @@ def _normalize_repo_name(repository: str) -> str:
 
 
 def _build_contract_shell(worktree_path: Path, contract: RepoContract) -> ShellPort:
+    allowed_commands = [contract.commands.test.command]
+    if (
+        contract.policy.dependency_install_allowed
+        and contract.commands.install is not None
+    ):
+        allowed_commands.append(contract.commands.install.command)
     return LocalShellAdapter(
         worktree_path,
-        allowed_commands=[contract.commands.test.command],
+        allowed_commands=allowed_commands,
     )
 
 

@@ -19,6 +19,16 @@ class LocalTestAdapter:
             raise RepoContractError(
                 "repo contract only declares the default test command"
             )
+        install_command = self._install_command()
+        if install_command is not None:
+            install_result = self._shell.run(
+                install_command.command,
+                cwd=install_command.working_directory,
+                timeout_seconds=install_command.timeout_seconds,
+            )
+            if not install_result.ok:
+                return install_result
+
         test_command = self._contract.commands.test
         return self._shell.run(
             test_command.command,
@@ -35,3 +45,8 @@ class LocalTestAdapter:
             cwd=lint_command.working_directory,
             timeout_seconds=lint_command.timeout_seconds,
         )
+
+    def _install_command(self):
+        if not self._contract.policy.dependency_install_allowed:
+            return None
+        return self._contract.commands.install
