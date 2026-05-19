@@ -179,6 +179,103 @@ class SQLiteLockManager:
             rows = self._connection.execute(sql, params).fetchall()
         return [_row_to_ticket_lock(row) for row in rows]
 
+    def component_locks(self, *, limit: int | None = None) -> list[TicketLock]:
+        """Return lock rows owned by this component, active or expired."""
+
+        sql = """
+            SELECT ticket_key, lock_id, component_id, acquired_at,
+                   last_heartbeat, expires_at
+            FROM ticket_locks
+            WHERE component_id = ?
+            ORDER BY acquired_at ASC
+        """
+        params: tuple[object, ...] = (self._component_id,)
+        if limit is not None:
+            if limit < 1:
+                raise TicketLockError("limit must be positive")
+            sql += " LIMIT ?"
+            params = (*params, limit)
+
+        with self._connection_lock:
+            rows = self._connection.execute(sql, params).fetchall()
+        return [_row_to_ticket_lock(row) for row in rows]
+
+    def active_component_locks(self, *, limit: int | None = None) -> list[TicketLock]:
+        """Return non-expired lock rows owned by this component."""
+
+        now = _ensure_aware(self._clock())
+        sql = """
+            SELECT ticket_key, lock_id, component_id, acquired_at,
+                   last_heartbeat, expires_at
+            FROM ticket_locks
+            WHERE component_id = ? AND expires_at > ?
+            ORDER BY acquired_at ASC
+        """
+        params: tuple[object, ...] = (self._component_id, _datetime_text(now))
+        if limit is not None:
+            if limit < 1:
+                raise TicketLockError("limit must be positive")
+            sql += " LIMIT ?"
+            params = (*params, limit)
+
+        with self._connection_lock:
+            rows = self._connection.execute(sql, params).fetchall()
+        return [_row_to_ticket_lock(row) for row in rows]
+
+    def adopt(self, ticket_key: str, ttl_s: int = 1800) -> TicketLock | None:
+        """Re-attach to an existing non-expired lock owned by this component.
+
+        Used at startup to resume a ticket that the previous process run owned
+        without changing the lock_id (so branch names and graph thread state
+        stay consistent). Refreshes the heartbeat/TTL atomically so the
+        returned lock is safe to keep working with.
+        """
+
+        ticket_key = _validate_text("ticket_key", ticket_key)
+        ttl_s = _validate_ttl(ttl_s)
+        now = _ensure_aware(self._clock())
+        expires_at = now + timedelta(seconds=ttl_s)
+
+        with self._connection_lock, _write_transaction(self._connection):
+            row = self._connection.execute(
+                """
+                SELECT ticket_key, lock_id, component_id, acquired_at,
+                       last_heartbeat, expires_at
+                FROM ticket_locks
+                WHERE ticket_key = ?
+                  AND component_id = ?
+                  AND expires_at > ?
+                """,
+                (ticket_key, self._component_id, _datetime_text(now)),
+            ).fetchone()
+            if row is None:
+                return None
+            self._connection.execute(
+                """
+                UPDATE ticket_locks
+                SET last_heartbeat = ?, expires_at = ?
+                WHERE ticket_key = ? AND lock_id = ? AND component_id = ?
+                """,
+                (
+                    _datetime_text(now),
+                    _datetime_text(expires_at),
+                    ticket_key,
+                    row["lock_id"],
+                    self._component_id,
+                ),
+            )
+
+        lock = TicketLock(
+            ticket_key=ticket_key,
+            owner=self._component_id,
+            acquired_at=_parse_datetime_text(row["acquired_at"]),
+            heartbeat_at=now,
+            expires_at=expires_at,
+            lock_id=row["lock_id"],
+        )
+        self._emit_event(EVENT_LOCK_HEARTBEAT, lock)
+        return lock
+
     def delete_lock(self, lock: TicketLock) -> bool:
         """Delete a lock row by ticket and lock ID."""
 

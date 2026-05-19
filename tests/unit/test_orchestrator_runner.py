@@ -16,6 +16,7 @@ from ticket_agent.orchestrator.runner import (
     EVENT_RUNNER_CLAIM_FAILED,
     EVENT_TICKET_COMPLETED,
     EVENT_TICKET_FAILED,
+    EVENT_TICKET_RESUMED,
     EVENT_TICKET_SKIPPED,
     EVENT_TICKET_STARTED,
     OrchestratorRunner,
@@ -128,6 +129,69 @@ def test_runner_does_not_clear_checkpoint_when_lock_acquisition_fails():
 
     assert checkpointer.deleted_threads == []
     assert graph.invocations == 0
+
+
+def test_runner_resumes_from_checkpoint_when_adopting_existing_lock():
+    """A still-valid component lock means this process restarted mid-ticket.
+
+    The runner must re-attach to that lock, skip the Jira re-claim (it
+    was claimed by the previous run) and invoke the graph with ``None`` so
+    LangGraph resumes from the persisted checkpoint instead of starting
+    over from the planning node.
+    """
+
+    graph = _Graph({"workflow_status": "completed"})
+    adopted = _Lock("AGENT-123", lock_id="lock-123")
+    lock_manager = _LockManager(lock=None, adopt_lock=adopted)
+    checkpointer = _CheckpointCleaner(existing_threads={"AGENT-123"})
+    events = _EventRecorder()
+    claims: list[str] = []
+    runner = _runner(
+        graph,
+        lock_manager,
+        event_emitter=events,
+        checkpointer=checkpointer,
+        claim_ticket=lambda ticket_key: claims.append(ticket_key),
+    )
+
+    asyncio.run(runner.run_ticket(_work_item()))
+
+    assert lock_manager.acquires == ["AGENT-123"]
+    assert lock_manager.adopts == ["AGENT-123"]
+    assert lock_manager.releases == [adopted]
+    assert checkpointer.deleted_threads == []
+    assert claims == []
+    assert graph.invocations == 1
+    assert graph.last_state is None
+    assert EVENT_TICKET_RESUMED in events.names
+    assert EVENT_GRAPH_CHECKPOINT_CLEARED not in events.names
+    assert events.payloads[EVENT_TICKET_RESUMED] == {
+        "ticket_key": "AGENT-123",
+        "component_id": "orchestrator-test",
+        "lock_id": "lock-123",
+    }
+
+
+def test_runner_resume_without_saved_checkpoint_falls_back_to_state_input():
+    """Adopted lock without a saved checkpoint must still drive the graph.
+
+    The previous process may have crashed before any node completed, in
+    which case there's nothing to resume. We still want to keep working on
+    the ticket, so the runner falls back to invoking the graph with a
+    freshly built initial state.
+    """
+
+    graph = _Graph({"workflow_status": "completed"})
+    adopted = _Lock("AGENT-123", lock_id="lock-123")
+    lock_manager = _LockManager(lock=None, adopt_lock=adopted)
+    checkpointer = _CheckpointCleaner()
+    runner = _runner(graph, lock_manager, checkpointer=checkpointer)
+
+    asyncio.run(runner.run_ticket(_work_item()))
+
+    assert graph.invocations == 1
+    assert graph.last_state is not None
+    assert graph.last_state.ticket_key == "AGENT-123"
 
 
 def test_graph_failure_still_releases_lock():
@@ -460,19 +524,26 @@ class _LockManager:
         self,
         *,
         lock: _Lock | None,
+        adopt_lock: _Lock | None = None,
         release_error: Exception | None = None,
         heartbeat_results: list[bool] | None = None,
     ) -> None:
         self.lock = lock
+        self.adopt_lock = adopt_lock
         self.release_error = release_error
         self.heartbeat_results = [] if heartbeat_results is None else heartbeat_results
         self.acquires: list[str] = []
+        self.adopts: list[str] = []
         self.heartbeats: list[_Lock] = []
         self.releases: list[_Lock] = []
 
     def acquire(self, ticket_key: str) -> _Lock | None:
         self.acquires.append(ticket_key)
         return self.lock
+
+    def adopt(self, ticket_key: str) -> _Lock | None:
+        self.adopts.append(ticket_key)
+        return self.adopt_lock
 
     def heartbeat(self, lock: _Lock) -> bool:
         self.heartbeats.append(lock)
@@ -551,8 +622,13 @@ def _raise(error: BaseException) -> None:
 
 
 class _CheckpointCleaner:
-    def __init__(self) -> None:
+    def __init__(self, *, existing_threads: set[str] | None = None) -> None:
         self.deleted_threads: list[str] = []
+        self._existing_threads = set(existing_threads or ())
 
     def delete_thread(self, thread_id: str) -> None:
         self.deleted_threads.append(thread_id)
+        self._existing_threads.discard(thread_id)
+
+    def has_checkpoint(self, thread_id: str) -> bool:
+        return thread_id in self._existing_threads

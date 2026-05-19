@@ -64,6 +64,54 @@ def test_reconcile_expired_locks_restores_jira_and_deletes_lock(tmp_path):
         manager.close()
 
 
+def test_reconcile_expired_locks_leaves_active_component_locks_alone(tmp_path):
+    """Still-valid component locks must survive expired-lock reconciliation.
+
+    A previous-run lock that is still within its TTL is the resume signal:
+    we want the orchestrator to re-attach to it, not for the reconciler to
+    transition the Jira ticket back to To Do.
+    """
+
+    manager = SQLiteLockManager(
+        tmp_path / "locks.sqlite3",
+        component_id="runner-1",
+        lock_id_factory=lambda: "lock-1",
+    )
+    client = FakeJiraClient(
+        _ticket(
+            status=STATUS_IN_PROGRESS,
+            labels=[LABEL_AI_READY, LABEL_AI_CLAIMED],
+            fields={
+                FIELD_AGENT_ASSIGNED_COMPONENT: "runner-1",
+                FIELD_AGENT_RETRY_COUNT: 0,
+            },
+        )
+    )
+    events = _EventRecorder()
+
+    try:
+        assert manager.acquire("AGENT-123", ttl_s=1800) is not None
+        active_locks = manager.active_component_locks()
+        assert [lock.ticket_key for lock in active_locks] == ["AGENT-123"]
+
+        reconciled = asyncio.run(
+            reconcile_expired_locks(manager, client, emit=events)
+        )
+
+        ticket = client.ticket("AGENT-123")
+        assert reconciled == 0
+        assert [lock.ticket_key for lock in manager.active_component_locks()] == [
+            "AGENT-123"
+        ]
+        assert ticket.status == STATUS_IN_PROGRESS
+        assert LABEL_AI_CLAIMED in ticket.labels
+        assert ticket.fields[FIELD_AGENT_ASSIGNED_COMPONENT] == "runner-1"
+        assert ticket.fields[FIELD_AGENT_RETRY_COUNT] == 0
+        assert events.names == []
+    finally:
+        manager.close()
+
+
 def test_reconcile_expired_locks_keeps_row_when_jira_unreachable(tmp_path):
     clock = _MutableClock()
     manager = SQLiteLockManager(

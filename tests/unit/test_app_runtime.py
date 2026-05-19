@@ -18,11 +18,13 @@ from ticket_agent.app import (
 from ticket_agent.intake.slack_listener import SlackEvent
 from ticket_agent.jira.constants import FIELD_AGENT_ASSIGNED_COMPONENT
 from ticket_agent.jira.constants import (
+    FIELD_AGENT_RETRY_COUNT,
     FIELD_REPOSITORY,
     FIELD_REPO_PATH,
     LABEL_AI_CLAIMED,
     LABEL_AI_EXECUTION_APPROVED,
     LABEL_AI_READY,
+    STATUS_IN_PROGRESS,
     STATUS_IN_REVIEW,
     STATUS_TODO,
 )
@@ -678,6 +680,79 @@ def test_run_runtime_starts_all_loops_and_shuts_down_cleanly(tmp_path):
         "execution_worker",
         "lock_reconciler",
     }
+
+
+def test_recover_after_restart_preserves_active_lock_and_enqueues_ticket(tmp_path):
+    """A still-valid component lock should drive a resume, not a cleanup.
+
+    The previous process held a lock with a live TTL. On restart we want to
+    re-enqueue the ticket so the orchestrator runner adopts the existing
+    lock and resumes from the LangGraph checkpoint, leaving Jira untouched.
+    """
+
+    events: list[tuple[str, dict[str, Any]]] = []
+    jira_client = FakeJiraClient(
+        JiraTicket(
+            key="AGENT-123",
+            summary="Resume after restart",
+            status=STATUS_IN_PROGRESS,
+            labels=[LABEL_AI_READY, LABEL_AI_CLAIMED],
+            fields={
+                FIELD_AGENT_ASSIGNED_COMPONENT: "agent-system",
+                FIELD_AGENT_RETRY_COUNT: 0,
+            },
+        )
+    )
+
+    def emit(event_name: str, payload: dict[str, Any]) -> None:
+        events.append((event_name, dict(payload)))
+
+    runtime = build_runtime(
+        jira_client=jira_client,
+        slack=_FakeSlack(),
+        config=RuntimeConfig(
+            data_dir=tmp_path,
+            intake_channel="C-INTAKE",
+            execution_approval_channel="C-INTAKE",
+            poll_interval_seconds=0.01,
+            max_backoff_seconds=0.01,
+            reconcile_interval_seconds=0.01,
+        ),
+        planner=_Planner(),
+        implementation=_Implementation(),
+        tests=_Tests(),
+        review=_Review(),
+        pull_request=_PullRequest(),
+        escalation=_Escalation(),
+        emit=emit,
+    )
+
+    try:
+        original_lock = runtime.lock_manager.acquire("AGENT-123")
+        assert original_lock is not None
+
+        resumed = asyncio.run(runtime.recover_after_restart())
+
+        ticket = jira_client.ticket("AGENT-123")
+        current = runtime.lock_manager.current_lock("AGENT-123")
+
+        assert resumed == 1
+        assert current is not None
+        assert current.lock_id == original_lock.lock_id
+        assert ticket.status == STATUS_IN_PROGRESS
+        assert LABEL_AI_CLAIMED in ticket.labels
+        assert ticket.fields[FIELD_AGENT_ASSIGNED_COMPONENT] == "agent-system"
+        assert ticket.fields[FIELD_AGENT_RETRY_COUNT] == 0
+
+        resume_events = [
+            payload
+            for name, payload in events
+            if name == "runtime.resume_enqueued"
+        ]
+        assert resume_events and resume_events[0]["ticket_key"] == "AGENT-123"
+        assert runtime.queue.get_nowait() == "AGENT-123"
+    finally:
+        runtime.close()
 
 
 def test_main_uses_injected_services_without_live_network(tmp_path):

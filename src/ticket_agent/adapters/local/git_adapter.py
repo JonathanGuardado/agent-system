@@ -96,7 +96,7 @@ class GitAdapter:
     def push(self, worktree_path: str | Path, branch_name: str) -> None:
         worktree = Path(worktree_path).resolve(strict=True)
         _validate_push_branch(branch_name)
-        _require_origin_remote(worktree)
+        _ensure_origin_remote(worktree, timeout_seconds=self._default_timeout_seconds)
 
         result = self._run_git(("push", "origin", branch_name), cwd=worktree)
         if result.returncode != 0:
@@ -159,36 +159,109 @@ def _failure_message(result: subprocess.CompletedProcess[str]) -> str:
 
 
 def _unstage_generated_paths(worktree: Path, *, timeout_seconds: int) -> None:
-    existing = [
-        path for path in _GENERATED_COMMIT_EXCLUDES if (worktree / path).exists()
-    ]
+    existing = [path for path in _GENERATED_COMMIT_EXCLUDES if (worktree / path).exists()]
     if not existing:
         return
-    result = subprocess.run(
+    result = _run_command(
         ("git", "reset", "--quiet", "--", *existing),
         cwd=worktree,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
+        timeout_seconds=timeout_seconds,
     )
     if result.returncode != 0:
         raise GitAdapterError(_failure_message(result))
 
 
-def _require_origin_remote(worktree: Path) -> None:
-    result = subprocess.run(
+def _ensure_origin_remote(worktree: Path, *, timeout_seconds: int) -> None:
+    result = _run_command(
         ("git", "remote", "get-url", "origin"),
         cwd=worktree,
-        check=False,
-        capture_output=True,
-        text=True,
+        timeout_seconds=timeout_seconds,
     )
     if result.returncode == 0 and result.stdout.strip():
         return
-    raise PushError(
-        "git remote 'origin' is not configured for "
-        f"{worktree}; configure a GitHub remote before AI execution can open PRs"
+    repo_root = _primary_repo_root(worktree, timeout_seconds=timeout_seconds)
+    repo_name = _github_repo_name(repo_root)
+    create_result = _run_command(
+        (
+            "gh",
+            "repo",
+            "create",
+            repo_name,
+            "--private",
+            "--source",
+            str(repo_root),
+            "--remote",
+            "origin",
+        ),
+        cwd=repo_root,
+        timeout_seconds=timeout_seconds,
+    )
+    if create_result.returncode != 0:
+        raise PushError(
+            "git remote 'origin' is not configured for "
+            f"{worktree}, and automatic GitHub repo creation failed: "
+            f"{_failure_message(create_result)}"
+        )
+
+    default_branch = _default_branch(repo_root, timeout_seconds=timeout_seconds)
+    push_default_result = _run_command(
+        ("git", "push", "-u", "origin", default_branch),
+        cwd=repo_root,
+        timeout_seconds=timeout_seconds,
+    )
+    if push_default_result.returncode != 0:
+        raise PushError(_failure_message(push_default_result))
+
+
+def _primary_repo_root(worktree: Path, *, timeout_seconds: int) -> Path:
+    result = _run_command(
+        ("git", "rev-parse", "--path-format=absolute", "--git-common-dir"),
+        cwd=worktree,
+        timeout_seconds=timeout_seconds,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        raise PushError(_failure_message(result))
+    git_common_dir = Path(result.stdout.strip())
+    if git_common_dir.name == ".git":
+        return git_common_dir.parent.resolve(strict=True)
+    return worktree
+
+
+def _github_repo_name(repo_root: Path) -> str:
+    repo_name = repo_root.name.strip()
+    if not repo_name or repo_name in {".", ".."}:
+        raise PushError(f"cannot infer GitHub repository name from {repo_root}")
+    return repo_name
+
+
+def _default_branch(repo_root: Path, *, timeout_seconds: int) -> str:
+    result = _run_command(
+        ("git", "symbolic-ref", "--quiet", "--short", "HEAD"),
+        cwd=repo_root,
+        timeout_seconds=timeout_seconds,
+    )
+    branch = result.stdout.strip()
+    if result.returncode != 0 or not branch:
+        raise PushError(
+            "cannot infer default branch to initialize GitHub repository: "
+            f"{_failure_message(result)}"
+        )
+    return branch
+
+
+def _run_command(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    timeout_seconds: int,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        tuple(command),
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
     )
 
 

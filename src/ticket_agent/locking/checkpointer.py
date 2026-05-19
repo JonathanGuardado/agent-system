@@ -307,6 +307,15 @@ class SQLiteCheckpointer(BaseCheckpointSaver):
                 (thread_id,),
             )
 
+    def has_checkpoint(self, thread_id: str) -> bool:
+        """Return True when at least one checkpoint exists for ``thread_id``."""
+        with self._conn_lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM checkpoints WHERE thread_id = ? LIMIT 1",
+                (thread_id,),
+            ).fetchone()
+        return row is not None
+
     async def aget_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
         return self.get_tuple(config)
 

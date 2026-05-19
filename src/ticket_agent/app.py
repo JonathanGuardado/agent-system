@@ -181,11 +181,49 @@ class AgentSystemRuntime:
     async def run_execution_services(self) -> None:
         """Run detection, worker, and reconciler loops until cancelled."""
 
+        await self.recover_after_restart()
         await asyncio.gather(
             self.detector.run_forever(),
             self.worker.run_forever(),
             self.run_reconciler_loop(),
         )
+
+    async def recover_after_restart(self) -> int:
+        """Reconcile expired locks and re-enqueue tickets we still own.
+
+        Expired component-owned locks get the standard Jira cleanup. Locks
+        that are still within their TTL belonged to a previous run of this
+        same component, so we re-enqueue those ticket keys so the worker
+        picks them up and the orchestrator runner can resume them from the
+        SQLite-backed LangGraph checkpoint.
+        """
+
+        await reconcile_expired_locks(
+            self.lock_manager,
+            self.jira_client,
+            limit=self.config.reconcile_batch_size,
+            emit=self.emit,
+        )
+        return await self.enqueue_resumable_tickets()
+
+    async def enqueue_resumable_tickets(self) -> int:
+        """Enqueue ticket keys covered by still-valid component-owned locks."""
+
+        active_locks = self.lock_manager.active_component_locks(
+            limit=self.config.reconcile_batch_size,
+        )
+        for lock in active_locks:
+            await self.queue.put(lock.ticket_key)
+            await _emit(
+                self.emit,
+                "runtime.resume_enqueued",
+                {
+                    "ticket_key": lock.ticket_key,
+                    "component_id": lock.owner,
+                    "lock_id": lock.lock_id,
+                },
+            )
+        return len(active_locks)
 
     async def run_reconciler_loop(self) -> None:
         """Periodically restore Jira state for expired local locks."""
@@ -387,6 +425,7 @@ async def run_runtime(
     """Run all production loops concurrently until failure or shutdown."""
 
     stop_event = shutdown_event or asyncio.Event()
+    await runtime.recover_after_restart()
     try:
         async with asyncio.TaskGroup() as task_group:
             task_group.create_task(

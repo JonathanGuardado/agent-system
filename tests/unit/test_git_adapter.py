@@ -87,10 +87,7 @@ def test_commit_excludes_generated_dependency_directories(tmp_path):
 
     sha = adapter.commit(info.worktree_path, "Add app")
 
-    changed = _git(
-        ("diff-tree", "--no-commit-id", "--name-only", "-r", sha),
-        cwd=info.worktree_path,
-    )
+    changed = _git(("diff-tree", "--no-commit-id", "--name-only", "-r", sha), cwd=info.worktree_path)
     assert "src/app.tsx" in changed.splitlines()
     assert "node_modules/@next/swc/next-swc.node" not in changed.splitlines()
     assert "node_modules/@next/swc/next-swc.node" in _git(
@@ -123,10 +120,71 @@ def test_push_rejects_branch_outside_agent_namespace(tmp_path):
         GitAdapter().push(repo, "feature/ABC-123")
 
 
-def test_push_reports_missing_origin_before_raw_git_failure(tmp_path):
+def test_push_creates_private_github_repo_when_origin_missing(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "repo")
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(command, **kwargs):
+        del kwargs
+        calls.append(tuple(command))
+        if tuple(command) == ("git", "remote", "get-url", "origin"):
+            return subprocess.CompletedProcess(command, 2, "", "No such remote\n")
+        if tuple(command) == (
+            "git",
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ):
+            return subprocess.CompletedProcess(command, 0, f"{repo / '.git'}\n", "")
+        if tuple(command) == ("git", "symbolic-ref", "--quiet", "--short", "HEAD"):
+            return subprocess.CompletedProcess(command, 0, "main\n", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    GitAdapter().push(repo, "agent/ABC-123/12345678")
+
+    assert calls == [
+        ("git", "remote", "get-url", "origin"),
+        ("git", "rev-parse", "--path-format=absolute", "--git-common-dir"),
+        (
+            "gh",
+            "repo",
+            "create",
+            "repo",
+            "--private",
+            "--source",
+            str(repo),
+            "--remote",
+            "origin",
+        ),
+        ("git", "symbolic-ref", "--quiet", "--short", "HEAD"),
+        ("git", "push", "-u", "origin", "main"),
+        ("git", "push", "origin", "agent/ABC-123/12345678"),
+    ]
+
+
+def test_push_reports_origin_creation_failure(tmp_path, monkeypatch):
     repo = _init_repo(tmp_path / "repo")
 
-    with pytest.raises(PushError, match="remote 'origin' is not configured"):
+    def fake_run(command, **kwargs):
+        del kwargs
+        if tuple(command) == ("git", "remote", "get-url", "origin"):
+            return subprocess.CompletedProcess(command, 2, "", "No such remote\n")
+        if tuple(command) == (
+            "git",
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ):
+            return subprocess.CompletedProcess(command, 0, f"{repo / '.git'}\n", "")
+        if tuple(command[:3]) == ("gh", "repo", "create"):
+            return subprocess.CompletedProcess(command, 1, "", "not authenticated\n")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(PushError, match="automatic GitHub repo creation failed"):
         GitAdapter().push(repo, "agent/ABC-123/12345678")
 
 

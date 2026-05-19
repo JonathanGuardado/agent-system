@@ -28,6 +28,7 @@ EVENT_TICKET_STARTED = "ticket_started"
 EVENT_TICKET_COMPLETED = "ticket_completed"
 EVENT_TICKET_FAILED = "ticket_failed"
 EVENT_TICKET_SKIPPED = "ticket_skipped"
+EVENT_TICKET_RESUMED = "ticket_resumed"
 INTERRUPT_RESULT_KEY = "__interrupt__"
 _SAFE_BRANCH_COMPONENT_CHARS = re.compile(r"[^A-Za-z0-9_-]+")
 
@@ -53,6 +54,9 @@ class LockManager(Protocol):
     def acquire(self, ticket_key: str) -> Lock | None:
         """Acquire execution ownership for a ticket, if available."""
 
+    def adopt(self, ticket_key: str) -> Lock | None:
+        """Re-attach to a still-valid lock left by a previous process run."""
+
     def heartbeat(self, lock: Lock) -> bool:
         """Refresh an acquired lock."""
 
@@ -65,7 +69,7 @@ class TicketGraph(Protocol):
 
     def ainvoke(
         self,
-        state: TicketState,
+        state: TicketState | None,
         config: Mapping[str, Any],
     ) -> Awaitable[Any]:
         """Run the workflow graph for a ticket state."""
@@ -76,6 +80,9 @@ class CheckpointCleaner(Protocol):
 
     def delete_thread(self, thread_id: str) -> None:
         """Delete persisted graph state for a thread."""
+
+    def has_checkpoint(self, thread_id: str) -> bool:
+        """Return True when persisted graph state exists for a thread."""
 
 
 class TicketAlreadyLockedError(TicketLockError):
@@ -135,6 +142,13 @@ class OrchestratorRunner:
         """Run one ticket through the graph when its lock can be acquired."""
 
         lock = self._lock_manager.acquire(work_item.ticket_key)
+        resumed = False
+        if lock is None:
+            adopted = self._lock_manager.adopt(work_item.ticket_key)
+            if adopted is not None:
+                lock = adopted
+                resumed = True
+
         if lock is None:
             await self._emit(
                 EVENT_TICKET_SKIPPED,
@@ -147,18 +161,27 @@ class OrchestratorRunner:
             raise TicketAlreadyLockedError(work_item.ticket_key)
 
         await self._emit_lock_event(EVENT_LOCK_ACQUIRED, work_item, lock)
-        await self._clear_stale_checkpoint(work_item, lock)
+        if resumed:
+            await self._emit(
+                EVENT_TICKET_RESUMED,
+                ticket_key=work_item.ticket_key,
+                component_id=self._component_id,
+                lock_id=_lock_id(lock),
+            )
+        else:
+            await self._clear_stale_checkpoint(work_item, lock)
         state: TicketState | None = None
         graph_exception: Exception | None = None
         graph_traceback = None
         try:
-            try:
-                await self._claim_jira_ticket(work_item.ticket_key)
-            except TicketClaimFailedError as exc:
-                graph_exception = exc
-                graph_traceback = exc.__traceback__
-                await self._emit_claim_failed(work_item, lock, exc)
-                raise
+            if not resumed:
+                try:
+                    await self._claim_jira_ticket(work_item.ticket_key)
+                except TicketClaimFailedError as exc:
+                    graph_exception = exc
+                    graph_traceback = exc.__traceback__
+                    await self._emit_claim_failed(work_item, lock, exc)
+                    raise
             state = self._build_initial_state(work_item, lock)
             await self._emit(
                 EVENT_TICKET_STARTED,
@@ -166,7 +189,12 @@ class OrchestratorRunner:
                 component_id=self._component_id,
                 lock_id=state.lock_id,
             )
-            result = await self._run_graph_with_heartbeat(work_item, state, lock)
+            result = await self._run_graph_with_heartbeat(
+                work_item,
+                state,
+                lock,
+                resumed=resumed,
+            )
             final_state = _coerce_graph_result(state, result)
             await self._emit(
                 EVENT_TICKET_COMPLETED,
@@ -257,13 +285,21 @@ class OrchestratorRunner:
         work_item: TicketWorkItem,
         state: TicketState,
         lock: Lock,
+        *,
+        resumed: bool = False,
     ) -> Any:
         heartbeat_task = asyncio.create_task(
             self._heartbeat_until_cancelled(work_item, lock),
             name=f"ticket-heartbeat:{work_item.ticket_key}",
         )
+        graph_input: TicketState | None = state
+        if resumed and self._has_resumable_checkpoint(work_item.ticket_key):
+            graph_input = None
         graph_task = asyncio.create_task(
-            self._graph.ainvoke(state, config=_graph_config(work_item.ticket_key)),
+            self._graph.ainvoke(
+                graph_input,
+                config=_graph_config(work_item.ticket_key),
+            ),
             name=f"ticket-graph:{work_item.ticket_key}",
         )
 
@@ -333,6 +369,17 @@ class OrchestratorRunner:
             component_id=self._component_id,
             lock_id=_lock_id(lock),
         )
+
+    def _has_resumable_checkpoint(self, ticket_key: str) -> bool:
+        if self._checkpointer is None:
+            return False
+        has_checkpoint = getattr(self._checkpointer, "has_checkpoint", None)
+        if has_checkpoint is None:
+            return False
+        try:
+            return bool(has_checkpoint(ticket_key))
+        except Exception:
+            return False
 
     async def _emit_heartbeat_failed(
         self,
