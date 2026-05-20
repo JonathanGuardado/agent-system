@@ -119,17 +119,22 @@ class TicketNodeRunner:
                 "review_passed": False,
                 "error": error,
             }
+        review_passed = _result_passed(
+            verification_result,
+            explicit_key="review_passed",
+            positive_statuses={"accepted", "approved", "passed", "success"},
+            negative_statuses={"rejected", "failed", "failure"},
+        )
         return _mark_node(
             state,
             "review",
             workflow_status="reviewing",
-            review_passed=_result_passed(
-                verification_result,
-                explicit_key="review_passed",
-                positive_statuses={"accepted", "approved", "passed", "success"},
-                negative_statuses={"rejected", "failed", "failure"},
+            review_passed=review_passed,
+            escalation_reason=(
+                _review_failure_reason(verification_result)
+                if review_passed is False
+                else _result_error(verification_result)
             ),
-            escalation_reason=_result_error(verification_result),
             verification_result=verification_result,
         )
 
@@ -268,6 +273,9 @@ def _escalation_reason(state: TicketState) -> str:
             return test_error
         return "tests failed"
     if state.review_passed is False:
+        review_error = _review_failure_reason(state.verification_result)
+        if review_error is not None:
+            return review_error
         return "review rejected"
     if state.error:
         return state.error
@@ -314,3 +322,39 @@ def _test_failure_reason(state: TicketState) -> str | None:
     if isinstance(error, str) and error.strip():
         return error
     return None
+
+
+def _review_failure_reason(result: dict[str, Any] | None) -> str | None:
+    if not isinstance(result, dict):
+        return None
+
+    error = result.get("error")
+    if isinstance(error, str) and error.strip():
+        return error
+
+    issues = _string_list(result.get("issues")) or _string_list(result.get("notes"))
+    if issues:
+        return _format_review_rejection(issues)
+
+    for key in ("reason", "reasoning", "summary"):
+        value = result.get(key)
+        if isinstance(value, str) and value.strip():
+            return f"review rejected: {value.strip()}"
+
+    status = result.get("status")
+    if isinstance(status, str) and status.strip():
+        return f"review {status.strip()}"
+
+    return None
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def _format_review_rejection(issues: list[str]) -> str:
+    if len(issues) == 1:
+        return f"review rejected: {issues[0]}"
+    return "review rejected:\n" + "\n".join(f"- {issue}" for issue in issues)

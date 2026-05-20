@@ -108,7 +108,31 @@ def test_review_service_rejected_result_sets_review_passed_false_and_verificatio
         "status": "rejected",
         "notes": ["missing test"],
     }
+    assert state.escalation_reason == "review rejected: missing test"
     assert state.visited_nodes == ["review"]
+
+
+def test_review_service_rejected_result_formats_issue_list_for_escalation():
+    state = _apply(
+        asyncio.run(
+            _runner(
+                review=_Review(
+                    {
+                        "status": "rejected",
+                        "issues": ["missing test", "implementation changes API"],
+                    }
+                ),
+            ).review(
+                _initial_state(),
+            )
+        )
+    )
+
+    assert state.review_passed is False
+    assert (
+        state.escalation_reason
+        == "review rejected:\n- missing test\n- implementation changes API"
+    )
 
 
 def test_pull_request_service_sets_pull_request_url():
