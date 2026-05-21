@@ -43,6 +43,7 @@ class TicketWorkItem:
     repository: str
     repo_path: str | None = None
     worktree_path: str | None = None
+    branch_name: str | None = None
     slack_channel: str | None = None
     slack_thread_ts: str | None = None
     max_attempts: int = 3
@@ -248,7 +249,10 @@ class OrchestratorRunner:
         if "component_id" in state_fields:
             updates["component_id"] = self._component_id
         if "branch_name" in state_fields:
-            updates["branch_name"] = _branch_name(work_item.ticket_key, lock)
+            updates["branch_name"] = work_item.branch_name or _branch_name(
+                work_item.ticket_key,
+                lock,
+            )
 
         return TicketState(
             ticket_key=work_item.ticket_key,

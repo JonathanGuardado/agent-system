@@ -455,9 +455,19 @@ def _format_confirmation_message(result: JiraWriteResult) -> str:
             f"{epic_prefix}Partially created: {keys}. Failures: {failures}. "
             "Reply with edits to retry the failed items."
         )
+    readiness_note = ""
+    if result.execution_ready_ticket_keys and (
+        len(result.execution_ready_ticket_keys) < len(result.created_ticket_keys)
+    ):
+        ready_keys = ", ".join(result.execution_ready_ticket_keys)
+        readiness_note = (
+            f" Execution starts with: {ready_keys}; remaining tickets are created "
+            "without ai-ready until the foundation is merged or manually released."
+        )
     return (
         f"{epic_prefix}Created Jira tickets: {keys}. "
         "The detection pipeline will pick them up automatically."
+        f"{readiness_note}"
     )
 
 

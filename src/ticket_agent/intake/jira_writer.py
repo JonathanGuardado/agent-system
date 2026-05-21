@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ticket_agent.domain.intake import Proposal, TicketSpec
+from ticket_agent.domain.intake import IntakeMode, Proposal, TicketSpec
 from ticket_agent.jira.client import JiraClient
 from ticket_agent.jira.constants import (
     FIELD_AGENT_CAPABILITIES_NEEDED,
@@ -33,6 +33,7 @@ class JiraWriteResult:
     project_key: str | None
     created_epic_key: str | None = None
     created_ticket_keys: tuple[str, ...] = ()
+    execution_ready_ticket_keys: tuple[str, ...] = ()
     failed_items: tuple[JiraWriteFailure, ...] = ()
     partial: bool = False
     unsupported_reason: str | None = None
@@ -51,6 +52,7 @@ class _WriteContext:
     project_key: str
     created_epic_key: str | None = None
     created: list[str] = field(default_factory=list)
+    execution_ready: list[str] = field(default_factory=list)
     failures: list[JiraWriteFailure] = field(default_factory=list)
     optional_fields_disabled: bool = False
     unsupported_reason: str | None = None
@@ -96,8 +98,14 @@ class JiraWriter:
                     unsupported_reason=context.unsupported_reason,
                 )
 
-        for spec in proposal.tickets:
-            await self._write_one(spec, proposal, context, parent_key=parent_key)
+        for index, spec in enumerate(proposal.tickets):
+            await self._write_one(
+                spec,
+                proposal,
+                context,
+                parent_key=parent_key,
+                execution_ready=_ticket_starts_execution_ready(proposal, index),
+            )
             if context.unsupported_reason is not None:
                 break
 
@@ -108,6 +116,7 @@ class JiraWriter:
             project_key=project_key,
             created_epic_key=context.created_epic_key,
             created_ticket_keys=tuple(context.created),
+            execution_ready_ticket_keys=tuple(context.execution_ready),
             failed_items=tuple(context.failures),
             partial=partial,
             unsupported_reason=context.unsupported_reason,
@@ -150,8 +159,9 @@ class JiraWriter:
         context: _WriteContext,
         *,
         parent_key: str | None,
+        execution_ready: bool,
     ) -> None:
-        labels = _normalize_labels(spec.labels)
+        labels = _normalize_labels(spec.labels, execution_ready=execution_ready)
         fields = (
             {}
             if context.optional_fields_disabled
@@ -204,6 +214,8 @@ class JiraWriter:
 
         await _ensure_ai_ready_label(self._client, ticket, labels)
         context.created.append(ticket.key)
+        if LABEL_AI_READY in labels:
+            context.execution_ready.append(ticket.key)
 
 
 def _is_optional_field_create_error(exc: BaseException) -> bool:
@@ -236,10 +248,13 @@ def _optional_project_key(proposal: Proposal) -> str | None:
     return proposal.project_key
 
 
-def _normalize_labels(labels: list[str]) -> list[str]:
+def _normalize_labels(labels: list[str], *, execution_ready: bool = True) -> list[str]:
     seen: set[str] = set()
     ordered: list[str] = []
-    for label in [*labels, LABEL_AI_READY]:
+    requested_labels = [*labels, LABEL_AI_READY] if execution_ready else labels
+    for label in requested_labels:
+        if label == LABEL_AI_READY and not execution_ready:
+            continue
         if label and label not in seen:
             seen.add(label)
             ordered.append(label)
@@ -259,6 +274,12 @@ def _build_fields(spec: TicketSpec, proposal: Proposal) -> dict[str, object]:
     if spec.repo_path:
         fields[FIELD_REPO_PATH] = spec.repo_path
     return fields
+
+
+def _ticket_starts_execution_ready(proposal: Proposal, index: int) -> bool:
+    if proposal.mode == IntakeMode.NEW_PROJECT and len(proposal.tickets) > 1:
+        return index == 0
+    return True
 
 
 async def _ensure_ai_ready_label(

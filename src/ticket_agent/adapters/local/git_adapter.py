@@ -69,6 +69,44 @@ class GitAdapter:
             lock_id=short_lock_id,
         )
 
+    def create_worktree_for_branch(
+        self,
+        repo_path: str | Path,
+        ticket_key: str,
+        branch_name: str,
+        short_lock_id: str,
+    ) -> WorktreeInfo:
+        repo = Path(repo_path).resolve(strict=True)
+        _validate_safe_ref_component(ticket_key, "ticket_key")
+        _validate_push_branch(branch_name)
+        _validate_safe_ref_component(short_lock_id, "short_lock_id")
+
+        worktree_path = repo / ".worktrees" / ticket_key / short_lock_id
+        try:
+            _validate_worktree_path(repo, worktree_path)
+        except WorktreeCleanupError as exc:
+            raise WorktreeCreationError(str(exc)) from exc
+        if worktree_path.exists() or worktree_path.is_symlink():
+            raise WorktreeCreationError(f"worktree already exists: {worktree_path}")
+
+        worktree_path.parent.mkdir(parents=True, exist_ok=True)
+        self._ensure_local_branch(repo, branch_name)
+
+        result = self._run_git(
+            ("worktree", "add", str(worktree_path), branch_name),
+            cwd=repo,
+        )
+        if result.returncode != 0:
+            raise WorktreeCreationError(_failure_message(result))
+
+        return WorktreeInfo(
+            repo_path=repo,
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+            ticket_key=ticket_key,
+            lock_id=short_lock_id,
+        )
+
     def commit(self, worktree_path: str | Path, message: str) -> str:
         worktree = Path(worktree_path).resolve(strict=True)
 
@@ -136,6 +174,21 @@ class GitAdapter:
             ("worktree", "add", "-b", branch_name, str(worktree_path)),
             cwd=repo,
         )
+
+    def _ensure_local_branch(self, repo: Path, branch_name: str) -> None:
+        branch_result = self._run_git(
+            ("rev-parse", "--verify", f"refs/heads/{branch_name}"),
+            cwd=repo,
+        )
+        if branch_result.returncode == 0:
+            return
+
+        fetch_result = self._run_git(
+            ("fetch", "origin", f"{branch_name}:{branch_name}"),
+            cwd=repo,
+        )
+        if fetch_result.returncode != 0:
+            raise WorktreeCreationError(_failure_message(fetch_result))
 
     def _run_git(
         self,

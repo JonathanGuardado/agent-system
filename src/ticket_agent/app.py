@@ -18,6 +18,13 @@ from ticket_agent.config.repo_contract import load_repo_contract
 from ticket_agent.detection.detector import DetectionComponent
 from ticket_agent.detection.jira_search import JiraDetectionSearchClient
 from ticket_agent.detection.ownership import OwnershipChecker
+from ticket_agent.feedback.github import (
+    FeedbackExecutionCoordinator,
+    FeedbackWorker,
+    GhCliFeedbackClient,
+    GitHubFeedbackPoller,
+    SQLiteFeedbackStore,
+)
 from ticket_agent.intake.approval_flow import ApprovalFlow, SlackPoster
 from ticket_agent.intake.intent_resolver import IntakeIntentResolver
 from ticket_agent.intake.jira_writer import JiraWriter
@@ -140,6 +147,9 @@ class RuntimeConfig:
     pull_request_base_branch: str = "main"
     jira_target_projects: tuple[str, ...] = ()
     jira_in_review_status: str = STATUS_IN_REVIEW
+    github_feedback_enabled: bool = False
+    github_feedback_poll_interval_seconds: float = 60.0
+    github_feedback_ignore_self_comments: bool = False
     execution_mode: str = "execute"
     execution_approval_policy: str = "auto"
 
@@ -175,6 +185,9 @@ class AgentSystemRuntime:
     lock_manager: SQLiteLockManager
     execution_approval_handler: ExecutionApprovalCommandHandler
     queue: asyncio.Queue[str]
+    feedback_poller: GitHubFeedbackPoller | None
+    feedback_worker: FeedbackWorker | None
+    feedback_store: SQLiteFeedbackStore | None
     jira_client: JiraClient
     config: RuntimeConfig
     database_paths: Mapping[str, Path]
@@ -245,6 +258,8 @@ class AgentSystemRuntime:
         self.approval_store.close()
         self.proposal_store.close()
         self.lock_manager.close()
+        if self.feedback_store is not None:
+            self.feedback_store.close()
 
 
 def build_runtime(
@@ -361,6 +376,42 @@ def build_runtime(
     )
     coordinator = _MarkDoneCoordinator(jira_coordinator, detector)
     worker = ExecutionWorker(detector_queue, coordinator, emit=emit)
+    feedback_poller: GitHubFeedbackPoller | None = None
+    feedback_worker: FeedbackWorker | None = None
+    feedback_store: SQLiteFeedbackStore | None = None
+    if runtime_config.github_feedback_enabled:
+        feedback_queue = asyncio.Queue()
+        feedback_store = SQLiteFeedbackStore(database_paths["feedback_store"])
+        feedback_poller = GitHubFeedbackPoller(
+            client=GhCliFeedbackClient(
+                repo_paths=[
+                    defaults["repo_path"]
+                    for defaults in repo_defaults.values()
+                    if defaults.get("repo_path")
+                ],
+                ignore_self_comments=(
+                    runtime_config.github_feedback_ignore_self_comments
+                ),
+            ),
+            store=feedback_store,
+            queue=feedback_queue,
+            poll_interval_seconds=(
+                runtime_config.github_feedback_poll_interval_seconds
+            ),
+            emit=emit,
+        )
+        feedback_worker = FeedbackWorker(
+            feedback_queue,
+            FeedbackExecutionCoordinator(
+                loader=JiraWorkItemLoader(
+                    jira_client,
+                    repo_defaults=repo_defaults_from_mapping(dict(repo_defaults)),
+                ),
+                runner=runner,
+                worktree_cleaner=worktree_cleaner,
+            ),
+            emit=emit,
+        )
 
     proposal_generator = ModelRouterProposalGenerator(
         router,
@@ -411,6 +462,9 @@ def build_runtime(
         lock_manager=lock_manager,
         execution_approval_handler=execution_approval_handler,
         queue=detector_queue,
+        feedback_poller=feedback_poller,
+        feedback_worker=feedback_worker,
+        feedback_store=feedback_store,
         jira_client=jira_client,
         config=runtime_config,
         database_paths=database_paths,
@@ -451,6 +505,24 @@ async def run_runtime(
                 ),
                 name="lock-reconciler",
             )
+            if runtime.feedback_poller is not None:
+                task_group.create_task(
+                    _run_named_loop(
+                        "github_feedback_polling",
+                        runtime.feedback_poller.run_forever,
+                        emit,
+                    ),
+                    name="github-feedback-polling",
+                )
+            if runtime.feedback_worker is not None:
+                task_group.create_task(
+                    _run_named_loop(
+                        "github_feedback_worker",
+                        runtime.feedback_worker.run_forever,
+                        emit,
+                    ),
+                    name="github-feedback-worker",
+                )
             task_group.create_task(
                 _shutdown_watcher(stop_event),
                 name="shutdown-watcher",
@@ -681,6 +753,21 @@ def load_app_config(
             "AGENT_SYSTEM_JIRA_IN_REVIEW_STATUS",
         )
         or STATUS_IN_REVIEW,
+        github_feedback_enabled=_bool_env(
+            merged_env,
+            "AGENT_SYSTEM_GITHUB_FEEDBACK_ENABLED",
+            default=False,
+        ),
+        github_feedback_poll_interval_seconds=_float_env(
+            merged_env,
+            "AGENT_SYSTEM_GITHUB_FEEDBACK_POLL_INTERVAL_SECONDS",
+            default=60.0,
+        ),
+        github_feedback_ignore_self_comments=_bool_env(
+            merged_env,
+            "AGENT_SYSTEM_GITHUB_FEEDBACK_IGNORE_SELF_COMMENTS",
+            default=False,
+        ),
         execution_mode=_env_value(merged_env, "AGENT_SYSTEM_EXECUTION_MODE")
         or "execute",
         execution_approval_policy=_env_value(
@@ -889,6 +976,7 @@ def _database_paths(data_dir: Path) -> dict[str, Path]:
         "execution_approvals": data_dir / "execution_approvals.sqlite3",
         "graph_checkpoints": data_dir / "ticket_graph_checkpoints.sqlite3",
         "ticket_locks": data_dir / "ticket_locks.sqlite3",
+        "feedback_store": data_dir / "github_feedback.sqlite3",
     }
 
 
@@ -967,6 +1055,10 @@ def _validate_runtime_config(config: RuntimeConfig) -> None:
         raise StartupConfigError("AGENT_SYSTEM_RECONCILE_BATCH_SIZE must be positive")
     if not str(config.jira_in_review_status).strip():
         raise StartupConfigError("AGENT_SYSTEM_JIRA_IN_REVIEW_STATUS must not be blank")
+    _positive(
+        "AGENT_SYSTEM_GITHUB_FEEDBACK_POLL_INTERVAL_SECONDS",
+        config.github_feedback_poll_interval_seconds,
+    )
     if config.execution_mode not in {"execute", "dry_run"}:
         raise StartupConfigError(
             "AGENT_SYSTEM_EXECUTION_MODE must be either 'execute' or 'dry_run'"
@@ -1085,6 +1177,18 @@ def _float_env(env: Mapping[str, str], name: str, *, default: float) -> float:
     return value
 
 
+def _bool_env(env: Mapping[str, str], name: str, *, default: bool) -> bool:
+    raw = _env_value(env, name)
+    if raw is None:
+        return default
+    normalized = raw.lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise StartupConfigError(f"{name} must be a boolean")
+
+
 def _optional_int_env(env: Mapping[str, str], name: str) -> int | None:
     raw = _env_value(env, name)
     if raw is None:
@@ -1195,6 +1299,13 @@ def _runtime_payload(runtime: AgentSystemRuntime) -> dict[str, Any]:
         "pull_request_base_branch": config.pull_request_base_branch,
         "jira_target_projects": list(config.jira_target_projects),
         "jira_in_review_status": config.jira_in_review_status,
+        "github_feedback_enabled": config.github_feedback_enabled,
+        "github_feedback_poll_interval_seconds": (
+            config.github_feedback_poll_interval_seconds
+        ),
+        "github_feedback_ignore_self_comments": (
+            config.github_feedback_ignore_self_comments
+        ),
         "execution_mode": config.execution_mode,
         "execution_approval_policy": config.execution_approval_policy,
         "intake_channel_configured": bool(config.intake_channel),

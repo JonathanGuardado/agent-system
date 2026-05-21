@@ -579,6 +579,9 @@ def test_load_app_config_reads_env_file_and_runtime_options(tmp_path):
                 "AGENT_SYSTEM_REPO_CONFIG_PATH=config/test-repos",
                 "AGENT_SYSTEM_EXECUTION_MODE=dry_run",
                 "AGENT_SYSTEM_EXECUTION_APPROVAL_POLICY=slack",
+                "AGENT_SYSTEM_GITHUB_FEEDBACK_ENABLED=true",
+                "AGENT_SYSTEM_GITHUB_FEEDBACK_POLL_INTERVAL_SECONDS=12",
+                "AGENT_SYSTEM_GITHUB_FEEDBACK_IGNORE_SELF_COMMENTS=true",
             ]
         ),
         encoding="utf-8",
@@ -599,6 +602,9 @@ def test_load_app_config_reads_env_file_and_runtime_options(tmp_path):
     assert config.runtime.jira_in_review_status == "Done"
     assert config.runtime.execution_mode == "dry_run"
     assert config.runtime.execution_approval_policy == "slack"
+    assert config.runtime.github_feedback_enabled is True
+    assert config.runtime.github_feedback_poll_interval_seconds == 12
+    assert config.runtime.github_feedback_ignore_self_comments is True
     assert config.jira_target_projects == ("AGENT", "OPS")
     assert config.jira_field_map[FIELD_AGENT_ASSIGNED_COMPONENT] == "customfield_10001"
 

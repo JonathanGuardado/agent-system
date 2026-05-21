@@ -317,6 +317,21 @@ def test_branch_name_uses_lock_id_when_available():
     assert graph.last_state.branch_name == "agent/AGENT-123/abc123"
 
 
+def test_branch_name_uses_work_item_override_when_available():
+    graph = _Graph({})
+    lock_manager = _LockManager(lock=_Lock("AGENT-123", lock_id="abc123"))
+    runner = _runner(graph, lock_manager)
+
+    asyncio.run(
+        runner.run_ticket(
+            _work_item(branch_name="agent/AGENT-123/existing-feedback-branch")
+        )
+    )
+
+    assert graph.last_state is not None
+    assert graph.last_state.branch_name == "agent/AGENT-123/existing-feedback-branch"
+
+
 def test_branch_name_falls_back_to_owner_when_no_lock_id():
     graph = _Graph({})
     lock_manager = _LockManager(lock=_LockWithOwner("AGENT-123", owner="orchestrator-7"))

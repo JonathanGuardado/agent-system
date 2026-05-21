@@ -60,6 +60,42 @@ def test_load_uses_work_item_max_attempts_default_when_field_is_absent():
     assert work_item.max_attempts == 3
 
 
+def test_load_appends_jira_comments_to_work_item_description():
+    ticket = _ticket(
+        fields={
+            FIELD_REPOSITORY: "agent-system",
+            FIELD_REPO_PATH: "/repos/agent-system",
+            "comment": {
+                "comments": [
+                    {
+                        "body": {
+                            "type": "doc",
+                            "content": [
+                                {
+                                    "type": "paragraph",
+                                    "content": [
+                                        {
+                                            "type": "text",
+                                            "text": "Please change the CTA copy.",
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        }
+    )
+    loader = JiraWorkItemLoader(_FakeJiraClient(ticket))
+
+    work_item = asyncio.run(loader.load("AGENT-123"))
+
+    assert "Wire execution state to Jira." in work_item.description
+    assert "Jira comments to consider:" in work_item.description
+    assert "Please change the CTA copy." in work_item.description
+
+
 def test_load_recovers_repo_context_from_description():
     ticket = _ticket(
         description=(

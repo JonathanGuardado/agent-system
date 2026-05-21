@@ -40,9 +40,10 @@ class JiraWorkItemLoader:
         return TicketWorkItem(
             ticket_key=ticket.key,
             summary=ticket.summary,
-            description=ticket.description,
+            description=_description_with_comments(ticket),
             repository=repository,
             repo_path=repo_path,
+            branch_name=None,
             slack_channel=_optional_string(ticket, FIELD_SLACK_CHANNEL),
             slack_thread_ts=_optional_string(ticket, FIELD_SLACK_THREAD_TS),
             max_attempts=_max_attempts(ticket),
@@ -105,6 +106,52 @@ def _optional_string(ticket: JiraTicket, field_name: str) -> str | None:
     if not isinstance(value, str) or value.strip() == "":
         return None
     return value
+
+
+def _description_with_comments(ticket: JiraTicket) -> str:
+    comments = _comment_texts(ticket.fields.get("comment"))
+    if not comments:
+        return ticket.description
+    return "\n\n".join(
+        part
+        for part in (
+            ticket.description,
+            "Jira comments to consider:\n" + "\n\n".join(comments),
+        )
+        if part
+    )
+
+
+def _comment_texts(value: object) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    comments = value.get("comments")
+    if not isinstance(comments, list):
+        return []
+    texts: list[str] = []
+    for comment in comments:
+        if not isinstance(comment, dict):
+            continue
+        body_parts: list[str] = []
+        _collect_adf_text(comment.get("body"), body_parts)
+        text = " ".join(part for part in body_parts if part).strip()
+        if text:
+            texts.append(text)
+    return texts
+
+
+def _collect_adf_text(value: object, parts: list[str]) -> None:
+    if isinstance(value, dict):
+        text = value.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+        content = value.get("content")
+        if isinstance(content, list):
+            for child in content:
+                _collect_adf_text(child, parts)
+    elif isinstance(value, list):
+        for child in value:
+            _collect_adf_text(child, parts)
 
 
 def _max_attempts(ticket: JiraTicket) -> int:

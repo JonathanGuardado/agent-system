@@ -124,6 +124,35 @@ def test_write_creates_epic_for_multi_ticket_proposal():
         call[2]["fields"][FIELD_SLACK_CHANNEL]
         for call in create_calls[1:]
     ] == ["C-INTAKE", "C-INTAKE", "C-INTAKE"]
+    assert result.execution_ready_ticket_keys == ("AGENT-2", "AGENT-3", "AGENT-4")
+
+
+def test_new_project_multi_ticket_starts_only_first_ticket_execution_ready():
+    proposal = _proposal(
+        mode=IntakeMode.NEW_PROJECT,
+        epic_summary="Ofertas SV",
+        tickets=[
+            TicketSpec(
+                summary=f"Ticket {n}",
+                labels=[LABEL_AI_READY],
+                capabilities_needed=["ticket.decompose"],
+                repository="ofertas-sv",
+                repo_path="/home/ofertas-sv",
+            )
+            for n in (1, 2, 3)
+        ],
+    )
+    client = FakeJiraClient([])
+    writer = JiraWriter(client)
+
+    result = asyncio.run(writer.write(proposal))
+
+    assert result.created_epic_key == "AGENT-1"
+    assert result.created_ticket_keys == ("AGENT-2", "AGENT-3", "AGENT-4")
+    assert result.execution_ready_ticket_keys == ("AGENT-2",)
+    assert LABEL_AI_READY in client.ticket("AGENT-2").labels
+    assert LABEL_AI_READY not in client.ticket("AGENT-3").labels
+    assert LABEL_AI_READY not in client.ticket("AGENT-4").labels
 
 
 def test_write_uses_existing_epic_key_without_creating_epic():
