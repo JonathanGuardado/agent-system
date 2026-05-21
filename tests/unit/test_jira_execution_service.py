@@ -104,6 +104,26 @@ def test_mark_in_review_transitions_releases_claim_and_comments_with_pr():
     ]
 
 
+def test_mark_in_review_uses_configured_transition_status():
+    client = _FakeJiraClient(
+        _ticket(
+            labels=[LABEL_AI_READY, LABEL_AI_CLAIMED],
+            fields={FIELD_AGENT_ASSIGNED_COMPONENT: "runner-1"},
+        )
+    )
+    service = JiraExecutionService(
+        client,
+        component_id="runner-1",
+        in_review_status="Done",
+    )
+    pull_request_url = "https://github.com/example/agent-system/pull/12"
+
+    asyncio.run(service.mark_in_review("AGENT-123", pull_request_url))
+
+    assert client.calls[0] == ("transition_ticket", "AGENT-123", "Done")
+    assert client.ticket.status == "Done"
+
+
 def test_mark_released_clears_claim_without_status_change():
     client = _FakeJiraClient(
         _ticket(

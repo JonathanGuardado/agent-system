@@ -50,10 +50,13 @@ class JiraExecutionService:
         self,
         client: JiraClient,
         component_id: str,
+        *,
+        in_review_status: str = STATUS_IN_REVIEW,
         emit: EventEmitter | None = None,
     ) -> None:
         self._client = client
         self._component_id = component_id
+        self._in_review_status = in_review_status.strip() or STATUS_IN_REVIEW
         self._event_emitter = emit
 
     async def mark_claimed(self, ticket_key: str) -> None:
@@ -174,7 +177,10 @@ class JiraExecutionService:
             _MARK_IN_REVIEW_OPERATION,
             ticket_key,
             _STEP_TRANSITION_TICKET,
-            lambda: self._client.transition_ticket(ticket_key, STATUS_IN_REVIEW),
+            lambda: self._client.transition_ticket(
+                ticket_key,
+                self._in_review_status,
+            ),
         )
         failed_step = _STEP_REMOVE_LABELS
         try:

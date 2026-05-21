@@ -43,6 +43,7 @@ from ticket_agent.jira.constants import (
     FIELD_REPO_PATH,
     FIELD_SLACK_CHANNEL,
     FIELD_SLACK_THREAD_TS,
+    STATUS_IN_REVIEW,
 )
 from ticket_agent.jira.execution_coordinator import JiraExecutionCoordinator
 from ticket_agent.jira.execution_service import JiraExecutionService
@@ -138,6 +139,7 @@ class RuntimeConfig:
     contract_dir: Path = Path("config/repos")
     pull_request_base_branch: str = "main"
     jira_target_projects: tuple[str, ...] = ()
+    jira_in_review_status: str = STATUS_IN_REVIEW
     execution_mode: str = "execute"
     execution_approval_policy: str = "auto"
 
@@ -297,6 +299,7 @@ def build_runtime(
     execution_service = JiraExecutionService(
         jira_client,
         runtime_config.component_id,
+        in_review_status=runtime_config.jira_in_review_status,
         emit=emit,
     )
     node_runner = TicketNodeRunner(
@@ -673,6 +676,11 @@ def load_app_config(
         )
         or "main",
         jira_target_projects=_jira_target_projects(merged_env),
+        jira_in_review_status=_env_value(
+            merged_env,
+            "AGENT_SYSTEM_JIRA_IN_REVIEW_STATUS",
+        )
+        or STATUS_IN_REVIEW,
         execution_mode=_env_value(merged_env, "AGENT_SYSTEM_EXECUTION_MODE")
         or "execute",
         execution_approval_policy=_env_value(
@@ -957,6 +965,8 @@ def _validate_runtime_config(config: RuntimeConfig) -> None:
         )
     if config.reconcile_batch_size is not None and config.reconcile_batch_size < 1:
         raise StartupConfigError("AGENT_SYSTEM_RECONCILE_BATCH_SIZE must be positive")
+    if not str(config.jira_in_review_status).strip():
+        raise StartupConfigError("AGENT_SYSTEM_JIRA_IN_REVIEW_STATUS must not be blank")
     if config.execution_mode not in {"execute", "dry_run"}:
         raise StartupConfigError(
             "AGENT_SYSTEM_EXECUTION_MODE must be either 'execute' or 'dry_run'"
@@ -1184,6 +1194,7 @@ def _runtime_payload(runtime: AgentSystemRuntime) -> dict[str, Any]:
         "repo_config_path": str(config.contract_dir),
         "pull_request_base_branch": config.pull_request_base_branch,
         "jira_target_projects": list(config.jira_target_projects),
+        "jira_in_review_status": config.jira_in_review_status,
         "execution_mode": config.execution_mode,
         "execution_approval_policy": config.execution_approval_policy,
         "intake_channel_configured": bool(config.intake_channel),

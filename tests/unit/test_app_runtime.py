@@ -569,6 +569,7 @@ def test_load_app_config_reads_env_file_and_runtime_options(tmp_path):
                 "DEEPSEEK_API_KEY=deepseek-key",
                 "GEMINI_API_KEY=gemini-key",
                 "AGENT_SYSTEM_JIRA_TARGET_PROJECTS=AGENT,OPS",
+                "AGENT_SYSTEM_JIRA_IN_REVIEW_STATUS=Done",
                 "JIRA_FIELD_AGENT_ASSIGNED_COMPONENT=customfield_10001",
                 f"AGENT_SYSTEM_DATA_DIR={data_dir}",
                 "AGENT_SYSTEM_COMPONENT_ID=runner-1",
@@ -595,6 +596,7 @@ def test_load_app_config_reads_env_file_and_runtime_options(tmp_path):
     assert config.runtime.reconcile_interval_seconds == 0.5
     assert str(config.runtime.contract_dir) == "config/test-repos"
     assert config.runtime.jira_target_projects == ("AGENT", "OPS")
+    assert config.runtime.jira_in_review_status == "Done"
     assert config.runtime.execution_mode == "dry_run"
     assert config.runtime.execution_approval_policy == "slack"
     assert config.jira_target_projects == ("AGENT", "OPS")
