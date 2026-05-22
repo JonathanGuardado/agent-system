@@ -300,6 +300,60 @@ def test_gh_pull_request_opener_raises_when_gh_fails(tmp_path, monkeypatch):
         )
 
 
+def test_gh_pull_request_opener_injects_bot_token_when_credentials_present(
+    tmp_path, monkeypatch
+):
+    from ticket_agent.github import GitHubCredentials
+
+    captured: list[dict[str, Any]] = []
+
+    def fake_run(command, **kwargs):
+        captured.append(kwargs)
+        if tuple(command[:3]) == ("gh", "pr", "list"):
+            return subprocess.CompletedProcess(command, 0, "\n", "")
+        return subprocess.CompletedProcess(command, 0, "https://github.test/pr/9\n", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    credentials = GitHubCredentials(bot_token="bot-pat")
+    GhPullRequestOpener(credentials=credentials).open_pull_request(
+        worktree_path=tmp_path,
+        branch_name="agent/AGENT-123/12345678",
+        base_branch="main",
+        title="AGENT-123: Add service",
+        body="Ticket: AGENT-123",
+    )
+
+    assert len(captured) == 2
+    for kwargs in captured:
+        env = kwargs["env"]
+        assert env["GH_TOKEN"] == "bot-pat"
+        assert "GIT_CONFIG_COUNT" not in env
+
+
+def test_gh_pull_request_opener_omits_env_when_no_credentials(tmp_path, monkeypatch):
+    captured: list[dict[str, Any]] = []
+
+    def fake_run(command, **kwargs):
+        captured.append(kwargs)
+        if tuple(command[:3]) == ("gh", "pr", "list"):
+            return subprocess.CompletedProcess(command, 0, "\n", "")
+        return subprocess.CompletedProcess(command, 0, "https://github.test/pr/9\n", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    GhPullRequestOpener().open_pull_request(
+        worktree_path=tmp_path,
+        branch_name="agent/AGENT-123/12345678",
+        base_branch="main",
+        title="AGENT-123: Add service",
+        body="Ticket: AGENT-123",
+    )
+
+    for kwargs in captured:
+        assert "env" not in kwargs
+
+
 def _state(
     worktree_path: Path,
     *,

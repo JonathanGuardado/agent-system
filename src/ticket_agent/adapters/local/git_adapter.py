@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import subprocess
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from ticket_agent.domain.errors import (
     GitAdapterError,
@@ -15,6 +15,7 @@ from ticket_agent.domain.errors import (
     WorktreeCreationError,
 )
 from ticket_agent.domain.git import WorktreeInfo
+from ticket_agent.github import GH_ROLE_ADMIN, GH_ROLE_BOT, GitHubCredentials
 
 
 _SAFE_REF_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
@@ -31,10 +32,16 @@ _GENERATED_COMMIT_EXCLUDES = (
 class GitAdapter:
     """Run local git operations for ticket worktrees."""
 
-    def __init__(self, *, default_timeout_seconds: int = 300) -> None:
+    def __init__(
+        self,
+        *,
+        default_timeout_seconds: int = 300,
+        credentials: GitHubCredentials | None = None,
+    ) -> None:
         if default_timeout_seconds <= 0:
             raise ValueError("default_timeout_seconds must be positive")
         self._default_timeout_seconds = default_timeout_seconds
+        self._credentials = credentials
 
     def create_worktree(
         self,
@@ -134,9 +141,17 @@ class GitAdapter:
     def push(self, worktree_path: str | Path, branch_name: str) -> None:
         worktree = Path(worktree_path).resolve(strict=True)
         _validate_push_branch(branch_name)
-        _ensure_origin_remote(worktree, timeout_seconds=self._default_timeout_seconds)
+        _ensure_origin_remote(
+            worktree,
+            timeout_seconds=self._default_timeout_seconds,
+            credentials=self._credentials,
+        )
 
-        result = self._run_git(("push", "origin", branch_name), cwd=worktree)
+        result = self._run_git(
+            ("push", "origin", branch_name),
+            cwd=worktree,
+            env=self._git_bot_env(),
+        )
         if result.returncode != 0:
             raise PushError(_failure_message(result))
 
@@ -195,15 +210,23 @@ class GitAdapter:
         args: Sequence[str],
         *,
         cwd: Path,
+        env: Mapping[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ("git", *args),
-            cwd=cwd,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=self._default_timeout_seconds,
-        )
+        kwargs: dict[str, object] = {
+            "cwd": cwd,
+            "check": False,
+            "capture_output": True,
+            "text": True,
+            "timeout": self._default_timeout_seconds,
+        }
+        if env is not None:
+            kwargs["env"] = dict(env)
+        return subprocess.run(("git", *args), **kwargs)
+
+    def _git_bot_env(self) -> Mapping[str, str] | None:
+        if self._credentials is None:
+            return None
+        return self._credentials.git_env(GH_ROLE_BOT)
 
 
 def _failure_message(result: subprocess.CompletedProcess[str]) -> str:
@@ -224,7 +247,12 @@ def _unstage_generated_paths(worktree: Path, *, timeout_seconds: int) -> None:
         raise GitAdapterError(_failure_message(result))
 
 
-def _ensure_origin_remote(worktree: Path, *, timeout_seconds: int) -> None:
+def _ensure_origin_remote(
+    worktree: Path,
+    *,
+    timeout_seconds: int,
+    credentials: GitHubCredentials | None = None,
+) -> None:
     result = _run_command(
         ("git", "remote", "get-url", "origin"),
         cwd=worktree,
@@ -234,6 +262,9 @@ def _ensure_origin_remote(worktree: Path, *, timeout_seconds: int) -> None:
         return
     repo_root = _primary_repo_root(worktree, timeout_seconds=timeout_seconds)
     repo_name = _github_repo_name(repo_root)
+    admin_env = (
+        credentials.gh_env(GH_ROLE_ADMIN) if credentials is not None else None
+    )
     create_result = _run_command(
         (
             "gh",
@@ -248,6 +279,7 @@ def _ensure_origin_remote(worktree: Path, *, timeout_seconds: int) -> None:
         ),
         cwd=repo_root,
         timeout_seconds=timeout_seconds,
+        env=admin_env,
     )
     if create_result.returncode != 0:
         raise PushError(
@@ -257,10 +289,14 @@ def _ensure_origin_remote(worktree: Path, *, timeout_seconds: int) -> None:
         )
 
     default_branch = _default_branch(repo_root, timeout_seconds=timeout_seconds)
+    push_env = (
+        credentials.git_env(GH_ROLE_BOT) if credentials is not None else None
+    )
     push_default_result = _run_command(
         ("git", "push", "-u", "origin", default_branch),
         cwd=repo_root,
         timeout_seconds=timeout_seconds,
+        env=push_env,
     )
     if push_default_result.returncode != 0:
         raise PushError(_failure_message(push_default_result))
@@ -307,15 +343,18 @@ def _run_command(
     *,
     cwd: Path,
     timeout_seconds: int,
+    env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        tuple(command),
-        cwd=cwd,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-    )
+    kwargs: dict[str, object] = {
+        "cwd": cwd,
+        "check": False,
+        "capture_output": True,
+        "text": True,
+        "timeout": timeout_seconds,
+    }
+    if env is not None:
+        kwargs["env"] = dict(env)
+    return subprocess.run(tuple(command), **kwargs)
 
 
 def _validate_safe_ref_component(value: str, label: str) -> None:

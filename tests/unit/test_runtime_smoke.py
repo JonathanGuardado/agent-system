@@ -74,6 +74,65 @@ def test_runtime_smoke_main_returns_failure_when_gh_auth_fails(tmp_path, capsys)
     assert "not logged in" in capsys.readouterr().out
 
 
+def test_runtime_smoke_runs_per_role_gh_api_check_when_tokens_configured(tmp_path):
+    contract_dir = _write_contract(tmp_path)
+    env = _env(contract_dir)
+    env["GH_ADMIN_TOKEN"] = "admin-pat"
+    env["GH_BOT_TOKEN"] = "bot-pat"
+    seen: list[tuple[tuple[str, ...], dict[str, str] | None]] = []
+
+    def per_role_command(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        command = tuple(args[0]) if args else ()
+        run_env = kwargs.get("env")
+        seen.append((command, dict(run_env) if isinstance(run_env, dict) else None))
+        login = "ai-agent-jg" if run_env and run_env.get("GH_TOKEN") == "bot-pat" else "JonathanGuardado"
+        return subprocess.CompletedProcess(command, 0, stdout=f"{login}\n", stderr="")
+
+    checks = asyncio.run(
+        collect_smoke_checks(
+            env=env,
+            env_path=_empty_env_file(tmp_path),
+            skip_network=True,
+            run_command=per_role_command,
+        )
+    )
+
+    by_name = {check.name: check for check in checks}
+    assert "github_auth" not in by_name
+    assert by_name["github_admin_auth"].status == "pass"
+    assert "JonathanGuardado" in by_name["github_admin_auth"].detail
+    assert by_name["github_bot_auth"].status == "pass"
+    assert "ai-agent-jg" in by_name["github_bot_auth"].detail
+    tokens_seen = sorted(
+        (entry[1] or {}).get("GH_TOKEN", "") for entry in seen if entry[0][:3] == ("gh", "api", "user")
+    )
+    assert tokens_seen == ["admin-pat", "bot-pat"]
+
+
+def test_runtime_smoke_skips_role_when_token_missing(tmp_path):
+    contract_dir = _write_contract(tmp_path)
+    env = _env(contract_dir)
+    env["GH_BOT_TOKEN"] = "bot-pat"
+
+    def gh_command(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        command = tuple(args[0]) if args else ()
+        return subprocess.CompletedProcess(command, 0, stdout="ai-agent-jg\n", stderr="")
+
+    checks = asyncio.run(
+        collect_smoke_checks(
+            env=env,
+            env_path=_empty_env_file(tmp_path),
+            skip_network=True,
+            run_command=gh_command,
+        )
+    )
+
+    by_name = {check.name: check for check in checks}
+    assert by_name["github_admin_auth"].status == "skip"
+    assert by_name["github_bot_auth"].status == "pass"
+
+
 def test_jira_project_metadata_skipped_when_no_network(tmp_path):
     contract_dir = _write_contract(tmp_path)
     checks = asyncio.run(

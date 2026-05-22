@@ -609,6 +609,57 @@ def test_load_app_config_reads_env_file_and_runtime_options(tmp_path):
     assert config.jira_field_map[FIELD_AGENT_ASSIGNED_COMPONENT] == "customfield_10001"
 
 
+def test_load_app_config_picks_up_github_tokens(tmp_path):
+    env_path = tmp_path / "agent-system.env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "SLACK_BOT_TOKEN=xoxb-unit",
+                "SLACK_APP_TOKEN=xapp-unit",
+                "JIRA_BASE_URL=https://jira.example.test",
+                "JIRA_USER_EMAIL=agent@example.test",
+                "JIRA_API_KEY=jira-key",
+                "DEEPSEEK_API_KEY=deepseek-key",
+                "GEMINI_API_KEY=gemini-key",
+                "GH_ADMIN_TOKEN=admin-pat",
+                "GH_BOT_TOKEN=bot-pat",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_app_config(env={}, env_path=env_path)
+
+    assert config.github_admin_token == "admin-pat"
+    assert config.github_bot_token == "bot-pat"
+    credentials = config.github_credentials()
+    assert credentials.admin_token == "admin-pat"
+    assert credentials.bot_token == "bot-pat"
+
+
+def test_load_app_config_github_tokens_default_to_none(tmp_path):
+    env_path = tmp_path / "agent-system.env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "SLACK_BOT_TOKEN=xoxb-unit",
+                "SLACK_APP_TOKEN=xapp-unit",
+                "JIRA_BASE_URL=https://jira.example.test",
+                "JIRA_USER_EMAIL=agent@example.test",
+                "JIRA_API_KEY=jira-key",
+                "DEEPSEEK_API_KEY=deepseek-key",
+                "GEMINI_API_KEY=gemini-key",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_app_config(env={}, env_path=env_path)
+
+    assert config.github_admin_token is None
+    assert config.github_bot_token is None
+
+
 def test_load_app_config_rejects_unknown_execution_mode(tmp_path):
     env_path = tmp_path / "agent-system.env"
     env_path.write_text("", encoding="utf-8")

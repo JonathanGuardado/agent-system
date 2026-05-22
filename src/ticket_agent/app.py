@@ -25,6 +25,7 @@ from ticket_agent.feedback.github import (
     GitHubFeedbackPoller,
     SQLiteFeedbackStore,
 )
+from ticket_agent.github import GitHubCredentials
 from ticket_agent.intake.approval_flow import ApprovalFlow, SlackPoster
 from ticket_agent.intake.intent_resolver import IntakeIntentResolver
 from ticket_agent.intake.jira_writer import JiraWriter
@@ -169,6 +170,16 @@ class AppConfig:
     jira_field_map: Mapping[str, str]
     jira_target_projects: tuple[str, ...]
     runtime: RuntimeConfig
+    github_admin_token: str | None = None
+    github_bot_token: str | None = None
+
+    def github_credentials(self) -> "GitHubCredentials":
+        from ticket_agent.github import GitHubCredentials
+
+        return GitHubCredentials(
+            admin_token=self.github_admin_token,
+            bot_token=self.github_bot_token,
+        )
 
 
 @dataclass(slots=True)
@@ -276,11 +287,13 @@ def build_runtime(
     escalation: EscalationService | None = None,
     queue: asyncio.Queue[str] | None = None,
     emit: EventEmitter | None = None,
+    github_credentials: GitHubCredentials | None = None,
 ) -> AgentSystemRuntime:
     """Compose the production listener, graph, detector, and worker."""
 
     runtime_config = config or RuntimeConfig()
     _validate_runtime_config(runtime_config)
+    credentials = github_credentials or GitHubCredentials()
     data_dir = Path(runtime_config.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     database_paths = _database_paths(data_dir)
@@ -333,7 +346,10 @@ def build_runtime(
         tests=tests or AdapterTestService(contract_dir=runtime_config.contract_dir),
         review=review or ModelRouterReviewService(router),
         pull_request=pull_request
-        or GitService(base_branch=runtime_config.pull_request_base_branch),
+        or GitService(
+            base_branch=runtime_config.pull_request_base_branch,
+            credentials=credentials,
+        ),
         escalation=escalation or JiraEscalationService(execution_service),
     )
     graph = build_persistent_ticket_graph(node_runner, checkpointer=checkpointer)
@@ -392,6 +408,7 @@ def build_runtime(
                 ignore_self_comments=(
                     runtime_config.github_feedback_ignore_self_comments
                 ),
+                credentials=credentials,
             ),
             store=feedback_store,
             queue=feedback_queue,
@@ -586,6 +603,7 @@ async def main(
             pull_request=pull_request,
             escalation=escalation,
             emit=event_emitter,
+            github_credentials=app_config.github_credentials(),
         )
         await _emit(event_emitter, "app.starting", _runtime_payload(runtime))
 
@@ -790,6 +808,10 @@ def load_app_config(
         jira_field_map=_jira_field_map(merged_env),
         jira_target_projects=_jira_target_projects(merged_env),
         runtime=runtime_config,
+        github_admin_token=_env_value(merged_env, "GH_ADMIN_TOKEN")
+        or _env_value(merged_env, "GITHUB_ADMIN_TOKEN"),
+        github_bot_token=_env_value(merged_env, "GH_BOT_TOKEN")
+        or _env_value(merged_env, "GITHUB_BOT_TOKEN"),
     )
 
 

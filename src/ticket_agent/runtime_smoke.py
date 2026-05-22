@@ -85,7 +85,8 @@ async def collect_smoke_checks(
 ) -> list[SmokeCheck]:
     checks: list[SmokeCheck] = []
     app_config = _load_config_check(checks, env=env, env_path=env_path)
-    checks.append(_gh_auth_check(run_command or subprocess.run))
+    runner = run_command or subprocess.run
+    checks.extend(_github_auth_checks(app_config, runner))
 
     if app_config is None:
         _skip_all = "startup config failed before auth endpoints could be checked"
@@ -220,6 +221,53 @@ def _gh_auth_check(run_command: CommandRunner) -> SmokeCheck:
         detail = (result.stderr or result.stdout).strip()
         return SmokeCheck("github_auth", "fail", detail or "gh auth failed")
     return SmokeCheck("github_auth", "pass", "gh auth status succeeded")
+
+
+def _github_auth_checks(
+    app_config: AppConfig | None,
+    run_command: CommandRunner,
+) -> list[SmokeCheck]:
+    if app_config is None:
+        return [_gh_auth_check(run_command)]
+    credentials = app_config.github_credentials()
+    if not credentials.admin_token and not credentials.bot_token:
+        return [_gh_auth_check(run_command)]
+    checks: list[SmokeCheck] = []
+    for role, name in (("admin", "github_admin_auth"), ("bot", "github_bot_auth")):
+        if credentials.has_token_for(role):
+            checks.append(
+                _gh_token_login_check(name, credentials.gh_env(role), run_command)
+            )
+        else:
+            checks.append(SmokeCheck(name, "skip", f"{role} token not configured"))
+    return checks
+
+
+def _gh_token_login_check(
+    name: str,
+    env: Mapping[str, str] | None,
+    run_command: CommandRunner,
+) -> SmokeCheck:
+    try:
+        result = run_command(
+            ("gh", "api", "user", "--jq", ".login"),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=dict(env) if env is not None else None,
+        )
+    except FileNotFoundError:
+        return SmokeCheck(name, "fail", "gh CLI is not installed")
+    except subprocess.TimeoutExpired:
+        return SmokeCheck(name, "fail", "gh api user timed out")
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        return SmokeCheck(name, "fail", detail or "gh api user failed")
+    login = (result.stdout or "").strip()
+    if not login:
+        return SmokeCheck(name, "fail", "gh api user returned empty login")
+    return SmokeCheck(name, "pass", f"authenticated as {login}")
 
 
 async def _slack_auth_check(bot_token: str) -> SmokeCheck:

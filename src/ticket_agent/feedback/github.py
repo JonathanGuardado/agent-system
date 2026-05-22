@@ -16,6 +16,7 @@ import subprocess
 from typing import Any, Protocol
 
 from ticket_agent.adapters.local.git_adapter import GitAdapter
+from ticket_agent.github import GH_ROLE_BOT, GitHubCredentials
 from ticket_agent.jira.work_item_loader import JiraWorkItemLoader
 from ticket_agent.orchestrator.git_services import WorktreeCleanupService
 from ticket_agent.orchestrator.runner import TicketWorkItem
@@ -304,10 +305,12 @@ class GhCliFeedbackClient:
         repo_paths: Sequence[str | Path],
         ignore_self_comments: bool = False,
         timeout_seconds: int = 120,
+        credentials: GitHubCredentials | None = None,
     ) -> None:
         self._repo_paths = tuple(Path(path) for path in repo_paths)
         self._ignore_self_comments = ignore_self_comments
         self._timeout_seconds = timeout_seconds
+        self._credentials = credentials
 
     def find_feedback(self) -> Sequence[FeedbackItem]:
         actor = self._current_login() if self._ignore_self_comments else ""
@@ -397,14 +400,18 @@ class GhCliFeedbackClient:
         *,
         cwd: Path | None,
     ) -> subprocess.CompletedProcess[str]:
-        result = subprocess.run(
-            tuple(command),
-            cwd=cwd,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=self._timeout_seconds,
-        )
+        kwargs: dict[str, Any] = {
+            "cwd": cwd,
+            "check": False,
+            "capture_output": True,
+            "text": True,
+            "timeout": self._timeout_seconds,
+        }
+        if self._credentials is not None:
+            env = self._credentials.gh_env(GH_ROLE_BOT)
+            if env is not None:
+                kwargs["env"] = env
+        result = subprocess.run(tuple(command), **kwargs)
         if result.returncode != 0:
             raise RuntimeError(_subprocess_failure_message(result))
         return result

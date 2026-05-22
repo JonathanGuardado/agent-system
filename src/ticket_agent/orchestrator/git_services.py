@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
-from typing import Protocol
+from typing import Any, Protocol
 
 from ticket_agent.adapters.local.git_adapter import GitAdapter
 from ticket_agent.domain.errors import PullRequestCreationError
+from ticket_agent.github import GH_ROLE_BOT, GitHubCredentials
 from ticket_agent.orchestrator.state import TicketState
 
 
@@ -46,9 +47,12 @@ class GitService:
         git: GitPullRequestPort | None = None,
         pull_request_opener: PullRequestOpener | None = None,
         base_branch: str = "main",
+        credentials: GitHubCredentials | None = None,
     ) -> None:
-        self._git = git or GitAdapter()
-        self._pull_request_opener = pull_request_opener or GhPullRequestOpener()
+        self._git = git or GitAdapter(credentials=credentials)
+        self._pull_request_opener = pull_request_opener or GhPullRequestOpener(
+            credentials=credentials,
+        )
         self._base_branch = base_branch
 
     async def open_pull_request(self, state: TicketState) -> str:
@@ -73,8 +77,13 @@ class GitService:
 class WorktreeCleanupService:
     """Remove terminal ticket worktrees from the local repository."""
 
-    def __init__(self, *, git: GitWorktreeCleanupPort | None = None) -> None:
-        self._git = git or GitAdapter()
+    def __init__(
+        self,
+        *,
+        git: GitWorktreeCleanupPort | None = None,
+        credentials: GitHubCredentials | None = None,
+    ) -> None:
+        self._git = git or GitAdapter(credentials=credentials)
 
     def cleanup(self, state: TicketState) -> None:
         repo_path = _worktree_cleanup_repo_path(state)
@@ -87,10 +96,16 @@ class WorktreeCleanupService:
 class GhPullRequestOpener:
     """Open pull requests through the GitHub CLI."""
 
-    def __init__(self, *, timeout_seconds: int = 300) -> None:
+    def __init__(
+        self,
+        *,
+        timeout_seconds: int = 300,
+        credentials: GitHubCredentials | None = None,
+    ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
         self._timeout_seconds = timeout_seconds
+        self._credentials = credentials
 
     def open_pull_request(
         self,
@@ -130,6 +145,7 @@ class GhPullRequestOpener:
                 capture_output=True,
                 text=True,
                 timeout=self._timeout_seconds,
+                **self._gh_env_kwargs(),
             )
         except subprocess.TimeoutExpired as exc:
             raise PullRequestCreationError(
@@ -174,6 +190,7 @@ class GhPullRequestOpener:
                 capture_output=True,
                 text=True,
                 timeout=self._timeout_seconds,
+                **self._gh_env_kwargs(),
             )
         except subprocess.TimeoutExpired:
             return None
@@ -184,6 +201,14 @@ class GhPullRequestOpener:
         if not url or url == "null":
             return None
         return url
+
+    def _gh_env_kwargs(self) -> dict[str, Any]:
+        if self._credentials is None:
+            return {}
+        env = self._credentials.gh_env(GH_ROLE_BOT)
+        if env is None:
+            return {}
+        return {"env": env}
 
 
 def _worktree_path(state: TicketState) -> Path | None:

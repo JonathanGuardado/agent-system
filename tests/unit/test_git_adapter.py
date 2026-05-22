@@ -229,6 +229,91 @@ def test_cleanup_removes_valid_worktree(tmp_path):
     assert not info.worktree_path.exists()
 
 
+def test_push_uses_bot_credentials_env_when_configured(tmp_path, monkeypatch):
+    from ticket_agent.github import GitHubCredentials
+
+    repo = _init_repo(tmp_path / "repo")
+    captured: dict[str, dict[str, object]] = {}
+
+    def fake_run(command, **kwargs):
+        cmd = tuple(command)
+        if cmd == ("git", "remote", "get-url", "origin"):
+            return subprocess.CompletedProcess(command, 0, "git@github.test:acme/repo.git\n", "")
+        if cmd == ("git", "push", "origin", "agent/ABC-123/12345678"):
+            captured["push"] = kwargs
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    credentials = GitHubCredentials(bot_token="bot-pat")
+    GitAdapter(credentials=credentials).push(repo, "agent/ABC-123/12345678")
+
+    push_env = captured["push"]["env"]
+    assert isinstance(push_env, dict)
+    assert push_env["GH_TOKEN"] == "bot-pat"
+    assert push_env["GIT_CONFIG_COUNT"] == "1"
+    assert push_env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
+    assert push_env["GIT_CONFIG_VALUE_0"] == "AUTHORIZATION: bearer bot-pat"
+
+
+def test_push_does_not_set_env_when_credentials_absent(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "repo")
+    captured: dict[str, dict[str, object]] = {}
+
+    def fake_run(command, **kwargs):
+        cmd = tuple(command)
+        if cmd == ("git", "remote", "get-url", "origin"):
+            return subprocess.CompletedProcess(command, 0, "git@github.test:acme/repo.git\n", "")
+        if cmd == ("git", "push", "origin", "agent/ABC-123/12345678"):
+            captured["push"] = kwargs
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    GitAdapter().push(repo, "agent/ABC-123/12345678")
+
+    assert "env" not in captured["push"]
+
+
+def test_push_creates_repo_with_admin_credentials(tmp_path, monkeypatch):
+    from ticket_agent.github import GitHubCredentials
+
+    repo = _init_repo(tmp_path / "repo")
+    captured: dict[str, dict[str, object]] = {}
+
+    def fake_run(command, **kwargs):
+        cmd = tuple(command)
+        if cmd == ("git", "remote", "get-url", "origin"):
+            return subprocess.CompletedProcess(command, 2, "", "No such remote\n")
+        if cmd == (
+            "git",
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ):
+            return subprocess.CompletedProcess(command, 0, f"{repo / '.git'}\n", "")
+        if cmd == ("git", "symbolic-ref", "--quiet", "--short", "HEAD"):
+            return subprocess.CompletedProcess(command, 0, "main\n", "")
+        if cmd[:3] == ("gh", "repo", "create"):
+            captured["create"] = kwargs
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if cmd[:2] == ("git", "push"):
+            captured.setdefault("pushes", []).append(kwargs)  # type: ignore[arg-type]
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    credentials = GitHubCredentials(admin_token="admin-pat", bot_token="bot-pat")
+    GitAdapter(credentials=credentials).push(repo, "agent/ABC-123/12345678")
+
+    create_env = captured["create"]["env"]
+    assert isinstance(create_env, dict)
+    assert create_env["GH_TOKEN"] == "admin-pat"
+    assert "GIT_CONFIG_COUNT" not in create_env
+
+
 def _init_repo(path: Path) -> Path:
     path.mkdir()
     _git(("init",), cwd=path)
