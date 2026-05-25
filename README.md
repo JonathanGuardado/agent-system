@@ -211,6 +211,11 @@ The primary variables for local Slack/Jira runs are:
 - Model providers:
   - `DEEPSEEK_API_KEY`
   - `GEMINI_API_KEY`
+- GitHub identities:
+  - `GH_ADMIN_TOKEN` for the admin account that creates repositories and adds
+    collaborators
+  - `GH_BOT_TOKEN` for the bot account that pushes code, opens PRs, and
+    processes PR feedback
 - Repo contract path:
   - `AGENT_SYSTEM_REPO_CONFIG_PATH` (defaults to `config/repos`)
 - Intake proposal generation:
@@ -222,9 +227,19 @@ The primary variables for local Slack/Jira runs are:
     per-ticket approval after planning; otherwise proposal approval is enough
     in execute mode
 
+For personal GitHub repositories, configure `GH_ADMIN_TOKEN` and
+`GH_BOT_TOKEN` as personal access tokens (classic) with the `repo` scope.
+When a repository must be created, the admin account owns it and invites the
+bot account as a collaborator; implementation branches and PRs then use the
+bot identity. Keep both tokens only in `.env`. See
+[docs/setup-guide.md](docs/setup-guide.md#3-github-accounts) for creation and
+verification steps.
+
 Local prerequisites that are not environment variables:
 
-- `gh` must be installed and authenticated. The smoke check runs `gh auth status`.
+- `gh` must be installed. The smoke check validates each configured GitHub
+  token, or falls back to local `gh` authentication when role tokens are not
+  provided.
 - The repo contract path must contain valid YAML contracts for each target repo.
 
 ### Local integration checklist
