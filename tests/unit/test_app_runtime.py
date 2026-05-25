@@ -212,7 +212,7 @@ def test_fake_slack_to_jira_to_execution_pr_path(tmp_path):
         assert approved.write_result.created_epic_key == "AGENT-1"
         assert approved.write_result.created_ticket_keys == ("AGENT-2", "AGENT-3")
 
-        assert asyncio.run(runtime.detector.poll_once()) == 2
+        assert asyncio.run(runtime.detector.poll_once()) == 1
         assert asyncio.run(runtime.worker.run_once()) is True
 
         assert runtime.approval_store.get("AGENT-2") is None

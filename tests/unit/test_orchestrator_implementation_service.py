@@ -239,6 +239,41 @@ def test_local_implementation_service_reuses_existing_worktree(tmp_path):
     assert result["lock_id"] == "12345678"
 
 
+def test_local_implementation_service_starts_ticket_from_integration_branch(tmp_path):
+    repo_path = tmp_path / "repo"
+    worktree_path = repo_path / ".worktrees" / "LAB-31"
+    calls: dict[str, Any] = {}
+    git = _FakeGit(
+        WorktreeInfo(
+            repo_path=repo_path,
+            worktree_path=worktree_path,
+            branch_name="agent/LAB-31/abcdef12",
+            ticket_key="LAB-31",
+            lock_id="abcdef12",
+        )
+    )
+    service = LocalImplementationService(
+        contract_loader=_loader(calls, _contract(repo_root=str(repo_path))),
+        git=git,
+        file_adapter_factory=_file_adapter_factory(calls),
+        lock_id_factory=lambda state: "abcdef12",
+    )
+
+    asyncio.run(
+        service.implement(
+            TicketState(
+                ticket_key="LAB-31",
+                summary="Next initiative step",
+                repository="example",
+                repo_path=str(repo_path),
+                pull_request_base_branch="integration/lab-30",
+            )
+        )
+    )
+
+    assert git.base_branches == ["integration/lab-30"]
+
+
 def test_local_implementation_service_returns_failed_result_without_repo_identity():
     loader_called = False
 
@@ -432,14 +467,17 @@ class _FakeGit:
     def __init__(self, result: WorktreeInfo | Exception) -> None:
         self._result = result
         self.calls: list[tuple[Path, str, str]] = []
+        self.base_branches: list[str | None] = []
 
     def create_worktree(
         self,
         repo_path: str | Path,
         ticket_key: str,
         short_lock_id: str,
+        base_branch: str | None = None,
     ) -> WorktreeInfo:
         self.calls.append((Path(repo_path), ticket_key, short_lock_id))
+        self.base_branches.append(base_branch)
         if isinstance(self._result, Exception):
             raise self._result
         return self._result

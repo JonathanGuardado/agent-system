@@ -5,6 +5,8 @@ LABEL_AI_CLAIMED = "ai-claimed"
 LABEL_AI_FAILED = "ai-failed"
 LABEL_AI_EXECUTION_APPROVED = "ai-execution-approved"
 LABEL_DO_NOT_AUTOMATE = "do-not-automate"
+LABEL_AI_SEQUENCE_PREFIX = "ai-sequence-"
+LABEL_AI_STEP_PREFIX = "ai-step-"
 
 STATUS_TODO = "To Do"
 STATUS_IN_PROGRESS = "In Progress"
@@ -68,6 +70,8 @@ __all__ = [
     "LABEL_AI_EXECUTION_APPROVED",
     "LABEL_AI_FAILED",
     "LABEL_AI_READY",
+    "LABEL_AI_SEQUENCE_PREFIX",
+    "LABEL_AI_STEP_PREFIX",
     "LABEL_DO_NOT_AUTOMATE",
     "STATUS_IN_PROGRESS",
     "STATUS_IN_REVIEW",

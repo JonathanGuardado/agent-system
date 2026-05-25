@@ -78,7 +78,9 @@ The important MVP boundaries are:
 
 - Intake turns a human request into a proposed Jira Epic/Task set before
   approval. Multi-ticket proposals create an Epic in an existing Jira project;
-  single-ticket proposals stay as Tasks.
+  single-ticket proposals stay as Tasks. Multi-ticket initiatives run
+  sequentially through `integration/<epic-key>` and conclude with a
+  cumulative promotion PR when GitHub feedback polling is enabled.
 - Detection finds Jira tickets that are ready for agent execution.
 - Locks prevent multiple workers from claiming the same ticket.
 - Tool adapters provide constrained local file, shell, test, and git access.

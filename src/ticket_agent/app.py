@@ -22,7 +22,10 @@ from ticket_agent.feedback.github import (
     FeedbackExecutionCoordinator,
     FeedbackWorker,
     GhCliFeedbackClient,
+    GhCliMergedDeliveryClient,
+    GitHubMergedDeliveryPoller,
     GitHubFeedbackPoller,
+    SequentialDeliveryAdvancer,
     SQLiteFeedbackStore,
 )
 from ticket_agent.github import GitHubCredentials
@@ -69,7 +72,11 @@ from ticket_agent.orchestrator.execution_approval import (
     SlackExecutionApprovalService,
 )
 from ticket_agent.orchestrator.execution_worker import ExecutionWorker
-from ticket_agent.orchestrator.git_services import GitService, WorktreeCleanupService
+from ticket_agent.orchestrator.git_services import (
+    GhPullRequestOpener,
+    GitService,
+    WorktreeCleanupService,
+)
 from ticket_agent.orchestrator.graph import build_persistent_ticket_graph
 from ticket_agent.orchestrator.jira_services import JiraEscalationService
 from ticket_agent.orchestrator.local_services import (
@@ -199,6 +206,8 @@ class AgentSystemRuntime:
     feedback_poller: GitHubFeedbackPoller | None
     feedback_worker: FeedbackWorker | None
     feedback_store: SQLiteFeedbackStore | None
+    delivery_poller: GitHubMergedDeliveryPoller | None
+    delivery_store: SQLiteFeedbackStore | None
     jira_client: JiraClient
     config: RuntimeConfig
     database_paths: Mapping[str, Path]
@@ -271,6 +280,8 @@ class AgentSystemRuntime:
         self.lock_manager.close()
         if self.feedback_store is not None:
             self.feedback_store.close()
+        if self.delivery_store is not None:
+            self.delivery_store.close()
 
 
 def build_runtime(
@@ -395,16 +406,19 @@ def build_runtime(
     feedback_poller: GitHubFeedbackPoller | None = None
     feedback_worker: FeedbackWorker | None = None
     feedback_store: SQLiteFeedbackStore | None = None
+    delivery_poller: GitHubMergedDeliveryPoller | None = None
+    delivery_store: SQLiteFeedbackStore | None = None
     if runtime_config.github_feedback_enabled:
+        feedback_repo_paths = [
+            defaults["repo_path"]
+            for defaults in repo_defaults.values()
+            if defaults.get("repo_path")
+        ]
         feedback_queue = asyncio.Queue()
         feedback_store = SQLiteFeedbackStore(database_paths["feedback_store"])
         feedback_poller = GitHubFeedbackPoller(
             client=GhCliFeedbackClient(
-                repo_paths=[
-                    defaults["repo_path"]
-                    for defaults in repo_defaults.values()
-                    if defaults.get("repo_path")
-                ],
+                repo_paths=feedback_repo_paths,
                 ignore_self_comments=(
                     runtime_config.github_feedback_ignore_self_comments
                 ),
@@ -415,6 +429,19 @@ def build_runtime(
             poll_interval_seconds=(
                 runtime_config.github_feedback_poll_interval_seconds
             ),
+            emit=emit,
+        )
+        delivery_store = SQLiteFeedbackStore(database_paths["delivery_store"])
+        delivery_poller = GitHubMergedDeliveryPoller(
+            client=GhCliMergedDeliveryClient(
+                repo_paths=feedback_repo_paths,
+                credentials=credentials,
+            ),
+            store=delivery_store,
+            advancer=SequentialDeliveryAdvancer(jira_client),
+            promotion_opener=GhPullRequestOpener(credentials=credentials),
+            promotion_base_branch=runtime_config.pull_request_base_branch,
+            poll_interval_seconds=runtime_config.github_feedback_poll_interval_seconds,
             emit=emit,
         )
         feedback_worker = FeedbackWorker(
@@ -482,6 +509,8 @@ def build_runtime(
         feedback_poller=feedback_poller,
         feedback_worker=feedback_worker,
         feedback_store=feedback_store,
+        delivery_poller=delivery_poller,
+        delivery_store=delivery_store,
         jira_client=jira_client,
         config=runtime_config,
         database_paths=database_paths,
@@ -539,6 +568,15 @@ async def run_runtime(
                         emit,
                     ),
                     name="github-feedback-worker",
+                )
+            if runtime.delivery_poller is not None:
+                task_group.create_task(
+                    _run_named_loop(
+                        "github_delivery_polling",
+                        runtime.delivery_poller.run_forever,
+                        emit,
+                    ),
+                    name="github-delivery-polling",
                 )
             task_group.create_task(
                 _shutdown_watcher(stop_event),
@@ -999,6 +1037,7 @@ def _database_paths(data_dir: Path) -> dict[str, Path]:
         "graph_checkpoints": data_dir / "ticket_graph_checkpoints.sqlite3",
         "ticket_locks": data_dir / "ticket_locks.sqlite3",
         "feedback_store": data_dir / "github_feedback.sqlite3",
+        "delivery_store": data_dir / "github_delivery.sqlite3",
     }
 
 

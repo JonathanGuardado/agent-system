@@ -157,7 +157,44 @@ precedence when both are set.
 
 ---
 
-## 3. Model providers
+## 3. GitHub accounts
+
+Execution supports two separate GitHub users so repository ownership stays with
+an administrator while commits and pull requests are attributed to a bot.
+
+This personal-repository setup requires personal access tokens (classic).
+GitHub fine-grained PATs currently cannot contribute to repositories where the
+token owner is only a repository collaborator.
+
+1. Sign in as the admin user and create a token under **Settings** >
+   **Developer settings** > **Personal access tokens** > **Tokens (classic)**.
+   Give it the `repo` scope, which covers private repository creation and
+   collaborator administration for this flow.
+2. Sign in as the bot user and create a **Tokens (classic)** token with the
+   `repo` scope, which covers invitation acceptance, HTTPS pushes, PRs, and
+   PR feedback on repositories to which the bot is invited.
+3. Give both tokens an expiration and store them only in your local `.env`:
+
+   ```bash
+   GH_ADMIN_TOKEN=your-admin-personal-access-token
+   GH_BOT_TOKEN=your-bot-personal-access-token
+   ```
+
+When a target repository has no `origin` remote and both tokens are set, the
+runtime creates a private repository as the admin, adds the detected bot user
+as a collaborator with push access, accepts the invitation as the bot, and
+uses an HTTPS origin for token-authenticated bot pushes. For an existing
+remote, add the bot as a collaborator beforehand and use an HTTPS GitHub
+remote when authentication should come from `GH_BOT_TOKEN`.
+
+Do not also set a process-wide `GH_TOKEN` for this runtime. GitHub commands are
+given the appropriate role token only for the duration of each operation.
+The runtime smoke check verifies each configured token and prints the GitHub
+login it resolves to.
+
+---
+
+## 4. Model providers
 
 The internal `ModelRouter` calls providers directly. Two API keys are
 required for v1; Ollama is optional.
@@ -180,7 +217,7 @@ ollama pull qwen3.6:27b
 
 ---
 
-## 4. Local runtime options
+## 5. Local runtime options
 
 These tune the long-running loops. Defaults are in `.env.example` and are
 sane for local development.
@@ -195,9 +232,11 @@ sane for local development.
 | `AGENT_SYSTEM_HEARTBEAT_INTERVAL_SECONDS` | `600` | How often the active worker refreshes its lock heartbeat. |
 | `AGENT_SYSTEM_INTAKE_MODEL_TIMEOUT_SECONDS` | `10` | Max seconds to wait for model-assisted proposal drafting before falling back to deterministic proposal generation. |
 | `AGENT_SYSTEM_RECONCILE_INTERVAL_SECONDS` | `300` | How often the reconciler clears stale locks/checkpoints. |
-| `AGENT_SYSTEM_PULL_REQUEST_BASE_BRANCH` | `main` | Base branch every agent PR targets. |
+| `AGENT_SYSTEM_PULL_REQUEST_BASE_BRANCH` | `main` | Base branch for single-ticket PRs and final promotion PRs. Multi-ticket initiatives use `integration/<epic-key>`. |
 | `AGENT_SYSTEM_EXECUTION_MODE` | `execute` | Use `dry_run` for the first vertical-slice test so approval stops before implementation. |
 | `AGENT_SYSTEM_EXECUTION_APPROVAL_POLICY` | `auto` | Use `slack` to require a second per-ticket Slack approval after planning. `dry_run` always pauses for Slack approval. |
+| `AGENT_SYSTEM_GITHUB_FEEDBACK_ENABLED` | `false` | Enables PR feedback handling and merged-PR delivery advancement. Set this to `true` for sequential multi-ticket development. |
+| `AGENT_SYSTEM_GITHUB_FEEDBACK_POLL_INTERVAL_SECONDS` | `60` | How often GitHub is checked for feedback and merged delivery steps. |
 
 Optional:
 
@@ -210,7 +249,7 @@ Optional:
 
 ---
 
-## 5. Repo contracts
+## 6. Repo contracts
 
 Every target repo needs a contract under `AGENT_SYSTEM_REPO_CONFIG_PATH`,
 named after the repo (e.g. `config/repos/agent-system.yaml`). The contract
@@ -224,7 +263,29 @@ Minimum required keys per contract: `repo`, `language`, `commands.test`,
 
 ---
 
-## 6. Verifying the setup
+## 7. Sequential app delivery
+
+Approved proposals with multiple tickets are delivered as one initiative for
+any repository:
+
+1. Jira creates an Epic and ordered child tasks. Only the first task receives
+   `ai-ready`; later tasks remain queued.
+2. The first ticket creates `integration/<epic-key>` and opens its pull
+   request against that shared branch instead of `main`.
+3. After you review and merge a ticket PR, the GitHub delivery poller applies
+   `ai-ready` to exactly the next queued task. That task begins from the
+   updated integration branch, keeping the preview cumulative.
+4. After the final ticket PR is merged, the system opens one promotion PR
+   from the integration branch to `AGENT_SYSTEM_PULL_REQUEST_BASE_BRANCH`
+   (normally `main`) for final product review.
+
+Set `AGENT_SYSTEM_GITHUB_FEEDBACK_ENABLED=true` for automatic advancement
+after merges. When disabled, the integration PR structure is preserved but
+queued tasks must be released in Jira manually.
+
+---
+
+## 8. Verifying the setup
 
 Run these in order. Each step gates the next.
 
@@ -267,7 +328,7 @@ Run these in order. Each step gates the next.
 
 ---
 
-## 7. Common failure modes
+## 9. Common failure modes
 
 - **Smoke fails on `repo_contracts`** — `AGENT_SYSTEM_REPO_CONFIG_PATH`
   points somewhere with no YAML files, or the YAML is invalid.
@@ -276,9 +337,10 @@ Run these in order. Each step gates the next.
   tenant.
 - **`jira_project_metadata` fails** — the API user can see the project but
   the project does not have both `Epic` and `Task` issue types.
-- **`github_auth` fails** — install `gh` first, then re-run `gh auth login`.
-  The orchestrator cannot
-  open PRs without it.
+- **`github_auth`, `github_admin_auth`, or `github_bot_auth` fails** — install
+  `gh`, check `GH_ADMIN_TOKEN` / `GH_BOT_TOKEN`, or run `gh auth login` when
+  using the host credential fallback. The orchestrator cannot create repos,
+  push code, or open PRs without the relevant identity.
 - **Slack listener silent** — the bot was not invited to
   `AGENT_SYSTEM_INTAKE_CHANNEL`, or the app-level token is missing the
   `connections:write` scope.

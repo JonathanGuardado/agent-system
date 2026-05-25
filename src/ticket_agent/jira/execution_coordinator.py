@@ -319,6 +319,7 @@ def _state_from_work_item(work_item: TicketWorkItem) -> TicketState:
         repository=work_item.repository,
         repo_path=work_item.repo_path,
         worktree_path=work_item.worktree_path,
+        pull_request_base_branch=work_item.pull_request_base_branch,
         slack_channel=work_item.slack_channel,
         slack_thread_ts=work_item.slack_thread_ts,
         max_attempts=work_item.max_attempts,

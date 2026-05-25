@@ -44,6 +44,7 @@ class JiraWorkItemLoader:
             repository=repository,
             repo_path=repo_path,
             branch_name=None,
+            pull_request_base_branch=_pull_request_base_branch(ticket.description),
             slack_channel=_optional_string(ticket, FIELD_SLACK_CHANNEL),
             slack_thread_ts=_optional_string(ticket, FIELD_SLACK_THREAD_TS),
             max_attempts=_max_attempts(ticket),
@@ -99,6 +100,15 @@ def _summary_repository(summary: str) -> str | None:
         return None
     value = match.group(1).strip()
     return value or None
+
+
+def _pull_request_base_branch(description: str) -> str | None:
+    pattern = re.compile(
+        r"^\s*-\s*Pull request base branch:\s*(integration/[A-Za-z0-9_-]+)\s*$",
+        re.MULTILINE,
+    )
+    match = pattern.search(description)
+    return None if match is None else match.group(1)
 
 
 def _optional_string(ticket: JiraTicket, field_name: str) -> str | None:

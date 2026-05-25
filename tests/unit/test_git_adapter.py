@@ -54,6 +54,37 @@ def test_worktree_creation_isolates_worktrees_by_lock_id(tmp_path):
     assert second.worktree_path == repo / ".worktrees" / "ABC-123" / "abcdef12"
 
 
+def test_worktree_creation_starts_from_integration_branch(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    adapter = GitAdapter()
+
+    info = adapter.create_worktree(
+        repo,
+        "ABC-123",
+        "12345678",
+        base_branch="integration/abc-1",
+    )
+
+    assert _git(("rev-parse", "integration/abc-1"), cwd=repo) == _git(
+        ("rev-parse", "HEAD"), cwd=repo
+    )
+    assert _git(("rev-parse", "HEAD"), cwd=info.worktree_path) == _git(
+        ("rev-parse", "integration/abc-1"), cwd=repo
+    )
+
+
+def test_worktree_creation_rejects_unsafe_integration_branch(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+
+    with pytest.raises(WorktreeCreationError, match="unsafe integration branch"):
+        GitAdapter().create_worktree(
+            repo,
+            "ABC-123",
+            "12345678",
+            base_branch="../main",
+        )
+
+
 def test_worktree_creation_does_not_reuse_existing_worktree_for_same_lock(tmp_path):
     repo = _init_repo(tmp_path / "repo")
     adapter = GitAdapter()
@@ -210,6 +241,27 @@ def test_push_does_not_use_force(tmp_path, monkeypatch):
     assert "-f" not in calls[1]
 
 
+def test_ensure_pull_request_base_pushes_integration_branch(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "repo")
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(command, **kwargs):
+        del kwargs
+        calls.append(tuple(command))
+        if tuple(command) == ("git", "remote", "get-url", "origin"):
+            return subprocess.CompletedProcess(command, 0, "https://github.test/acme/repo.git\n", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    GitAdapter().ensure_pull_request_base(repo, "integration/lab-30")
+
+    assert calls == [
+        ("git", "remote", "get-url", "origin"),
+        ("git", "push", "origin", "integration/lab-30:integration/lab-30"),
+    ]
+
+
 def test_cleanup_rejects_path_outside_repo_worktrees(tmp_path):
     repo = _init_repo(tmp_path / "repo")
     outside = tmp_path / "outside"
@@ -282,9 +334,11 @@ def test_push_creates_repo_with_admin_credentials(tmp_path, monkeypatch):
 
     repo = _init_repo(tmp_path / "repo")
     captured: dict[str, dict[str, object]] = {}
+    calls: list[tuple[str, ...]] = []
 
     def fake_run(command, **kwargs):
         cmd = tuple(command)
+        calls.append(cmd)
         if cmd == ("git", "remote", "get-url", "origin"):
             return subprocess.CompletedProcess(command, 2, "", "No such remote\n")
         if cmd == (
@@ -299,6 +353,21 @@ def test_push_creates_repo_with_admin_credentials(tmp_path, monkeypatch):
         if cmd[:3] == ("gh", "repo", "create"):
             captured["create"] = kwargs
             return subprocess.CompletedProcess(command, 0, "", "")
+        if cmd == ("gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"):
+            captured["view"] = kwargs
+            return subprocess.CompletedProcess(command, 0, "admin-user/repo.tools\n", "")
+        if cmd == ("gh", "api", "user", "--jq", ".login"):
+            captured["bot_user"] = kwargs
+            return subprocess.CompletedProcess(command, 0, "coding-bot\n", "")
+        if cmd[:4] == ("gh", "api", "--method", "PUT"):
+            captured["add_collaborator"] = kwargs
+            return subprocess.CompletedProcess(command, 0, "42\n", "")
+        if cmd[:4] == ("gh", "api", "--method", "PATCH"):
+            captured["accept_invitation"] = kwargs
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if cmd[:4] == ("git", "remote", "set-url", "origin"):
+            captured["set_url"] = kwargs
+            return subprocess.CompletedProcess(command, 0, "", "")
         if cmd[:2] == ("git", "push"):
             captured.setdefault("pushes", []).append(kwargs)  # type: ignore[arg-type]
         return subprocess.CompletedProcess(command, 0, "", "")
@@ -312,6 +381,73 @@ def test_push_creates_repo_with_admin_credentials(tmp_path, monkeypatch):
     assert isinstance(create_env, dict)
     assert create_env["GH_TOKEN"] == "admin-pat"
     assert "GIT_CONFIG_COUNT" not in create_env
+    add_env = captured["add_collaborator"]["env"]
+    assert isinstance(add_env, dict)
+    assert add_env["GH_TOKEN"] == "admin-pat"
+    accept_env = captured["accept_invitation"]["env"]
+    assert isinstance(accept_env, dict)
+    assert accept_env["GH_TOKEN"] == "bot-pat"
+    assert (
+        "gh",
+        "api",
+        "--method",
+        "PUT",
+        "repos/admin-user/repo.tools/collaborators/coding-bot",
+        "--jq",
+        ".id",
+    ) in calls
+    assert (
+        "gh",
+        "api",
+        "--method",
+        "PATCH",
+        "user/repository_invitations/42",
+    ) in calls
+    assert (
+        "git",
+        "remote",
+        "set-url",
+        "origin",
+        "https://github.com/admin-user/repo.tools.git",
+    ) in calls
+
+
+def test_push_fails_before_bot_push_when_collaborator_setup_fails(tmp_path, monkeypatch):
+    from ticket_agent.github import GitHubCredentials
+
+    repo = _init_repo(tmp_path / "repo")
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(command, **kwargs):
+        del kwargs
+        cmd = tuple(command)
+        calls.append(cmd)
+        if cmd == ("git", "remote", "get-url", "origin"):
+            return subprocess.CompletedProcess(command, 2, "", "No such remote\n")
+        if cmd == (
+            "git",
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ):
+            return subprocess.CompletedProcess(command, 0, f"{repo / '.git'}\n", "")
+        if cmd[:3] == ("gh", "repo", "create"):
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if cmd == ("gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"):
+            return subprocess.CompletedProcess(command, 0, "admin-user/repo\n", "")
+        if cmd == ("gh", "api", "user", "--jq", ".login"):
+            return subprocess.CompletedProcess(command, 0, "coding-bot\n", "")
+        if cmd[:4] == ("gh", "api", "--method", "PUT"):
+            return subprocess.CompletedProcess(command, 1, "", "permission denied\n")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    credentials = GitHubCredentials(admin_token="admin-pat", bot_token="bot-pat")
+    with pytest.raises(PushError, match="adding coding-bot: permission denied"):
+        GitAdapter(credentials=credentials).push(repo, "agent/ABC-123/12345678")
+
+    assert not any(cmd[:2] == ("git", "push") for cmd in calls)
 
 
 def _init_repo(path: Path) -> Path:

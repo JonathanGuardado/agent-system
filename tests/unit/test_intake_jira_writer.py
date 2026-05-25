@@ -20,6 +20,8 @@ from ticket_agent.jira.constants import (
     FIELD_SLACK_CHANNEL,
     FIELD_SLACK_THREAD_TS,
     LABEL_AI_READY,
+    LABEL_AI_SEQUENCE_PREFIX,
+    LABEL_AI_STEP_PREFIX,
 )
 from ticket_agent.jira.fake_client import FakeJiraClient
 
@@ -124,7 +126,16 @@ def test_write_creates_epic_for_multi_ticket_proposal():
         call[2]["fields"][FIELD_SLACK_CHANNEL]
         for call in create_calls[1:]
     ] == ["C-INTAKE", "C-INTAKE", "C-INTAKE"]
-    assert result.execution_ready_ticket_keys == ("AGENT-2", "AGENT-3", "AGENT-4")
+    assert result.execution_ready_ticket_keys == ("AGENT-2",)
+    assert LABEL_AI_READY in client.ticket("AGENT-2").labels
+    assert LABEL_AI_READY not in client.ticket("AGENT-3").labels
+    assert client.ticket("AGENT-3").labels[-2:] == [
+        f"{LABEL_AI_SEQUENCE_PREFIX}agent-1",
+        f"{LABEL_AI_STEP_PREFIX}0002",
+    ]
+    assert "- Pull request base branch: integration/agent-1" in client.ticket(
+        "AGENT-2"
+    ).description
 
 
 def test_new_project_multi_ticket_starts_only_first_ticket_execution_ready():

@@ -58,6 +58,7 @@ class GitWorktreePort(Protocol):
         repo_path: str | Path,
         ticket_key: str,
         short_lock_id: str,
+        base_branch: str | None = None,
     ) -> WorktreeInfo: ...
 
 
@@ -273,7 +274,15 @@ def _worktree_info(
         )
 
     lock_id = lock_id_factory(state)
-    created = git.create_worktree(repo_path, state.ticket_key, lock_id)
+    if state.pull_request_base_branch:
+        created = git.create_worktree(
+            repo_path,
+            state.ticket_key,
+            lock_id,
+            base_branch=state.pull_request_base_branch,
+        )
+    else:
+        created = git.create_worktree(repo_path, state.ticket_key, lock_id)
     return _PreparedWorktree(
         repo_path=created.repo_path,
         worktree_path=created.worktree_path,

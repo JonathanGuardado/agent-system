@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ticket_agent.domain.intake import IntakeMode, Proposal, TicketSpec
+from ticket_agent.domain.intake import Proposal, TicketSpec
 from ticket_agent.jira.client import JiraClient
 from ticket_agent.jira.constants import (
     FIELD_AGENT_CAPABILITIES_NEEDED,
@@ -14,6 +14,8 @@ from ticket_agent.jira.constants import (
     FIELD_SLACK_CHANNEL,
     FIELD_SLACK_THREAD_TS,
     LABEL_AI_READY,
+    LABEL_AI_SEQUENCE_PREFIX,
+    LABEL_AI_STEP_PREFIX,
 )
 from ticket_agent.jira.models import JiraTicket
 
@@ -58,6 +60,13 @@ class _WriteContext:
     unsupported_reason: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _SequentialDelivery:
+    sequence_label: str
+    base_branch: str
+    total_steps: int
+
+
 class JiraWriter:
     """Persist a confirmed proposal as Jira issues with the ai-ready label."""
 
@@ -98,6 +107,7 @@ class JiraWriter:
                     unsupported_reason=context.unsupported_reason,
                 )
 
+        delivery = _sequential_delivery(parent_key, proposal)
         for index, spec in enumerate(proposal.tickets):
             await self._write_one(
                 spec,
@@ -105,6 +115,8 @@ class JiraWriter:
                 context,
                 parent_key=parent_key,
                 execution_ready=_ticket_starts_execution_ready(proposal, index),
+                delivery=delivery,
+                step_index=index,
             )
             if context.unsupported_reason is not None:
                 break
@@ -160,8 +172,17 @@ class JiraWriter:
         *,
         parent_key: str | None,
         execution_ready: bool,
+        delivery: _SequentialDelivery | None,
+        step_index: int,
     ) -> None:
-        labels = _normalize_labels(spec.labels, execution_ready=execution_ready)
+        labels = _normalize_labels(
+            [
+                *spec.labels,
+                *_delivery_labels(delivery, step_index),
+            ],
+            execution_ready=execution_ready,
+        )
+        description = _description_with_delivery(spec.description, delivery, step_index)
         fields = (
             {}
             if context.optional_fields_disabled
@@ -172,7 +193,7 @@ class JiraWriter:
             ticket = await self._client.create_issue(
                 context.project_key,
                 summary=spec.summary,
-                description=spec.description,
+                description=description,
                 issue_type=spec.issue_type,
                 priority=spec.priority,
                 labels=labels,
@@ -194,7 +215,7 @@ class JiraWriter:
                     ticket = await self._client.create_issue(
                         context.project_key,
                         summary=spec.summary,
-                        description=spec.description,
+                        description=description,
                         issue_type=spec.issue_type,
                         priority=spec.priority,
                         labels=labels,
@@ -277,9 +298,49 @@ def _build_fields(spec: TicketSpec, proposal: Proposal) -> dict[str, object]:
 
 
 def _ticket_starts_execution_ready(proposal: Proposal, index: int) -> bool:
-    if proposal.mode == IntakeMode.NEW_PROJECT and len(proposal.tickets) > 1:
-        return index == 0
-    return True
+    return len(proposal.tickets) <= 1 or index == 0
+
+
+def _sequential_delivery(
+    parent_key: str | None,
+    proposal: Proposal,
+) -> _SequentialDelivery | None:
+    if parent_key is None or len(proposal.tickets) <= 1:
+        return None
+    normalized_key = parent_key.lower()
+    return _SequentialDelivery(
+        sequence_label=f"{LABEL_AI_SEQUENCE_PREFIX}{normalized_key}",
+        base_branch=f"integration/{normalized_key}",
+        total_steps=len(proposal.tickets),
+    )
+
+
+def _delivery_labels(
+    delivery: _SequentialDelivery | None,
+    step_index: int,
+) -> list[str]:
+    if delivery is None:
+        return []
+    return [
+        delivery.sequence_label,
+        f"{LABEL_AI_STEP_PREFIX}{step_index + 1:04d}",
+    ]
+
+
+def _description_with_delivery(
+    description: str,
+    delivery: _SequentialDelivery | None,
+    step_index: int,
+) -> str:
+    if delivery is None:
+        return description
+    metadata = (
+        "Delivery workflow:\n"
+        f"- Pull request base branch: {delivery.base_branch}\n"
+        f"- Delivery sequence: {step_index + 1} of {delivery.total_steps}\n"
+        "- Delivery gate: merge this pull request before the next step is released."
+    )
+    return "\n\n".join(part for part in (description, metadata) if part)
 
 
 async def _ensure_ai_ready_label(

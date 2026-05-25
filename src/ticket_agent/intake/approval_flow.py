@@ -462,7 +462,8 @@ def _format_confirmation_message(result: JiraWriteResult) -> str:
         ready_keys = ", ".join(result.execution_ready_ticket_keys)
         readiness_note = (
             f" Execution starts with: {ready_keys}; remaining tickets are created "
-            "without ai-ready until the foundation is merged or manually released."
+            "without ai-ready until the preceding pull request is merged or "
+            "manually released."
         )
     return (
         f"{epic_prefix}Created Jira tickets: {keys}. "

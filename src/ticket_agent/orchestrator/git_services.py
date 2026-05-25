@@ -17,6 +17,12 @@ class GitPullRequestPort(Protocol):
 
     def push(self, worktree_path: str | Path, branch_name: str) -> None: ...
 
+    def ensure_pull_request_base(
+        self,
+        worktree_path: str | Path,
+        branch_name: str,
+    ) -> None: ...
+
 
 class GitWorktreeCleanupPort(Protocol):
     def cleanup_worktree(
@@ -64,11 +70,14 @@ class GitService:
 
         commit_message = _commit_message(state)
         self._git.commit(worktree_path, commit_message)
+        base_branch = state.pull_request_base_branch or self._base_branch
+        if state.pull_request_base_branch:
+            self._git.ensure_pull_request_base(worktree_path, base_branch)
         self._git.push(worktree_path, branch_name)
         return self._pull_request_opener.open_pull_request(
             worktree_path=worktree_path,
             branch_name=branch_name,
-            base_branch=self._base_branch,
+            base_branch=base_branch,
             title=_pull_request_title(state),
             body=_pull_request_body(state),
         )

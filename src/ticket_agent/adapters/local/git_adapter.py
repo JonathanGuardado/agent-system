@@ -19,6 +19,7 @@ from ticket_agent.github import GH_ROLE_ADMIN, GH_ROLE_BOT, GitHubCredentials
 
 
 _SAFE_REF_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+_SAFE_GITHUB_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _PROTECTED_BRANCHES = frozenset({"main", "master", "develop"})
 _GENERATED_COMMIT_EXCLUDES = (
     "node_modules",
@@ -48,10 +49,14 @@ class GitAdapter:
         repo_path: str | Path,
         ticket_key: str,
         short_lock_id: str,
+        base_branch: str | None = None,
     ) -> WorktreeInfo:
         repo = Path(repo_path).resolve(strict=True)
         _validate_safe_ref_component(ticket_key, "ticket_key")
         _validate_safe_ref_component(short_lock_id, "short_lock_id")
+        if base_branch is not None:
+            _validate_integration_branch(base_branch, WorktreeCreationError)
+            self._prepare_integration_branch(repo, base_branch)
 
         branch_name = f"agent/{ticket_key}/{short_lock_id}"
         worktree_path = repo / ".worktrees" / ticket_key / short_lock_id
@@ -64,7 +69,12 @@ class GitAdapter:
 
         worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
-        result = self._add_worktree(repo, worktree_path, branch_name)
+        result = self._add_worktree(
+            repo,
+            worktree_path,
+            branch_name,
+            base_branch=base_branch,
+        )
         if result.returncode != 0:
             raise WorktreeCreationError(_failure_message(result))
 
@@ -155,6 +165,26 @@ class GitAdapter:
         if result.returncode != 0:
             raise PushError(_failure_message(result))
 
+    def ensure_pull_request_base(
+        self,
+        worktree_path: str | Path,
+        branch_name: str,
+    ) -> None:
+        worktree = Path(worktree_path).resolve(strict=True)
+        _validate_integration_branch(branch_name, PushError)
+        _ensure_origin_remote(
+            worktree,
+            timeout_seconds=self._default_timeout_seconds,
+            credentials=self._credentials,
+        )
+        result = self._run_git(
+            ("push", "origin", f"{branch_name}:{branch_name}"),
+            cwd=worktree,
+            env=self._git_bot_env(),
+        )
+        if result.returncode != 0:
+            raise PushError(_failure_message(result))
+
     def cleanup_worktree(self, repo_path: str | Path, worktree_path: str | Path) -> None:
         repo = Path(repo_path).resolve(strict=True)
         resolved_worktree = Path(worktree_path).resolve(strict=False)
@@ -175,6 +205,8 @@ class GitAdapter:
         repo: Path,
         worktree_path: Path,
         branch_name: str,
+        *,
+        base_branch: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         branch_result = self._run_git(
             ("rev-parse", "--verify", f"refs/heads/{branch_name}"),
@@ -186,9 +218,36 @@ class GitAdapter:
                 cwd=repo,
             )
         return self._run_git(
-            ("worktree", "add", "-b", branch_name, str(worktree_path)),
+            (
+                "worktree",
+                "add",
+                "-b",
+                branch_name,
+                str(worktree_path),
+                *((base_branch,) if base_branch is not None else ()),
+            ),
             cwd=repo,
         )
+
+    def _prepare_integration_branch(self, repo: Path, branch_name: str) -> None:
+        branch_result = self._run_git(
+            ("rev-parse", "--verify", f"refs/heads/{branch_name}"),
+            cwd=repo,
+        )
+        fetch_result = self._run_git(
+            (
+                "fetch",
+                "origin",
+                f"+refs/heads/{branch_name}:refs/heads/{branch_name}",
+            ),
+            cwd=repo,
+            env=self._git_bot_env(),
+        )
+        if fetch_result.returncode == 0 or branch_result.returncode == 0:
+            return
+        create_result = self._run_git(("branch", branch_name, "HEAD"), cwd=repo)
+        if create_result.returncode != 0:
+            raise WorktreeCreationError(_failure_message(create_result))
 
     def _ensure_local_branch(self, repo: Path, branch_name: str) -> None:
         branch_result = self._run_git(
@@ -288,6 +347,17 @@ def _ensure_origin_remote(
             f"{_failure_message(create_result)}"
         )
 
+    if (
+        credentials is not None
+        and credentials.has_token_for(GH_ROLE_ADMIN)
+        and credentials.has_token_for(GH_ROLE_BOT)
+    ):
+        _authorize_bot_for_created_repo(
+            repo_root,
+            timeout_seconds=timeout_seconds,
+            credentials=credentials,
+        )
+
     default_branch = _default_branch(repo_root, timeout_seconds=timeout_seconds)
     push_env = (
         credentials.git_env(GH_ROLE_BOT) if credentials is not None else None
@@ -300,6 +370,112 @@ def _ensure_origin_remote(
     )
     if push_default_result.returncode != 0:
         raise PushError(_failure_message(push_default_result))
+
+
+def _authorize_bot_for_created_repo(
+    repo_root: Path,
+    *,
+    timeout_seconds: int,
+    credentials: GitHubCredentials,
+) -> None:
+    admin_env = credentials.gh_env(GH_ROLE_ADMIN)
+    bot_env = credentials.gh_env(GH_ROLE_BOT)
+    repo_result = _run_command(
+        ("gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"),
+        cwd=repo_root,
+        timeout_seconds=timeout_seconds,
+        env=admin_env,
+    )
+    repo_full_name = repo_result.stdout.strip()
+    if repo_result.returncode != 0 or not _is_github_repo_full_name(repo_full_name):
+        raise PushError(
+            "GitHub repository was created, but automatic bot collaborator "
+            f"setup could not identify it: {_failure_message(repo_result)}"
+        )
+
+    bot_result = _run_command(
+        ("gh", "api", "user", "--jq", ".login"),
+        cwd=repo_root,
+        timeout_seconds=timeout_seconds,
+        env=bot_env,
+    )
+    bot_login = bot_result.stdout.strip()
+    if bot_result.returncode != 0 or _SAFE_GITHUB_NAME.fullmatch(bot_login) is None:
+        raise PushError(
+            "GitHub repository was created, but automatic bot collaborator "
+            f"setup could not identify the bot account: {_failure_message(bot_result)}"
+        )
+
+    owner_login = repo_full_name.split("/", 1)[0]
+    if owner_login.casefold() != bot_login.casefold():
+        add_result = _run_command(
+            (
+                "gh",
+                "api",
+                "--method",
+                "PUT",
+                f"repos/{repo_full_name}/collaborators/{bot_login}",
+                "--jq",
+                ".id",
+            ),
+            cwd=repo_root,
+            timeout_seconds=timeout_seconds,
+            env=admin_env,
+        )
+        if add_result.returncode != 0:
+            raise PushError(
+                "GitHub repository was created, but automatic bot collaborator "
+                f"setup failed while adding {bot_login}: {_failure_message(add_result)}"
+            )
+
+        invitation_id = add_result.stdout.strip()
+        if invitation_id:
+            if not invitation_id.isdigit():
+                raise PushError(
+                    "GitHub repository was created, but automatic bot collaborator "
+                    "setup returned an invalid repository invitation id"
+                )
+            accept_result = _run_command(
+                (
+                    "gh",
+                    "api",
+                    "--method",
+                    "PATCH",
+                    f"user/repository_invitations/{invitation_id}",
+                ),
+                cwd=repo_root,
+                timeout_seconds=timeout_seconds,
+                env=bot_env,
+            )
+            if accept_result.returncode != 0:
+                raise PushError(
+                    "GitHub repository was created, but the bot could not accept "
+                    f"its collaborator invitation: {_failure_message(accept_result)}"
+                )
+
+    # Bot PAT authentication is sent as an HTTPS header, not an SSH credential.
+    remote_result = _run_command(
+        (
+            "git",
+            "remote",
+            "set-url",
+            "origin",
+            f"https://github.com/{repo_full_name}.git",
+        ),
+        cwd=repo_root,
+        timeout_seconds=timeout_seconds,
+    )
+    if remote_result.returncode != 0:
+        raise PushError(
+            "GitHub repository was created, but automatic bot collaborator "
+            f"setup could not configure its HTTPS remote: {_failure_message(remote_result)}"
+        )
+
+
+def _is_github_repo_full_name(value: str) -> bool:
+    if value.count("/") != 1:
+        return False
+    return all(_SAFE_GITHUB_NAME.fullmatch(part) is not None for part in value.split("/"))
 
 
 def _primary_repo_root(worktree: Path, *, timeout_seconds: int) -> Path:
@@ -374,6 +550,19 @@ def _validate_push_branch(branch_name: str) -> None:
     for label, value in (("ticket_key", parts[1]), ("short_lock_id", parts[2])):
         if _SAFE_REF_COMPONENT.fullmatch(value) is None:
             raise PushError(f"unsafe {label} in branch name: {branch_name}")
+
+
+def _validate_integration_branch(
+    branch_name: str,
+    error_type: type[WorktreeCreationError] | type[PushError],
+) -> None:
+    parts = branch_name.split("/")
+    if (
+        len(parts) != 2
+        or parts[0] != "integration"
+        or _SAFE_REF_COMPONENT.fullmatch(parts[1]) is None
+    ):
+        raise error_type(f"unsafe integration branch name: {branch_name}")
 
 
 def _validate_worktree_path(repo: Path, worktree_path: Path) -> None:

@@ -115,6 +115,25 @@ def test_load_recovers_repo_context_from_description():
     assert work_item.repo_path == "/repos/agent-system"
 
 
+def test_load_recovers_initiative_pull_request_base_branch_from_description():
+    ticket = _ticket(
+        description=(
+            "Implement feature.\n\n"
+            "Delivery workflow:\n"
+            "- Pull request base branch: integration/lab-30\n"
+            "- Delivery sequence: 1 of 3"
+        ),
+        fields={
+            FIELD_REPOSITORY: "ofertas-sv",
+            FIELD_REPO_PATH: "/repos/ofertas-sv",
+        },
+    )
+
+    work_item = asyncio.run(JiraWorkItemLoader(_FakeJiraClient(ticket)).load("LAB-31"))
+
+    assert work_item.pull_request_base_branch == "integration/lab-30"
+
+
 def test_load_recovers_repository_from_scoped_summary_and_path_from_default():
     ticket = _ticket(
         summary="[agent-system] Implement validation app",

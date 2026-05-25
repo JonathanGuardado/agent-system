@@ -54,6 +54,20 @@ def test_git_service_commits_pushes_opens_pr_and_returns_url(tmp_path):
     ]
 
 
+def test_git_service_uses_initiative_base_branch_from_ticket_state(tmp_path):
+    git = _FakeGit()
+    opener = _FakePullRequestOpener()
+    service = GitService(git=git, pull_request_opener=opener)
+    state = _state(tmp_path).model_copy(
+        update={"pull_request_base_branch": "integration/lab-30"}
+    )
+
+    asyncio.run(service.open_pull_request(state))
+
+    assert git.ensured_bases == [(tmp_path, "integration/lab-30")]
+    assert opener.calls[0]["base_branch"] == "integration/lab-30"
+
+
 def test_git_service_requires_worktree_path():
     service = GitService(git=_FakeGit(), pull_request_opener=_FakePullRequestOpener())
 
@@ -394,6 +408,7 @@ class _FakeGit:
         self._commit_error = commit_error
         self._push_error = push_error
         self.calls: list[tuple[str, Path, str]] = []
+        self.ensured_bases: list[tuple[Path, str]] = []
 
     def commit(self, worktree_path: str | Path, message: str) -> str:
         self.calls.append(("commit", Path(worktree_path), message))
@@ -405,6 +420,11 @@ class _FakeGit:
         self.calls.append(("push", Path(worktree_path), branch_name))
         if self._push_error is not None:
             raise self._push_error
+
+    def ensure_pull_request_base(
+        self, worktree_path: str | Path, branch_name: str
+    ) -> None:
+        self.ensured_bases.append((Path(worktree_path), branch_name))
 
 
 class _FakeCleanupGit:

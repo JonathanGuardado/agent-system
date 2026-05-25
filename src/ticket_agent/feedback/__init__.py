@@ -5,7 +5,11 @@ from ticket_agent.feedback.github import (
     FeedbackItem,
     FeedbackWorker,
     GhCliFeedbackClient,
+    GhCliMergedDeliveryClient,
+    GitHubMergedDeliveryPoller,
     GitHubFeedbackPoller,
+    MergedDeliveryItem,
+    SequentialDeliveryAdvancer,
     SQLiteFeedbackStore,
 )
 
@@ -14,6 +18,10 @@ __all__ = [
     "FeedbackItem",
     "FeedbackWorker",
     "GhCliFeedbackClient",
+    "GhCliMergedDeliveryClient",
+    "GitHubMergedDeliveryPoller",
     "GitHubFeedbackPoller",
+    "MergedDeliveryItem",
+    "SequentialDeliveryAdvancer",
     "SQLiteFeedbackStore",
 ]

@@ -44,6 +44,7 @@ class TicketWorkItem:
     repo_path: str | None = None
     worktree_path: str | None = None
     branch_name: str | None = None
+    pull_request_base_branch: str | None = None
     slack_channel: str | None = None
     slack_thread_ts: str | None = None
     max_attempts: int = 3
@@ -261,6 +262,7 @@ class OrchestratorRunner:
             repository=work_item.repository,
             repo_path=work_item.repo_path,
             worktree_path=work_item.worktree_path,
+            pull_request_base_branch=work_item.pull_request_base_branch,
             slack_channel=work_item.slack_channel,
             slack_thread_ts=work_item.slack_thread_ts,
             max_attempts=work_item.max_attempts,

@@ -17,8 +17,17 @@ from typing import Any, Protocol
 
 from ticket_agent.adapters.local.git_adapter import GitAdapter
 from ticket_agent.github import GH_ROLE_BOT, GitHubCredentials
+from ticket_agent.jira.client import JiraClient
+from ticket_agent.jira.constants import (
+    LABEL_AI_READY,
+    LABEL_AI_SEQUENCE_PREFIX,
+    STATUS_TODO,
+)
 from ticket_agent.jira.work_item_loader import JiraWorkItemLoader
-from ticket_agent.orchestrator.git_services import WorktreeCleanupService
+from ticket_agent.orchestrator.git_services import (
+    PullRequestOpener,
+    WorktreeCleanupService,
+)
 from ticket_agent.orchestrator.runner import TicketWorkItem
 from ticket_agent.orchestrator.state import TicketState
 
@@ -31,6 +40,11 @@ EVENT_FEEDBACK_POLL_FAILED = "feedback.poll_failed"
 EVENT_FEEDBACK_WORKER_STARTED = "feedback.worker_started"
 EVENT_FEEDBACK_WORKER_COMPLETED = "feedback.worker_completed"
 EVENT_FEEDBACK_WORKER_FAILED = "feedback.worker_failed"
+EVENT_DELIVERY_POLL_STARTED = "delivery.poll_started"
+EVENT_DELIVERY_STEP_RELEASED = "delivery.step_released"
+EVENT_DELIVERY_PROMOTION_OPENED = "delivery.promotion_opened"
+EVENT_DELIVERY_POLL_COMPLETED = "delivery.poll_completed"
+EVENT_DELIVERY_POLL_FAILED = "delivery.poll_failed"
 
 _TICKET_KEY_RE = re.compile(r"\b([A-Z][A-Z0-9]*-\d+)\b")
 
@@ -47,11 +61,35 @@ class FeedbackItem:
     fingerprint: str
 
 
+@dataclass(frozen=True, slots=True)
+class MergedDeliveryItem:
+    """One merged ticket PR on an initiative integration branch."""
+
+    ticket_key: str
+    repo_path: str
+    integration_branch: str
+    pull_request_url: str
+    fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryAdvance:
+    """Result of applying one merged PR to its sequential Jira batch."""
+
+    sequence_label: str
+    next_ticket_key: str | None
+
+
 class FeedbackClient(Protocol):
     """Boundary that finds actionable PR feedback."""
 
     def find_feedback(self) -> Sequence[FeedbackItem]:
         """Return feedback items that should be addressed by the agent."""
+
+
+class MergedDeliveryClient(Protocol):
+    def find_merged_delivery_items(self) -> Sequence[MergedDeliveryItem]:
+        """Return merged integration PRs that may release a next step."""
 
 
 class FeedbackStore(Protocol):
@@ -179,6 +217,143 @@ class GitHubFeedbackPoller:
         result = self._clock(seconds)
         if isawaitable(result):
             await result
+
+    async def _emit(self, event_name: str, **payload: Any) -> None:
+        if self._emit_fn is None:
+            return
+        result = self._emit_fn(event_name, payload)
+        if isawaitable(result):
+            await result
+
+
+class SequentialDeliveryAdvancer:
+    """Release one queued Jira step after its predecessor PR is merged."""
+
+    def __init__(self, client: JiraClient) -> None:
+        self._client = client
+
+    async def advance_after_merge(self, ticket_key: str) -> DeliveryAdvance | None:
+        ticket = await self._client.get_ticket(ticket_key)
+        sequence_label = next(
+            (
+                label
+                for label in ticket.labels
+                if label.startswith(LABEL_AI_SEQUENCE_PREFIX)
+            ),
+            None,
+        )
+        if sequence_label is None or not re.fullmatch(
+            rf"{re.escape(LABEL_AI_SEQUENCE_PREFIX)}[a-z0-9_-]+",
+            sequence_label,
+        ):
+            return None
+
+        jql = (
+            f'labels = "{sequence_label}" '
+            f'AND status = "{STATUS_TODO}" '
+            f'AND labels != "{LABEL_AI_READY}" '
+            "ORDER BY created ASC"
+        )
+        result = await self._client.search_issues(jql, fields=("labels", "status"))
+        next_ticket_key = _first_ticket_key(result)
+        if next_ticket_key is not None:
+            await self._client.add_labels(next_ticket_key, [LABEL_AI_READY])
+            await self._client.add_comment(
+                next_ticket_key,
+                f"Released after merged predecessor pull request for {ticket_key}.",
+            )
+        return DeliveryAdvance(
+            sequence_label=sequence_label,
+            next_ticket_key=next_ticket_key,
+        )
+
+
+class GitHubMergedDeliveryPoller:
+    """Advance sequential delivery only once per merged ticket pull request."""
+
+    def __init__(
+        self,
+        *,
+        client: MergedDeliveryClient,
+        store: FeedbackStore,
+        advancer: SequentialDeliveryAdvancer,
+        promotion_opener: PullRequestOpener,
+        promotion_base_branch: str = "main",
+        poll_interval_seconds: float = 60.0,
+        emit: EventEmitter | None = None,
+        clock: Callable[[float], Any] | None = None,
+    ) -> None:
+        if poll_interval_seconds <= 0:
+            raise ValueError("poll_interval_seconds must be positive")
+        self._client = client
+        self._store = store
+        self._advancer = advancer
+        self._promotion_opener = promotion_opener
+        self._promotion_base_branch = promotion_base_branch
+        self._poll_interval = float(poll_interval_seconds)
+        self._emit_fn = emit
+        self._clock = clock or asyncio.sleep
+
+    async def poll_once(self) -> int:
+        await self._emit(EVENT_DELIVERY_POLL_STARTED)
+        try:
+            items = self._client.find_merged_delivery_items()
+            processed = 0
+            for item in items:
+                if self._store.seen(item.fingerprint):
+                    continue
+                advance = await self._advancer.advance_after_merge(item.ticket_key)
+                if advance is not None and advance.next_ticket_key is not None:
+                    await self._emit(
+                        EVENT_DELIVERY_STEP_RELEASED,
+                        merged_ticket_key=item.ticket_key,
+                        next_ticket_key=advance.next_ticket_key,
+                        integration_branch=item.integration_branch,
+                    )
+                elif advance is not None:
+                    url = self._promotion_opener.open_pull_request(
+                        worktree_path=Path(item.repo_path),
+                        branch_name=item.integration_branch,
+                        base_branch=self._promotion_base_branch,
+                        title=(
+                            f"Promote {item.integration_branch} "
+                            f"to {self._promotion_base_branch}"
+                        ),
+                        body=(
+                            f"Sequential delivery for {advance.sequence_label} "
+                            "is complete. Review the cumulative application "
+                            "changes before promotion."
+                        ),
+                    )
+                    await self._emit(
+                        EVENT_DELIVERY_PROMOTION_OPENED,
+                        merged_ticket_key=item.ticket_key,
+                        pull_request_url=url,
+                        integration_branch=item.integration_branch,
+                    )
+                self._store.mark_seen(item.fingerprint)
+                processed += 1
+        except Exception as exc:
+            await self._emit(EVENT_DELIVERY_POLL_FAILED, error=_error_message(exc))
+            raise
+        await self._emit(
+            EVENT_DELIVERY_POLL_COMPLETED,
+            considered=len(items),
+            processed=processed,
+        )
+        return processed
+
+    async def run_forever(self) -> None:
+        while True:
+            try:
+                await self.poll_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            result = self._clock(self._poll_interval)
+            if isawaitable(result):
+                await result
 
     async def _emit(self, event_name: str, **payload: Any) -> None:
         if self._emit_fn is None:
@@ -417,6 +592,59 @@ class GhCliFeedbackClient:
         return result
 
 
+class GhCliMergedDeliveryClient(GhCliFeedbackClient):
+    """Find merged agent PRs whose base is an initiative integration branch."""
+
+    def find_merged_delivery_items(self) -> Sequence[MergedDeliveryItem]:
+        items: list[MergedDeliveryItem] = []
+        for repo_path in self._repo_paths:
+            result = self._run(
+                (
+                    "gh",
+                    "pr",
+                    "list",
+                    "--state",
+                    "merged",
+                    "--limit",
+                    "100",
+                    "--json",
+                    "number,title,headRefName,baseRefName,url,mergedAt",
+                ),
+                cwd=repo_path,
+            )
+            data = json.loads(result.stdout or "[]")
+            if not isinstance(data, list):
+                continue
+            for pr in data:
+                if not isinstance(pr, dict):
+                    continue
+                branch_name = str(pr.get("headRefName") or "")
+                integration_branch = str(pr.get("baseRefName") or "")
+                ticket_key = _ticket_key(pr)
+                if (
+                    not branch_name.startswith("agent/")
+                    or not integration_branch.startswith("integration/")
+                    or not ticket_key
+                ):
+                    continue
+                url = str(pr.get("url") or "")
+                merged_at = str(pr.get("mergedAt") or "")
+                items.append(
+                    MergedDeliveryItem(
+                        ticket_key=ticket_key,
+                        repo_path=str(repo_path),
+                        integration_branch=integration_branch,
+                        pull_request_url=url,
+                        fingerprint=_fingerprint(
+                            f"merged:{url}",
+                            integration_branch,
+                            merged_at,
+                        ),
+                    )
+                )
+        return items
+
+
 def _description_with_feedback(base: TicketWorkItem, item: FeedbackItem) -> str:
     return "\n\n".join(
         part
@@ -496,6 +724,22 @@ def _fingerprint(url: str, branch_name: str, text: str) -> str:
     return sha256(f"{url}\0{branch_name}\0{text}".encode("utf-8")).hexdigest()
 
 
+def _first_ticket_key(
+    result: Sequence[Any] | dict[str, Any],
+) -> str | None:
+    issues = result.get("issues", []) if isinstance(result, dict) else result
+    for issue in issues:
+        if hasattr(issue, "key"):
+            key = str(issue.key)
+        elif isinstance(issue, dict):
+            key = str(issue.get("key") or "")
+        else:
+            continue
+        if key:
+            return key
+    return None
+
+
 def _subprocess_failure_message(result: subprocess.CompletedProcess[str]) -> str:
     return result.stderr.strip() or result.stdout.strip() or (
         f"{result.args!r} exited with {result.returncode}"
@@ -514,10 +758,15 @@ __all__ = [
     "EVENT_FEEDBACK_WORKER_COMPLETED",
     "EVENT_FEEDBACK_WORKER_FAILED",
     "EVENT_FEEDBACK_WORKER_STARTED",
+    "DeliveryAdvance",
     "FeedbackExecutionCoordinator",
     "FeedbackItem",
     "FeedbackWorker",
     "GhCliFeedbackClient",
+    "GhCliMergedDeliveryClient",
+    "GitHubMergedDeliveryPoller",
     "GitHubFeedbackPoller",
+    "MergedDeliveryItem",
+    "SequentialDeliveryAdvancer",
     "SQLiteFeedbackStore",
 ]
