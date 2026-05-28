@@ -18,6 +18,7 @@ github.com without persisting it to repo config.
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Mapping
 from dataclasses import dataclass
 import os
@@ -83,10 +84,11 @@ class GitHubCredentials:
     ) -> dict[str, str] | None:
         """Return env vars for a ``git`` invocation that needs GitHub auth.
 
-        Injects an ``http.extraheader`` for github.com via the
-        ``GIT_CONFIG_COUNT``/``GIT_CONFIG_KEY_<n>``/``GIT_CONFIG_VALUE_<n>``
-        protocol so the token is not stored in repo config or visible on
-        the command line. Returns ``None`` when no token is configured.
+        Injects a GitHub smart-HTTP Basic authorization header for
+        ``x-access-token:<PAT>`` via the ``GIT_CONFIG_COUNT`` /
+        ``GIT_CONFIG_KEY_<n>`` / ``GIT_CONFIG_VALUE_<n>`` protocol, so the
+        token is not stored in repo config or visible on the command line.
+        Returns ``None`` when no token is configured.
         """
 
         token = self.token_for(role)
@@ -95,7 +97,10 @@ class GitHubCredentials:
         env = _minimal_env(base_env)
         env["GIT_CONFIG_COUNT"] = "1"
         env["GIT_CONFIG_KEY_0"] = _GIT_GITHUB_EXTRAHEADER_KEY
-        env["GIT_CONFIG_VALUE_0"] = f"AUTHORIZATION: bearer {token}"
+        encoded_token = base64.b64encode(
+            f"x-access-token:{token}".encode("utf-8")
+        ).decode("ascii")
+        env["GIT_CONFIG_VALUE_0"] = f"AUTHORIZATION: basic {encoded_token}"
         env["GH_TOKEN"] = token
         return env
 

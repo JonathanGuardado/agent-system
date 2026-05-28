@@ -24,21 +24,33 @@ commands:
 policy:
   dependency_install_allowed: true
   config_paths_allowed:
+    - .gitignore
+    - .env.example
+    - README.md
     - index.html
     - package.json
     - package-lock.json
     - tsconfig.json
+    - next-env.d.ts
     - next.config.js
     - next.config.mjs
+    - next.config.ts
+    - middleware.ts
+    - proxy.ts
     - postcss.config.js
+    - postcss.config.mjs
     - tailwind.config.js
+    - tailwind.config.mjs
     - tailwind.config.ts
     - vite.config.js
     - vite.config.mjs
     - vite.config.ts
     - eslint.config.js
     - eslint.config.mjs
+    - eslint.config.ts
     - vitest.config.ts
+    - vitest.setup.ts
+    - playwright.config.ts
     - public/
   protected_paths:
     - .github/
@@ -53,11 +65,16 @@ source_dirs:
   - app/
   - components/
   - data/
+  - i18n/
   - lib/
+  - locales/
+  - messages/
   - pages/
   - public/
   - src/
   - styles/
+  - supabase/
+  - types/
 
 test_dirs:
   - __tests__/

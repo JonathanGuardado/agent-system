@@ -189,6 +189,8 @@ def _protected_path_reason(relative_path: str) -> str | None:
         "docker-compose.yaml",
     }:
         return f"writes to {name} are blocked"
+    if name == ".env.example":
+        return None
     if name == ".env" or name.startswith(".env."):
         return "writes to .env files are blocked"
 

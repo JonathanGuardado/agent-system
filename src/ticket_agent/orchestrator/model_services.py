@@ -55,6 +55,7 @@ _MODEL_ENVELOPE_METADATA_FIELDS = frozenset(
 _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 _TOOL_ACTIONS = frozenset({"read_file", "write_file", "list_dir", "finish"})
 _DEFAULT_MAX_TOOL_RESULT_CHARS = 6000
+_DEFAULT_MAX_IMPLEMENTATION_TURNS = 80
 
 
 class ToolCallValidationError(ValueError):
@@ -181,7 +182,7 @@ class IterativeImplementationService:
         file_adapter_factory: FileAdapterFactory | None = None,
         repo_context_builder: RepoContextBuilder | None = None,
         *,
-        max_turns: int = 12,
+        max_turns: int = _DEFAULT_MAX_IMPLEMENTATION_TURNS,
         tool_result_max_chars: int = _DEFAULT_MAX_TOOL_RESULT_CHARS,
     ) -> None:
         if max_turns < 1:
@@ -877,6 +878,11 @@ def _write_policy_prompt_lines(repo_context: RepoContext) -> list[str]:
             "Write root-level config/static files only when the exact path is "
             "listed in config_paths_allowed: "
             f"{_json_for_prompt(list(contract.config_paths_allowed))}."
+        ),
+        (
+            "Never write secret-bearing dotenv files such as .env, .env.local, "
+            "or other .env.* files. The placeholder template .env.example may "
+            "be written only when it is listed in config_paths_allowed."
         ),
         (
             "Do not invent top-level directories outside those allowed lists; "

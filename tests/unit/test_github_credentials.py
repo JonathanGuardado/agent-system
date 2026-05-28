@@ -68,7 +68,9 @@ def test_git_env_injects_extraheader_for_github_only():
     assert env is not None
     assert env["GIT_CONFIG_COUNT"] == "1"
     assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
-    assert env["GIT_CONFIG_VALUE_0"] == "AUTHORIZATION: bearer bot-pat"
+    assert env["GIT_CONFIG_VALUE_0"] == (
+        "AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46Ym90LXBhdA=="
+    )
     assert env["GH_TOKEN"] == "bot-pat"
     assert env["PATH"] == "/usr/bin"
     assert env["HOME"] == "/home/bot"

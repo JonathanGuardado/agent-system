@@ -126,6 +126,25 @@ def test_file_adapter_allows_root_pyproject_toml_when_explicitly_allowed(tmp_pat
     )
 
 
+def test_file_adapter_allows_env_example_when_explicitly_allowed(tmp_path):
+    worktree = _worktree(tmp_path)
+    adapter = LocalFileAdapter(
+        worktree,
+        _contract(config_paths_allowed=(".env.example",)),
+    )
+
+    adapter.write_text(".env.example", "PUBLIC_API_URL=\n")
+
+    assert adapter.read_text(".env.example") == "PUBLIC_API_URL=\n"
+
+
+def test_file_adapter_rejects_env_example_without_contract_permission(tmp_path):
+    adapter = LocalFileAdapter(_worktree(tmp_path), _contract())
+
+    with pytest.raises(PolicyViolationError, match="outside repo contract"):
+        adapter.write_text(".env.example", "PUBLIC_API_URL=\n")
+
+
 def test_file_adapter_rejects_write_outside_contract_dirs(tmp_path):
     adapter = LocalFileAdapter(_worktree(tmp_path), _contract())
 

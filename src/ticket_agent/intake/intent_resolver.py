@@ -26,6 +26,11 @@ CAPABILITY_TO_MODE: dict[str, IntakeMode] = {
 
 
 _PROJECT_KEY_PATTERN = re.compile(r"\b([A-Z][A-Z0-9]{1,9})(?:-\d+)?\b")
+_NEW_APPLICATION_PATTERN = re.compile(
+    r"\b(?:create|build|develop|launch)\b.{0,120}\b"
+    r"(?:web\s+)?(?:app|application|platform|website|product)\b",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 class IntakeIntentResolver:
@@ -50,6 +55,12 @@ class IntakeIntentResolver:
         decision = self._selector.select(normalized)
         capability = str(decision.capability)
         mode = CAPABILITY_TO_MODE.get(capability, IntakeMode.DIRECT_TICKET)
+        if (
+            mode == IntakeMode.NEW_FEATURE
+            and _NEW_APPLICATION_PATTERN.search(normalized) is not None
+        ):
+            capability = "architecture.design"
+            mode = IntakeMode.NEW_PROJECT
 
         primary = _model_name(decision.primary)
         fallbacks = tuple(_model_name(item) for item in decision.fallbacks)

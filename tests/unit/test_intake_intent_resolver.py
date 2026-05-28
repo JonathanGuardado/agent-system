@@ -41,6 +41,18 @@ def test_resolve_architecture_design_maps_to_new_project(resolver: IntakeIntentR
     assert resolution.mode == IntakeMode.NEW_PROJECT
 
 
+def test_create_web_application_is_treated_as_new_project_initiative(
+    resolver: IntakeIntentResolver,
+):
+    resolution = resolver.resolve(
+        "Create a web application called Ofertas SV in LAB with a public catalog."
+    )
+
+    assert resolution.capability == "architecture.design"
+    assert resolution.mode == IntakeMode.NEW_PROJECT
+    assert resolution.requires_clarification is False
+
+
 def test_resolve_ticket_decompose_maps_to_new_tickets(resolver: IntakeIntentResolver):
     resolution = resolver.resolve("break this feature into Jira tickets for AGENT")
 

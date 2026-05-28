@@ -219,7 +219,7 @@ The primary variables for local Slack/Jira runs are:
 - Repo contract path:
   - `AGENT_SYSTEM_REPO_CONFIG_PATH` (defaults to `config/repos`)
 - Intake proposal generation:
-  - `AGENT_SYSTEM_INTAKE_MODEL_TIMEOUT_SECONDS` (defaults to `10`)
+  - `AGENT_SYSTEM_INTAKE_MODEL_TIMEOUT_SECONDS` (defaults to `30`)
 - Execution mode:
   - `AGENT_SYSTEM_EXECUTION_MODE=dry_run` for the first Slack/Jira slice so
     execution approval records Jira/Slack state without attempting code changes

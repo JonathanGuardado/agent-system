@@ -230,7 +230,7 @@ sane for local development.
 | `AGENT_SYSTEM_POLL_INTERVAL_SECONDS` | `30` | How often detection polls Jira for `ai-ready` tickets. |
 | `AGENT_SYSTEM_MAX_BACKOFF_SECONDS` | `300` | Upper bound for poll backoff. Must be ≥ `POLL_INTERVAL_SECONDS`. |
 | `AGENT_SYSTEM_HEARTBEAT_INTERVAL_SECONDS` | `600` | How often the active worker refreshes its lock heartbeat. |
-| `AGENT_SYSTEM_INTAKE_MODEL_TIMEOUT_SECONDS` | `10` | Max seconds to wait for model-assisted proposal drafting before falling back to deterministic proposal generation. |
+| `AGENT_SYSTEM_INTAKE_MODEL_TIMEOUT_SECONDS` | `30` | Max seconds to wait for model-assisted proposal drafting before falling back to deterministic initiative planning. |
 | `AGENT_SYSTEM_RECONCILE_INTERVAL_SECONDS` | `300` | How often the reconciler clears stale locks/checkpoints. |
 | `AGENT_SYSTEM_PULL_REQUEST_BASE_BRANCH` | `main` | Base branch for single-ticket PRs and final promotion PRs. Multi-ticket initiatives use `integration/<epic-key>`. |
 | `AGENT_SYSTEM_EXECUTION_MODE` | `execute` | Use `dry_run` for the first vertical-slice test so approval stops before implementation. |

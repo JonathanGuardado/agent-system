@@ -954,6 +954,32 @@ def test_iterative_implementation_max_turns_exhausted_fails_without_hanging(
     assert implementation_result["error_code"] == "max_turns_exhausted"
 
 
+def test_iterative_implementation_default_turn_budget_allows_large_single_pr_scaffold(
+    tmp_path,
+):
+    actions = [
+        {
+            "action": "write_file",
+            "args": {"path": f"src/foundation_{index}.ts", "content": "export {};\n"},
+        }
+        for index in range(40)
+    ]
+    actions.append({"action": "finish", "args": {"summary": "Scaffold complete."}})
+    adapter = _LoopFileAdapter()
+    router = _SequenceRouter({"code.implement": actions})
+
+    result = asyncio.run(
+        IterativeImplementationService(
+            router,
+            _AdapterFactory(adapter),
+        ).implement(_state(worktree_path=str(tmp_path)))
+    )
+
+    assert result["implementation_result"]["status"] == "success"
+    assert len(adapter.writes) == 40
+    assert len(router.calls) == 41
+
+
 def test_iterative_implementation_includes_failed_test_excerpt_on_retry(tmp_path):
     router = _SequenceRouter(
         {
@@ -1025,6 +1051,8 @@ def test_iterative_implementation_context_includes_contract_write_policy(tmp_pat
     assert "source_dirs" in user_message
     assert "src/" in user_message
     assert "config_paths_allowed" in user_message
+    assert ".env.example may be written only when it is listed" in user_message
+    assert "Never write secret-bearing dotenv files" in user_message
     assert "Do not invent top-level directories" in user_message
 
 

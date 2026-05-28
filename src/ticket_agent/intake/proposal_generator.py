@@ -41,6 +41,18 @@ SummarySlice = str | tuple[str, str]
 
 _PROJECT_KEY_PATTERN = re.compile(r"\b([A-Z][A-Z0-9]{1,9})(?:-\d+)?\b")
 _TICKET_KEY_PATTERN = re.compile(r"\b([A-Z][A-Z0-9]{1,9}-\d+)\b")
+_APPLICATION_REQUEST_PATTERN = re.compile(
+    r"\b(?:create|build|develop|launch)\b.{0,120}\b"
+    r"(?:web\s+)?(?:app|application|platform|website|product)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_SINGLE_DELIVERY_PATTERNS = (
+    re.compile(r"\bexactly\s+one\s+(?:jira\s+)?(?:ticket|task)\b", re.IGNORECASE),
+    re.compile(
+        r"\bdo\s+not\s+split\b.{0,60}\b(?:tickets?|prs?|pull requests?)\b",
+        re.IGNORECASE | re.DOTALL,
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -140,16 +152,23 @@ class DeterministicProposalGenerator:
         request: ProposalRequest,
         prior: Proposal | None = None,
     ) -> ProposalDraft:
-        if prior is not None:
+        replan = prior is not None and _requests_full_replan(request.text)
+        if prior is not None and not replan:
             return _deterministic_revision(request, prior)
 
-        text = request.text.strip()
+        text = (
+            _original_request_from_proposal(prior)
+            if replan and prior is not None
+            else request.text.strip()
+        )
         if not text:
             return ProposalDraft(
                 clarification="Could you describe what you'd like the agent to do?",
             )
 
         mode = request.resolution.mode
+        if replan and _is_application_request(text):
+            mode = IntakeMode.NEW_PROJECT
         project_key = _resolve_project_key(
             text,
             request.repo_defaults,
@@ -174,12 +193,19 @@ class DeterministicProposalGenerator:
         if clarification is not None:
             return ProposalDraft(clarification=clarification)
 
-        capability = request.resolution.capability
+        capability = (
+            "architecture.design"
+            if mode == IntakeMode.NEW_PROJECT and _is_application_request(text)
+            else request.resolution.capability
+        )
         summaries = _candidate_summaries(mode, text)
         compacted_summaries = _compact_overlong_summaries(
             summaries,
             max_tickets=self._max_tickets,
         )
+        single_delivery = _requests_single_ticket_delivery(text)
+        if single_delivery:
+            compacted_summaries = [_single_delivery_summary(compacted_summaries)]
         tickets = _build_ticket_specs(
             mode=mode,
             text=text,
@@ -188,6 +214,7 @@ class DeterministicProposalGenerator:
             repository=repository,
             repo_path=repo_path,
             summaries=compacted_summaries,
+            request_in_scope=single_delivery,
         )
 
         title = _proposal_title(text)
@@ -237,7 +264,7 @@ class ModelRouterProposalGenerator:
         ttl_seconds: int = PROPOSAL_TTL_SECONDS,
         min_model_words: int = 4,
         max_tickets: int = MAX_TICKETS,
-        model_timeout_s: float | None = 10.0,
+        model_timeout_s: float | None = 30.0,
     ) -> None:
         if min_model_words < 1:
             raise ValueError("min_model_words must be at least 1")
@@ -372,8 +399,9 @@ class ModelRouterProposalGenerator:
             prior,
         )
 
+        mode = _effective_proposal_mode(request, prior)
         clarification = _missing_context_clarification(
-            request.resolution.mode,
+            mode,
             project_key=project_key,
             epic_key=epic_key,
             repository=repository,
@@ -385,6 +413,9 @@ class ModelRouterProposalGenerator:
             payload.tickets,
             max_tickets=self._max_tickets,
         )
+        single_delivery = _requests_single_ticket_delivery(text)
+        if single_delivery:
+            raw_tickets = [_single_delivery_model_ticket(raw_tickets)]
         truncated_ticket_count = 0
         sibling_payloads = [
             (ticket.summary, ticket.description)
@@ -398,6 +429,7 @@ class ModelRouterProposalGenerator:
                 default_capability=request.resolution.capability,
                 default_repository=repository,
                 default_repo_path=repo_path,
+                request_in_scope=single_delivery,
                 sibling_scopes=_sibling_scopes_for(
                     ticket.summary,
                     sibling_payloads,
@@ -422,7 +454,7 @@ class ModelRouterProposalGenerator:
             prior.title if prior is not None else _proposal_title(text)
         )
         summary = _clean_optional(payload.summary) or _proposal_summary(
-            request.resolution.mode,
+            mode,
             prior.summary if prior is not None else text,
             len(tickets),
         )
@@ -438,7 +470,7 @@ class ModelRouterProposalGenerator:
                 slack_user_id=request.slack_user_id,
                 slack_channel=request.slack_channel,
                 slack_thread_ts=request.slack_thread_ts,
-                mode=request.resolution.mode,
+                mode=mode,
                 project_key=project_key,
                 epic_key=epic_key,
                 epic_summary=epic_summary,
@@ -466,6 +498,7 @@ def _build_ticket_specs(
     repository: str | None,
     repo_path: str | None,
     summaries: Sequence[SummarySlice] | None = None,
+    request_in_scope: bool = False,
 ) -> list[TicketSpec]:
     summaries = (
         list(summaries)
@@ -492,6 +525,7 @@ def _build_ticket_specs(
                     repository=repository,
                     repo_path=repo_path,
                     capabilities=capabilities_needed,
+                    request_in_scope=request_in_scope,
                     sibling_scopes=_sibling_scopes_for(title, sibling_payloads),
                 ),
                 issue_type="Task",
@@ -512,6 +546,7 @@ def _ticket_spec_from_model_ticket(
     default_capability: str,
     default_repository: str | None,
     default_repo_path: str | None,
+    request_in_scope: bool = False,
     sibling_scopes: Sequence[tuple[str, str]] = (),
 ) -> TicketSpec:
     labels = _ordered_unique([*ticket.labels, LABEL_AI_READY])
@@ -527,6 +562,7 @@ def _ticket_spec_from_model_ticket(
             repository=default_repository,
             repo_path=default_repo_path,
             capabilities=capabilities,
+            request_in_scope=request_in_scope,
             sibling_scopes=sibling_scopes,
         ),
         issue_type=ticket.issue_type.strip() or "Task",
@@ -591,8 +627,30 @@ def _merge_model_ticket_overflow(
     )
 
 
+def _single_delivery_model_ticket(
+    tickets: Sequence[_ModelTicketPayload],
+) -> _ModelTicketPayload:
+    merged = (
+        _merge_model_ticket_overflow(tickets[0], tickets[1:])
+        if len(tickets) > 1
+        else tickets[0]
+    )
+    scope = merged.description.strip()
+    leading = (
+        "Implement the complete application MVP as one integrated runnable "
+        "product delivered through one pull request targeting main. All "
+        "requirements in the complete Slack request are in scope."
+    )
+    return merged.model_copy(
+        update={
+            "summary": "Build the complete application MVP in one integrated delivery",
+            "description": "\n\n".join(part for part in (leading, scope) if part),
+        }
+    )
+
+
 def _compact_overlong_summaries(
-    summaries: Sequence[str],
+    summaries: Sequence[SummarySlice],
     *,
     max_tickets: int,
 ) -> list[SummarySlice]:
@@ -639,6 +697,21 @@ def _merge_summary_overflow(
     )
 
 
+def _single_delivery_summary(summaries: Sequence[SummarySlice]) -> SummarySlice:
+    included_scope = "\n".join(
+        f"- {_summary_slice_title(summary)}: {_summary_slice_body(summary)}"
+        for summary in summaries
+    )
+    body = (
+        "Implement the complete application MVP as one integrated runnable "
+        "product delivered through one pull request targeting main. All "
+        "requirements in the complete Slack request below are in scope."
+    )
+    if included_scope:
+        body = f"{body}\n\nIncluded implementation areas:\n{included_scope}"
+    return "Build the complete application MVP in one integrated delivery", body
+
+
 def _summary_slice_title(summary: SummarySlice) -> str:
     if isinstance(summary, tuple):
         return summary[0]
@@ -658,7 +731,17 @@ def _deterministic_revision(
     edit_text = request.text.strip()
     target_index = _revision_ticket_index(edit_text, len(prior.tickets))
     tickets = list(prior.tickets)
-    if target_index is not None:
+    if target_index is None and len(tickets) == 1 and edit_text:
+        ticket = tickets[0]
+        tickets[0] = ticket.model_copy(
+            update={
+                "description": _append_revision_note(
+                    ticket.description,
+                    edit_text,
+                ),
+            }
+        )
+    elif target_index is not None:
         ticket = tickets[target_index]
         tickets[target_index] = ticket.model_copy(
             update={
@@ -766,6 +849,17 @@ def _model_proposal_messages(
         "Do not decompose the prior proposal title, summary, or the edit text "
         "as a brand-new request.",
     ] if prior is not None else []
+    delivery_instructions = (
+        [
+            "The requester explicitly requires one integrated delivery. Return "
+            "exactly one ticket for the complete requested scope, targeting one "
+            "pull request; do not create an Epic or sibling implementation tickets.",
+            "The single ticket scope and acceptance checks must include the whole "
+            "requested MVP, not only foundation or app-shell work.",
+        ]
+        if _requests_single_ticket_delivery(request.text)
+        else []
+    )
     return [
         {
             "role": "system",
@@ -786,6 +880,7 @@ def _model_proposal_messages(
                     f"repo_defaults: {json.dumps(request.repo_defaults)}",
                     f"prior_proposal: {prior_json}",
                     *revision_instructions,
+                    *delivery_instructions,
                     "Each ticket must be specific enough for an agent to execute "
                     "without reading Slack: include concrete files/directories, "
                     "scope boundaries, acceptance checks, and test expectations "
@@ -795,6 +890,10 @@ def _model_proposal_messages(
                     "whole app; create one foundation/app-shell ticket and "
                     "separate feature tickets for homepage, search/filtering, "
                     "favorites, forms, data, or tests as needed.",
+                    "If the requester asks for one final PR, one preview PR, "
+                    "or a single pull request but does not explicitly ask for "
+                    "exactly one Jira ticket/task, still return detailed Jira "
+                    "tickets; delivery will consolidate the completed work.",
                     f"Return at most {MAX_TICKETS} tickets. If the request has "
                     "more details than that, group related details into complete "
                     "MVP slices instead of emitting one ticket per bullet.",
@@ -940,6 +1039,7 @@ def _execution_ready_description(
     repository: str | None,
     repo_path: str | None,
     capabilities: Sequence[str],
+    request_in_scope: bool = False,
     sibling_scopes: Sequence[tuple[str, str]] = (),
 ) -> str:
     context_lines = ["Execution context:"]
@@ -953,13 +1053,20 @@ def _execution_ready_description(
         context_lines.append(f"- Capabilities: {', '.join(capabilities)}")
 
     cleaned_body = body.strip() or request_text.strip()
+    cleaned_request = request_text.strip()
+    if request_in_scope and cleaned_request and cleaned_request != cleaned_body:
+        cleaned_body = (
+            f"{cleaned_body}\n\n"
+            "Complete Slack request requirements in scope:\n"
+            f"{cleaned_request}"
+        )
     sections = ["\n".join(context_lines)]
     if cleaned_body:
         sections.append(f"Ticket scope:\n{cleaned_body}")
-    if request_text.strip() and request_text.strip() != cleaned_body:
+    if not request_in_scope and cleaned_request and cleaned_request != cleaned_body:
         sections.append(
             "Original Slack request (background only; do not implement work "
-            f"outside Ticket scope):\n{request_text.strip()}"
+            f"outside Ticket scope):\n{cleaned_request}"
         )
     if sibling_scopes:
         sections.append(
@@ -1001,16 +1108,138 @@ def _format_sibling_scopes(scopes: Sequence[tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
-def _candidate_summaries(mode: IntakeMode, text: str) -> list[str]:
+def _candidate_summaries(mode: IntakeMode, text: str) -> list[SummarySlice]:
     if mode == IntakeMode.NEW_TICKETS:
         items = _split_into_items(text)
         if items:
             return items
     if mode in {IntakeMode.NEW_PROJECT, IntakeMode.NEW_FEATURE}:
+        if _is_application_request(text):
+            return _application_delivery_slices(text)
         items = _split_into_items(text)
         if len(items) >= 2:
             return items
     return [_first_sentence(text)]
+
+
+def _is_application_request(text: str) -> bool:
+    return _APPLICATION_REQUEST_PATTERN.search(text) is not None
+
+
+def _requests_single_ticket_delivery(text: str) -> bool:
+    return any(pattern.search(text) is not None for pattern in _SINGLE_DELIVERY_PATTERNS)
+
+
+def _application_delivery_slices(text: str) -> list[SummarySlice]:
+    lowered = text.lower()
+    slices: list[SummarySlice] = [
+        (
+            "Establish application foundation and shared architecture",
+            "Set up the application framework, shared project structure, "
+            "core domain types, persistence boundaries, localization "
+            "foundation, and access/security foundations required by the "
+            "product. Keep this as the base for every later ticket.",
+        ),
+    ]
+    if any(
+        word in lowered
+        for word in ("homepage", "public", "catalog", "listing", "deal card")
+    ):
+        slices.append(
+            (
+                "Build the primary public product experience",
+                "Implement the public application shell and primary content "
+                "presentation using the shared model and localization "
+                "foundation. Respect publication and provenance rules.",
+            )
+        )
+    if any(word in lowered for word in ("filter", "search", "favorite", "near me")):
+        slices.append(
+            (
+                "Add discovery filters and saved-item interactions",
+                "Implement search, applicable filter controls, location-based "
+                "selection, and persisted saved items on top of the public "
+                "experience, including localized empty states.",
+            )
+        )
+    if any(
+        word in lowered
+        for word in ("submission", "submit", "moderation", "admin", "approve")
+    ):
+        slices.append(
+            (
+                "Implement submissions and moderation controls",
+                "Add validated user submissions and protected administration "
+                "for reviewing publication state. Enforce that unapproved "
+                "content is not visible publicly.",
+            )
+        )
+    if (
+        "ai" in lowered
+        and any(
+            word in lowered
+            for word in ("discovery", "discover", "extraction", "extract", "source")
+        )
+    ):
+        slices.append(
+            (
+                "Implement AI-assisted source discovery and candidate ingestion",
+                "Add the provider boundary, server-side structured extraction, "
+                "provenance capture, pending-only candidate creation, and "
+                "duplicate handling without automatic publication.",
+            )
+        )
+    slices.append(
+        (
+            "Complete integrated quality, security, and accessibility verification",
+            "Add focused tests for critical user and authorization behavior, "
+            "review responsive and accessible interactions, validate localized "
+            "states, and polish the integrated MVP for final review.",
+        )
+    )
+    return slices
+
+
+def _requests_full_replan(text: str) -> bool:
+    lowered = text.lower()
+    return bool(
+        re.search(
+            r"\b(?:replan|regenerate|redo|replace|rebuild)\b.{0,50}\b"
+            r"(?:plan|proposal|tickets?)\b",
+            lowered,
+        )
+        or re.search(r"\bcohesive\b.{0,30}\b(?:plan|proposal|tickets?)\b", lowered)
+    )
+
+
+def _effective_proposal_mode(
+    request: ProposalRequest,
+    prior: Proposal | None,
+) -> IntakeMode:
+    if (
+        prior is not None
+        and _requests_full_replan(request.text)
+        and _is_application_request(_original_request_from_proposal(prior))
+    ):
+        return IntakeMode.NEW_PROJECT
+    return request.resolution.mode
+
+
+def _original_request_from_proposal(proposal: Proposal) -> str:
+    marker = (
+        "Original Slack request (background only; do not implement work "
+        "outside Ticket scope):\n"
+    )
+    delimiters = ("\n\nRelated tickets in this proposal", "\n\nAcceptance checks:")
+    for ticket in proposal.tickets:
+        if marker not in ticket.description:
+            continue
+        source = ticket.description.split(marker, 1)[1]
+        for delimiter in delimiters:
+            source = source.split(delimiter, 1)[0]
+        if source.strip():
+            return source.strip()
+    return proposal.summary
 
 
 def _split_into_items(text: str) -> list[str]:

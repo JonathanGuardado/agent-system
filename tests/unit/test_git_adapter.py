@@ -306,7 +306,9 @@ def test_push_uses_bot_credentials_env_when_configured(tmp_path, monkeypatch):
     assert push_env["GH_TOKEN"] == "bot-pat"
     assert push_env["GIT_CONFIG_COUNT"] == "1"
     assert push_env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
-    assert push_env["GIT_CONFIG_VALUE_0"] == "AUTHORIZATION: bearer bot-pat"
+    assert push_env["GIT_CONFIG_VALUE_0"] == (
+        "AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46Ym90LXBhdA=="
+    )
 
 
 def test_push_does_not_set_env_when_credentials_absent(tmp_path, monkeypatch):

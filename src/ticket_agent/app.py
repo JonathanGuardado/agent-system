@@ -150,7 +150,7 @@ class RuntimeConfig:
     heartbeat_interval_s: float = 600.0
     reconcile_interval_seconds: float = 300.0
     reconcile_batch_size: int | None = None
-    intake_model_timeout_s: float = 10.0
+    intake_model_timeout_s: float = 30.0
     contract_dir: Path = Path("config/repos")
     pull_request_base_branch: str = "main"
     jira_target_projects: tuple[str, ...] = ()
@@ -788,7 +788,7 @@ def load_app_config(
         intake_model_timeout_s=_float_env(
             merged_env,
             "AGENT_SYSTEM_INTAKE_MODEL_TIMEOUT_SECONDS",
-            default=10.0,
+            default=30.0,
         ),
         contract_dir=Path(
             _first_env(

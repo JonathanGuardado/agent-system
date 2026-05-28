@@ -194,6 +194,377 @@ def test_deterministic_generator_uses_bullets_not_headings_as_ticket_slices():
     assert "Do not implement sibling tickets" in first_description
 
 
+def test_deterministic_generator_groups_app_requirements_into_delivery_stages():
+    text = """
+Create a web application called Ofertas SV for LAB.
+
+Core product principles:
+- Public users should see only approved, current, real deals.
+- Do not present invented or mock promotions as real offers.
+
+Main features:
+- Public homepage with real deal cards.
+- Search, filters, favorites, and near me behavior.
+- Submit-a-deal form and admin moderation.
+- AI-assisted discovery and extraction from permitted sources.
+
+Quality requirements:
+- Include localization, security, accessibility, and tests.
+"""
+
+    proposal = DeterministicProposalGenerator(
+        clock=_clock,
+        proposal_id_factory=lambda: "prop-app-stages",
+    ).generate(
+        _request(
+            text,
+            mode=IntakeMode.NEW_PROJECT,
+            capability="architecture.design",
+        )
+    ).proposal
+
+    assert proposal is not None
+    summaries = [ticket.summary for ticket in proposal.tickets]
+    assert summaries == [
+        "[agent-system] Establish application foundation and shared architecture",
+        "[agent-system] Build the primary public product experience",
+        "[agent-system] Add discovery filters and saved-item interactions",
+        "[agent-system] Implement submissions and moderation controls",
+        "[agent-system] Implement AI-assisted source discovery and candidate ingestion",
+        (
+            "[agent-system] Complete integrated quality, security, "
+            "and accessibility verification"
+        ),
+    ]
+    assert all("Public users should see only" not in summary for summary in summaries)
+    assert all("Framework:" not in summary for summary in summaries)
+
+
+def test_deterministic_generator_keeps_explicit_single_pr_app_as_one_ticket():
+    text = """
+Create a web application called Ofertas SV for LAB in exactly one Jira task
+and one pull request to main. Do not split this delivery into separate tickets.
+
+Main features:
+- Public homepage for approved real deals.
+- Search, filters, favorites, and near me behavior.
+- Submit-a-deal form and admin moderation.
+- AI-assisted discovery from permitted sources.
+"""
+
+    proposal = DeterministicProposalGenerator(
+        clock=_clock,
+        proposal_id_factory=lambda: "prop-single-pr",
+    ).generate(
+        _request(
+            text,
+            mode=IntakeMode.NEW_PROJECT,
+            capability="architecture.design",
+        )
+    ).proposal
+
+    assert proposal is not None
+    assert len(proposal.tickets) == 1
+    assert proposal.tickets[0].summary == (
+        "[agent-system] Build the complete application MVP in one integrated delivery"
+    )
+    description = proposal.tickets[0].description
+    assert "Build the primary public product experience" in description
+    assert "Implement AI-assisted source discovery" in description
+    assert "Complete Slack request requirements in scope:" in description
+    assert "Original Slack request (background only" not in description
+
+
+def test_deterministic_generator_keeps_final_pr_request_as_detailed_plan():
+    text = """
+Create a web application called Ofertas SV for LAB.
+I want detailed Jira tickets for the plan, but when everything is finished
+open one single PR that I can preview.
+
+Main features:
+- Public homepage for approved real deals.
+- Search, filters, favorites, and near me behavior.
+- Submit-a-deal form and admin moderation.
+"""
+
+    proposal = DeterministicProposalGenerator(
+        clock=_clock,
+        proposal_id_factory=lambda: "prop-final-pr-plan",
+    ).generate(
+        _request(
+            text,
+            mode=IntakeMode.NEW_PROJECT,
+            capability="architecture.design",
+        )
+    ).proposal
+
+    assert proposal is not None
+    assert [ticket.summary for ticket in proposal.tickets] == [
+        "[agent-system] Establish application foundation and shared architecture",
+        "[agent-system] Build the primary public product experience",
+        "[agent-system] Add discovery filters and saved-item interactions",
+        "[agent-system] Implement submissions and moderation controls",
+        (
+            "[agent-system] Complete integrated quality, security, "
+            "and accessibility verification"
+        ),
+    ]
+
+
+def test_model_generator_folds_explicit_single_pr_delivery_into_one_ticket():
+    text = (
+        "Build the Ofertas SV app for LAB as a single pull request to main. "
+        "Create exactly one Jira task; include public deals and admin moderation."
+    )
+    router = _Router(
+        {
+            "title": "Ofertas SV MVP",
+            "tickets": [
+                {
+                    "summary": "Build foundation",
+                    "description": "Create the application shell.",
+                },
+                {
+                    "summary": "Add moderation",
+                    "description": "Protect approval and publication controls.",
+                },
+            ],
+        }
+    )
+
+    proposal = asyncio.run(
+        ModelRouterProposalGenerator(router, clock=_clock, min_model_words=1).generate(
+            _request(
+                text,
+                mode=IntakeMode.NEW_PROJECT,
+                capability="architecture.design",
+            )
+        )
+    ).proposal
+
+    assert proposal is not None
+    assert len(proposal.tickets) == 1
+    assert proposal.tickets[0].summary == (
+        "[agent-system] Build the complete application MVP in one integrated delivery"
+    )
+    assert "Add moderation" in proposal.tickets[0].description
+    assert "Complete Slack request requirements in scope:" in (
+        proposal.tickets[0].description
+    )
+    assert "Original Slack request (background only" not in (
+        proposal.tickets[0].description
+    )
+    prompt = router.call_messages[0][1]["content"]
+    assert "explicitly requires one integrated delivery" in prompt
+    assert "exactly one ticket for the complete requested scope" in prompt
+
+
+def test_model_generator_keeps_single_pr_request_as_multi_ticket_plan():
+    text = (
+        "Build the Ofertas SV app for LAB as a single pull request to main. "
+        "Include public deals, search, favorites, and admin moderation."
+    )
+    router = _Router(
+        {
+            "title": "Ofertas SV MVP",
+            "tickets": [
+                {
+                    "summary": "Build public deals",
+                    "description": "Create public listing and detail views.",
+                },
+                {
+                    "summary": "Add moderation",
+                    "description": "Protect approval and publication controls.",
+                },
+            ],
+        }
+    )
+
+    proposal = asyncio.run(
+        ModelRouterProposalGenerator(router, clock=_clock, min_model_words=1).generate(
+            _request(
+                text,
+                mode=IntakeMode.NEW_PROJECT,
+                capability="architecture.design",
+            )
+        )
+    ).proposal
+
+    assert proposal is not None
+    assert [ticket.summary for ticket in proposal.tickets] == [
+        "[agent-system] Build public deals",
+        "[agent-system] Add moderation",
+    ]
+    assert all(
+        "Complete Slack request requirements in scope:" not in ticket.description
+        for ticket in proposal.tickets
+    )
+    prompt = router.call_messages[0][1]["content"]
+    assert "exactly one ticket for the complete requested scope" not in prompt
+    assert "one final PR" in prompt
+    assert "still return detailed Jira tickets" in prompt
+
+
+def test_single_ticket_revision_fallback_appends_unnumbered_scope_edit():
+    generator = DeterministicProposalGenerator(
+        clock=_clock,
+        proposal_id_factory=lambda: "prop-single-revision",
+    )
+    prior = generator.generate(
+        _request(
+            (
+                "Build the Ofertas SV app for LAB as exactly one Jira task and "
+                "one pull request targeting main."
+            ),
+            mode=IntakeMode.NEW_PROJECT,
+            capability="architecture.design",
+        )
+    ).proposal
+    assert prior is not None
+
+    revised = generator.generate(
+        _request(
+            "Add Data And Security Requirements: enforce Supabase Row Level Security.",
+            mode=IntakeMode.NEW_PROJECT,
+            capability="architecture.design",
+        ),
+        prior=prior,
+    ).proposal
+
+    assert revised is not None
+    assert revised.tickets[0].summary == prior.tickets[0].summary
+    assert "Revision request:" in revised.tickets[0].description
+    assert "Data And Security Requirements" in revised.tickets[0].description
+    assert "Supabase Row Level Security" in revised.tickets[0].description
+
+
+def test_model_timeout_single_ticket_revision_retains_requested_scope_edit():
+    generator = DeterministicProposalGenerator(
+        clock=_clock,
+        proposal_id_factory=lambda: "prop-timeout-single-revision",
+    )
+    prior = generator.generate(
+        _request(
+            (
+                "Build the Ofertas SV app for LAB as exactly one Jira task and "
+                "one pull request targeting main."
+            ),
+            mode=IntakeMode.NEW_PROJECT,
+            capability="architecture.design",
+        )
+    ).proposal
+    assert prior is not None
+
+    revised = asyncio.run(
+        ModelRouterProposalGenerator(
+            _HangingRouter(),
+            fallback=generator,
+            model_timeout_s=0.01,
+        ).generate(
+            _request(
+                "Add Discovery Requirements: AI candidates must never auto-publish.",
+                mode=IntakeMode.NEW_PROJECT,
+                capability="architecture.design",
+            ),
+            prior=prior,
+        )
+    ).proposal
+
+    assert revised is not None
+    assert revised.tickets[0].summary == prior.tickets[0].summary
+    assert "Discovery Requirements" in revised.tickets[0].description
+    assert "never auto-publish" in revised.tickets[0].description
+
+
+def test_replan_revision_rebuilds_bad_app_bullets_as_cohesive_stages():
+    original = """
+Create a web application called Ofertas SV for LAB.
+- Public homepage and filters for approved real deals.
+- Submit deals with admin moderation.
+- AI discovery from permitted sources.
+"""
+    generator = DeterministicProposalGenerator(
+        clock=_clock,
+        proposal_id_factory=lambda: "prop-replan",
+    )
+    prior = generator.generate(
+        _request(
+            original,
+            mode=IntakeMode.NEW_FEATURE,
+            capability="code.implement",
+        )
+    ).proposal
+    assert prior is not None
+
+    revised = generator.generate(
+        _request(
+            "Regenerate this proposal as cohesive implementation tickets.",
+            mode=IntakeMode.NEW_FEATURE,
+            capability="code.implement",
+        ),
+        prior=prior,
+    ).proposal
+
+    assert revised is not None
+    assert revised.mode == IntakeMode.NEW_PROJECT
+    assert revised.revision_count == 1
+    assert revised.tickets[0].summary == (
+        "[agent-system] Establish application foundation and shared architecture"
+    )
+    assert any(
+        "AI-assisted source discovery" in ticket.summary
+        for ticket in revised.tickets
+    )
+
+
+def test_model_replan_revision_promotes_app_request_to_new_project_mode():
+    original = """
+Create a web application called Ofertas SV for LAB.
+- Public homepage for approved real deals.
+- AI discovery from permitted sources.
+"""
+    prior = DeterministicProposalGenerator(
+        clock=_clock,
+        proposal_id_factory=lambda: "prop-model-replan",
+    ).generate(
+        _request(
+            original,
+            mode=IntakeMode.NEW_FEATURE,
+            capability="code.implement",
+        )
+    ).proposal
+    assert prior is not None
+    router = _Router(
+        {
+            "title": "Ofertas SV initiative",
+            "tickets": [
+                {
+                    "summary": "Build foundation",
+                    "description": "Set up the cohesive application.",
+                },
+                {
+                    "summary": "Build discovery",
+                    "description": "Add AI-assisted candidate discovery.",
+                },
+            ],
+        }
+    )
+
+    revised = asyncio.run(
+        ModelRouterProposalGenerator(router, clock=_clock, min_model_words=1).generate(
+            _request(
+                "Regenerate this proposal as cohesive implementation tickets.",
+                mode=IntakeMode.NEW_FEATURE,
+                capability="code.implement",
+            ),
+            prior=prior,
+        )
+    ).proposal
+
+    assert revised is not None
+    assert revised.mode == IntakeMode.NEW_PROJECT
+
+
 def test_model_proposal_generator_revision_preserves_prior_context():
     prior = DeterministicProposalGenerator(
         clock=_clock,
