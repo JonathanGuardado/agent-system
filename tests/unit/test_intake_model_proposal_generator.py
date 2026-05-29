@@ -238,6 +238,29 @@ Quality requirements:
     ]
     assert all("Public users should see only" not in summary for summary in summaries)
     assert all("Framework:" not in summary for summary in summaries)
+    assert proposal.epic_summary == (
+        "Create a web application called Ofertas SV for LAB."
+    )
+    assert proposal.epic_description is not None
+    assert "Original request:" in proposal.epic_description
+    assert "Implementation ticket plan:" in proposal.epic_description
+    assert "Public users should see only approved, current, real deals." in (
+        proposal.epic_description
+    )
+
+    descriptions = [ticket.description for ticket in proposal.tickets]
+    assert all(
+        "Original Slack request (background only" not in description
+        for description in descriptions
+    )
+    assert all("Epic context:" in description for description in descriptions)
+    assert "Relevant requirements for this ticket:" in descriptions[1]
+    assert "Public homepage with real deal cards." in descriptions[1]
+    assert "Search, filters, favorites, and near me behavior." in descriptions[2]
+    assert "Submit-a-deal form and admin moderation." in descriptions[3]
+    assert "AI-assisted discovery and extraction from permitted sources." in (
+        descriptions[4]
+    )
 
 
 def test_deterministic_generator_keeps_explicit_single_pr_app_as_one_ticket():

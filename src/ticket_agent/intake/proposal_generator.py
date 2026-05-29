@@ -198,6 +198,10 @@ class DeterministicProposalGenerator:
             if mode == IntakeMode.NEW_PROJECT and _is_application_request(text)
             else request.resolution.capability
         )
+        is_application_plan = mode in {
+            IntakeMode.NEW_PROJECT,
+            IntakeMode.NEW_FEATURE,
+        } and _is_application_request(text)
         summaries = _candidate_summaries(mode, text)
         compacted_summaries = _compact_overlong_summaries(
             summaries,
@@ -206,6 +210,11 @@ class DeterministicProposalGenerator:
         single_delivery = _requests_single_ticket_delivery(text)
         if single_delivery:
             compacted_summaries = [_single_delivery_summary(compacted_summaries)]
+        epic_scoped_children = (
+            is_application_plan
+            and not single_delivery
+            and len(compacted_summaries) > 1
+        )
         tickets = _build_ticket_specs(
             mode=mode,
             text=text,
@@ -215,6 +224,8 @@ class DeterministicProposalGenerator:
             repo_path=repo_path,
             summaries=compacted_summaries,
             request_in_scope=single_delivery,
+            include_original_request=not epic_scoped_children,
+            parent_epic_has_request=epic_scoped_children,
         )
 
         title = _proposal_title(text)
@@ -239,6 +250,16 @@ class DeterministicProposalGenerator:
             mode=mode,
             project_key=project_key,
             epic_key=epic_key,
+            epic_summary=title if epic_scoped_children else None,
+            epic_description=(
+                _epic_description(
+                    mode=mode,
+                    text=text,
+                    summaries=compacted_summaries,
+                )
+                if epic_scoped_children
+                else None
+            ),
             title=title,
             summary=summary,
             tickets=tickets,
@@ -499,6 +520,8 @@ def _build_ticket_specs(
     repo_path: str | None,
     summaries: Sequence[SummarySlice] | None = None,
     request_in_scope: bool = False,
+    include_original_request: bool = True,
+    parent_epic_has_request: bool = False,
 ) -> list[TicketSpec]:
     summaries = (
         list(summaries)
@@ -526,6 +549,8 @@ def _build_ticket_specs(
                     repo_path=repo_path,
                     capabilities=capabilities_needed,
                     request_in_scope=request_in_scope,
+                    include_original_request=include_original_request,
+                    parent_epic_has_request=parent_epic_has_request,
                     sibling_scopes=_sibling_scopes_for(title, sibling_payloads),
                 ),
                 issue_type="Task",
@@ -1040,6 +1065,8 @@ def _execution_ready_description(
     repo_path: str | None,
     capabilities: Sequence[str],
     request_in_scope: bool = False,
+    include_original_request: bool = True,
+    parent_epic_has_request: bool = False,
     sibling_scopes: Sequence[tuple[str, str]] = (),
 ) -> str:
     context_lines = ["Execution context:"]
@@ -1063,10 +1090,23 @@ def _execution_ready_description(
     sections = ["\n".join(context_lines)]
     if cleaned_body:
         sections.append(f"Ticket scope:\n{cleaned_body}")
-    if not request_in_scope and cleaned_request and cleaned_request != cleaned_body:
+    if (
+        not request_in_scope
+        and include_original_request
+        and cleaned_request
+        and cleaned_request != cleaned_body
+    ):
         sections.append(
             "Original Slack request (background only; do not implement work "
             f"outside Ticket scope):\n{cleaned_request}"
+        )
+    elif parent_epic_has_request:
+        sections.append(
+            "Epic context:\n"
+            "- The parent epic contains the complete product brief and delivery "
+            "requirements.\n"
+            "- Keep this ticket limited to the Ticket scope and relevant "
+            "requirements listed here."
         )
     if sibling_scopes:
         sections.append(
@@ -1135,10 +1175,35 @@ def _application_delivery_slices(text: str) -> list[SummarySlice]:
     slices: list[SummarySlice] = [
         (
             "Establish application foundation and shared architecture",
-            "Set up the application framework, shared project structure, "
-            "core domain types, persistence boundaries, localization "
-            "foundation, and access/security foundations required by the "
-            "product. Keep this as the base for every later ticket.",
+            _application_slice_body(
+                text,
+                base=(
+                    "Set up the application framework, shared project structure, "
+                    "core domain types, persistence boundaries, localization "
+                    "foundation, and access/security foundations required by the "
+                    "product. Keep this as the base for every later ticket."
+                ),
+                keywords=(
+                    "framework",
+                    "next.js",
+                    "app router",
+                    "typescript",
+                    "tailwind",
+                    "intl",
+                    "locale",
+                    "localization",
+                    "database",
+                    "supabase",
+                    "auth",
+                    "row level",
+                    "rls",
+                    "security",
+                    "vercel",
+                    "preview",
+                    "environment",
+                    "env",
+                ),
+            ),
         ),
     ]
     if any(
@@ -1148,18 +1213,63 @@ def _application_delivery_slices(text: str) -> list[SummarySlice]:
         slices.append(
             (
                 "Build the primary public product experience",
-                "Implement the public application shell and primary content "
-                "presentation using the shared model and localization "
-                "foundation. Respect publication and provenance rules.",
+                _application_slice_body(
+                    text,
+                    base=(
+                        "Implement the public application shell and primary "
+                        "content presentation using the shared model and "
+                        "localization foundation. Respect publication and "
+                        "provenance rules."
+                    ),
+                    keywords=(
+                        "homepage",
+                        "public",
+                        "catalog",
+                        "listing",
+                        "deal card",
+                        "merchant",
+                        "category",
+                        "price",
+                        "discount",
+                        "expiration",
+                        "provenance",
+                        "approved",
+                        "published",
+                        "real",
+                        "placeholder",
+                        "mock",
+                        "empty state",
+                    ),
+                ),
             )
         )
     if any(word in lowered for word in ("filter", "search", "favorite", "near me")):
         slices.append(
             (
                 "Add discovery filters and saved-item interactions",
-                "Implement search, applicable filter controls, location-based "
-                "selection, and persisted saved items on top of the public "
-                "experience, including localized empty states.",
+                _application_slice_body(
+                    text,
+                    base=(
+                        "Implement search, applicable filter controls, "
+                        "location-based selection, and persisted saved items on "
+                        "top of the public experience, including localized empty "
+                        "states."
+                    ),
+                    keywords=(
+                        "search",
+                        "filter",
+                        "favorite",
+                        "saved",
+                        "near me",
+                        "city",
+                        "department",
+                        "location",
+                        "availability",
+                        "active",
+                        "category",
+                        "merchant",
+                    ),
+                ),
             )
         )
     if any(
@@ -1169,9 +1279,29 @@ def _application_delivery_slices(text: str) -> list[SummarySlice]:
         slices.append(
             (
                 "Implement submissions and moderation controls",
-                "Add validated user submissions and protected administration "
-                "for reviewing publication state. Enforce that unapproved "
-                "content is not visible publicly.",
+                _application_slice_body(
+                    text,
+                    base=(
+                        "Add validated user submissions and protected "
+                        "administration for reviewing publication state. "
+                        "Enforce that unapproved content is not visible publicly."
+                    ),
+                    keywords=(
+                        "submission",
+                        "submit",
+                        "form",
+                        "validation",
+                        "pending",
+                        "moderation",
+                        "admin",
+                        "review",
+                        "approve",
+                        "reject",
+                        "publication",
+                        "protected",
+                        "unapproved",
+                    ),
+                ),
             )
         )
     if (
@@ -1184,20 +1314,147 @@ def _application_delivery_slices(text: str) -> list[SummarySlice]:
         slices.append(
             (
                 "Implement AI-assisted source discovery and candidate ingestion",
-                "Add the provider boundary, server-side structured extraction, "
-                "provenance capture, pending-only candidate creation, and "
-                "duplicate handling without automatic publication.",
+                _application_slice_body(
+                    text,
+                    base=(
+                        "Add the provider boundary, server-side structured "
+                        "extraction, provenance capture, pending-only candidate "
+                        "creation, and duplicate handling without automatic "
+                        "publication."
+                    ),
+                    keywords=(
+                        "ai",
+                        "discovery",
+                        "discover",
+                        "extraction",
+                        "extract",
+                        "source",
+                        "provider",
+                        "candidate",
+                        "provenance",
+                        "duplicate",
+                        "automatic",
+                        "publish",
+                        "scrape",
+                        "terms",
+                    ),
+                ),
             )
         )
     slices.append(
         (
             "Complete integrated quality, security, and accessibility verification",
-            "Add focused tests for critical user and authorization behavior, "
-            "review responsive and accessible interactions, validate localized "
-            "states, and polish the integrated MVP for final review.",
+            _application_slice_body(
+                text,
+                base=(
+                    "Add focused tests for critical user and authorization "
+                    "behavior, review responsive and accessible interactions, "
+                    "validate localized states, and polish the integrated MVP "
+                    "for final review."
+                ),
+                keywords=(
+                    "test",
+                    "vitest",
+                    "playwright",
+                    "accessibility",
+                    "responsive",
+                    "security",
+                    "authorization",
+                    "localized",
+                    "localization",
+                    "validation",
+                    "error",
+                    "loading",
+                    "empty",
+                    "preview",
+                    "vercel",
+                ),
+            ),
         )
     )
     return slices
+
+
+def _application_slice_body(
+    text: str,
+    *,
+    base: str,
+    keywords: Sequence[str],
+) -> str:
+    requirements = _matching_requirement_lines(text, keywords, limit=12)
+    if not requirements:
+        return base
+    return (
+        f"{base}\n\n"
+        "Relevant requirements for this ticket:\n"
+        + "\n".join(f"- {requirement}" for requirement in requirements)
+    )
+
+
+def _matching_requirement_lines(
+    text: str,
+    keywords: Sequence[str],
+    *,
+    limit: int,
+) -> list[str]:
+    lowered_keywords = tuple(keyword.lower() for keyword in keywords)
+    matches: list[str] = []
+    seen: set[str] = set()
+    for line in _candidate_requirement_lines(text):
+        lowered = line.lower()
+        if not any(keyword in lowered for keyword in lowered_keywords):
+            continue
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        matches.append(line)
+        if len(matches) >= limit:
+            break
+    return matches
+
+
+def _candidate_requirement_lines(text: str) -> list[str]:
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^(?:[-*]|\d+[.)])\s+", "", line).strip()
+        line = line.strip("#").strip()
+        if not line or line.endswith(":"):
+            continue
+        if len(line) > 260:
+            line = line[:257].rstrip() + "..."
+        lines.append(line)
+    return lines
+
+
+def _epic_description(
+    *,
+    mode: IntakeMode,
+    text: str,
+    summaries: Sequence[SummarySlice],
+) -> str:
+    sections = [
+        f"Mode: {mode.value}; tickets: {len(summaries)}",
+        f"Original request:\n{text.strip()}",
+    ]
+    if summaries:
+        sections.append(
+            "Implementation ticket plan:\n"
+            + "\n".join(
+                f"- {_summary_slice_title(summary)}: {_summary_slice_body(summary)}"
+                for summary in summaries
+            )
+        )
+    sections.append(
+        "Delivery guidance:\n"
+        "- Child tickets should be implemented as focused slices.\n"
+        "- Use each child ticket's Ticket scope as the executable contract.\n"
+        "- Keep shared product constraints from this epic in force across every "
+        "slice."
+    )
+    return "\n\n".join(sections)
 
 
 def _requests_full_replan(text: str) -> bool:
@@ -1226,6 +1483,12 @@ def _effective_proposal_mode(
 
 
 def _original_request_from_proposal(proposal: Proposal) -> str:
+    epic_request = _original_request_from_epic_description(
+        proposal.epic_description,
+    )
+    if epic_request:
+        return epic_request
+
     marker = (
         "Original Slack request (background only; do not implement work "
         "outside Ticket scope):\n"
@@ -1240,6 +1503,18 @@ def _original_request_from_proposal(proposal: Proposal) -> str:
         if source.strip():
             return source.strip()
     return proposal.summary
+
+
+def _original_request_from_epic_description(description: str | None) -> str | None:
+    if not description:
+        return None
+    marker = "Original request:\n"
+    if marker not in description:
+        return None
+    source = description.split(marker, 1)[1]
+    for delimiter in ("\n\nImplementation ticket plan:", "\n\nDelivery guidance:"):
+        source = source.split(delimiter, 1)[0]
+    return source.strip() or None
 
 
 def _split_into_items(text: str) -> list[str]:

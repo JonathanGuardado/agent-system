@@ -113,6 +113,7 @@ def test_write_creates_epic_for_multi_ticket_proposal():
     assert create_calls[0][2]["issue_type"] == "Epic"
     assert create_calls[0][2]["labels"] == []
     assert create_calls[0][2]["fields"] == {}
+    assert create_calls[0][2]["description"] == "Track the OAuth login work."
     assert [call[2]["parent_key"] for call in create_calls[1:]] == [
         "AGENT-1",
         "AGENT-1",
