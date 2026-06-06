@@ -39,9 +39,9 @@ class GitHubCredentials:
     """Container for per-role GitHub PATs.
 
     Either token may be ``None`` when not configured. In that case the
-    helper produces no env override for that role and callers fall back
-    to whatever ``gh``/``git`` credentials are already configured on the
-    host (the prior behavior of this codebase).
+    helper produces no env override for that role. Code-writing GitHub
+    operations treat a missing bot token as an error instead of falling
+    back to whatever ``gh``/``git`` credentials are configured on the host.
     """
 
     admin_token: str | None = None

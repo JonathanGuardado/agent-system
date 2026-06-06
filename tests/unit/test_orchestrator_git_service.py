@@ -12,6 +12,7 @@ from ticket_agent.domain.errors import (
     PullRequestCreationError,
     PushError,
 )
+from ticket_agent.github import GitHubCredentials
 from ticket_agent.orchestrator.git_services import (
     GhPullRequestOpener,
     GitService,
@@ -195,7 +196,9 @@ def test_gh_pull_request_opener_runs_gh_pr_create_without_shell(tmp_path, monkey
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    result = GhPullRequestOpener().open_pull_request(
+    result = GhPullRequestOpener(
+        credentials=GitHubCredentials(bot_token="bot-pat")
+    ).open_pull_request(
         worktree_path=tmp_path,
         branch_name="agent/AGENT-123/12345678",
         base_branch="main",
@@ -204,54 +207,39 @@ def test_gh_pull_request_opener_runs_gh_pr_create_without_shell(tmp_path, monkey
     )
 
     assert result == "https://github.test/pr/9"
-    assert calls == [
+    assert [call[0] for call in calls] == [
         (
-            (
-                "gh",
-                "pr",
-                "list",
-                "--state",
-                "open",
-                "--base",
-                "main",
-                "--head",
-                "agent/AGENT-123/12345678",
-                "--json",
-                "url",
-                "--jq",
-                ".[0].url",
-            ),
-            {
-                "cwd": tmp_path,
-                "check": False,
-                "capture_output": True,
-                "text": True,
-                "timeout": 300,
-            },
+            "gh",
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--base",
+            "main",
+            "--head",
+            "agent/AGENT-123/12345678",
+            "--json",
+            "url",
+            "--jq",
+            ".[0].url",
         ),
         (
-            (
-                "gh",
-                "pr",
-                "create",
-                "--base",
-                "main",
-                "--head",
-                "agent/AGENT-123/12345678",
-                "--title",
-                "AGENT-123: Add service",
-                "--body",
-                "Ticket: AGENT-123",
-            ),
-            {
-                "cwd": tmp_path,
-                "check": False,
-                "capture_output": True,
-                "text": True,
-                "timeout": 300,
-            },
-        )
+            "gh",
+            "pr",
+            "create",
+            "--base",
+            "main",
+            "--head",
+            "agent/AGENT-123/12345678",
+            "--title",
+            "AGENT-123: Add service",
+            "--body",
+            "Ticket: AGENT-123",
+        ),
     ]
+    for _command, kwargs in calls:
+        assert kwargs["env"]["GH_TOKEN"] == "bot-pat"
+        assert "shell" not in kwargs
 
 
 def test_gh_pull_request_opener_reuses_existing_open_pr(tmp_path, monkeypatch):
@@ -269,7 +257,9 @@ def test_gh_pull_request_opener_reuses_existing_open_pr(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    result = GhPullRequestOpener().open_pull_request(
+    result = GhPullRequestOpener(
+        credentials=GitHubCredentials(bot_token="bot-pat")
+    ).open_pull_request(
         worktree_path=tmp_path,
         branch_name="agent/AGENT-123/12345678",
         base_branch="main",
@@ -289,7 +279,10 @@ def test_gh_pull_request_opener_raises_when_gh_times_out(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     with pytest.raises(PullRequestCreationError, match="timed out after 1 seconds"):
-        GhPullRequestOpener(timeout_seconds=1).open_pull_request(
+        GhPullRequestOpener(
+            timeout_seconds=1,
+            credentials=GitHubCredentials(bot_token="bot-pat"),
+        ).open_pull_request(
             worktree_path=tmp_path,
             branch_name="agent/AGENT-123/12345678",
             base_branch="main",
@@ -305,7 +298,9 @@ def test_gh_pull_request_opener_raises_when_gh_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     with pytest.raises(PullRequestCreationError, match="authentication required"):
-        GhPullRequestOpener().open_pull_request(
+        GhPullRequestOpener(
+            credentials=GitHubCredentials(bot_token="bot-pat")
+        ).open_pull_request(
             worktree_path=tmp_path,
             branch_name="agent/AGENT-123/12345678",
             base_branch="main",
@@ -317,8 +312,6 @@ def test_gh_pull_request_opener_raises_when_gh_fails(tmp_path, monkeypatch):
 def test_gh_pull_request_opener_injects_bot_token_when_credentials_present(
     tmp_path, monkeypatch
 ):
-    from ticket_agent.github import GitHubCredentials
-
     captured: list[dict[str, Any]] = []
 
     def fake_run(command, **kwargs):
@@ -345,7 +338,7 @@ def test_gh_pull_request_opener_injects_bot_token_when_credentials_present(
         assert "GIT_CONFIG_COUNT" not in env
 
 
-def test_gh_pull_request_opener_omits_env_when_no_credentials(tmp_path, monkeypatch):
+def test_gh_pull_request_opener_requires_bot_token(tmp_path, monkeypatch):
     captured: list[dict[str, Any]] = []
 
     def fake_run(command, **kwargs):
@@ -356,16 +349,16 @@ def test_gh_pull_request_opener_omits_env_when_no_credentials(tmp_path, monkeypa
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    GhPullRequestOpener().open_pull_request(
-        worktree_path=tmp_path,
-        branch_name="agent/AGENT-123/12345678",
-        base_branch="main",
-        title="AGENT-123: Add service",
-        body="Ticket: AGENT-123",
-    )
+    with pytest.raises(PullRequestCreationError, match="GH_BOT_TOKEN is required"):
+        GhPullRequestOpener().open_pull_request(
+            worktree_path=tmp_path,
+            branch_name="agent/AGENT-123/12345678",
+            base_branch="main",
+            title="AGENT-123: Add service",
+            body="Ticket: AGENT-123",
+        )
 
-    for kwargs in captured:
-        assert "env" not in kwargs
+    assert captured == []
 
 
 def _state(

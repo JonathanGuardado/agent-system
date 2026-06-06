@@ -340,6 +340,11 @@ def build_runtime(
         runtime_config.component_id,
         in_review_status=runtime_config.jira_in_review_status,
         emit=emit,
+        redacted_paths=[
+            defaults["repo_path"]
+            for defaults in repo_defaults.values()
+            if defaults.get("repo_path")
+        ],
     )
     node_runner = TicketNodeRunner(
         planner=planner or ModelRouterPlannerService(router),

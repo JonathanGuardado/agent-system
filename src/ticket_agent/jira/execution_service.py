@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+import os
+import re
+from collections.abc import Awaitable, Callable, Iterable
 from inspect import isawaitable
 
 from ticket_agent.jira.client import JiraClient
@@ -39,6 +41,11 @@ _STEP_TRANSITION_TICKET = "transition_ticket"
 _STEP_UPDATE_FIELDS = "update_fields"
 
 _LOGGER = logging.getLogger(__name__)
+_GENERIC_REPO_PATH_RE = re.compile(
+    r"(?<![\w./-])(?:/home/[^/\s:]+|/Users/[^/\s:]+)/repos/[^/\s:]+"
+    r"(?:/\.worktrees/[^/\s:/]+/[^/\s:/]+)?"
+)
+_GENERIC_HOME_PATH_RE = re.compile(r"(?<![\w./-])(?:/home/[^/\s:]+|/Users/[^/\s:]+)")
 
 EventEmitter = Callable[[str, dict[str, object]], object]
 
@@ -53,11 +60,13 @@ class JiraExecutionService:
         *,
         in_review_status: str = STATUS_IN_REVIEW,
         emit: EventEmitter | None = None,
+        redacted_paths: Iterable[str | os.PathLike[str]] = (),
     ) -> None:
         self._client = client
         self._component_id = component_id
         self._in_review_status = in_review_status.strip() or STATUS_IN_REVIEW
         self._event_emitter = emit
+        self._redacted_paths = _normalized_redacted_paths(redacted_paths)
 
     async def mark_claimed(self, ticket_key: str) -> None:
         """Mark a Jira ticket as claimed by this component."""
@@ -166,7 +175,8 @@ class JiraExecutionService:
             _STEP_ADD_COMMENT,
             lambda: self._client.add_comment(
                 ticket_key,
-                f"AI execution failed:\n\n{reason}",
+                "AI execution failed:\n\n"
+                f"{_sanitize_public_comment(reason, self._redacted_paths)}",
             ),
         )
 
@@ -453,6 +463,36 @@ class JiraExecutionService:
 
 def _error_message(exc: BaseException) -> str:
     return str(exc) or exc.__class__.__name__
+
+
+def _normalized_redacted_paths(
+    paths: Iterable[str | os.PathLike[str]],
+) -> tuple[str, ...]:
+    normalized: set[str] = set()
+    for path in paths:
+        value = os.fspath(path).strip()
+        if value:
+            normalized.add(os.path.expanduser(value).rstrip("/"))
+    return tuple(sorted(normalized, key=len, reverse=True))
+
+
+def _sanitize_public_comment(reason: str, redacted_paths: tuple[str, ...]) -> str:
+    sanitized = reason
+    for path in redacted_paths:
+        sanitized = _replace_repo_path(sanitized, path)
+    sanitized = _GENERIC_REPO_PATH_RE.sub("<repo>", sanitized)
+    sanitized = _GENERIC_HOME_PATH_RE.sub("<home>", sanitized)
+    return sanitized
+
+
+def _replace_repo_path(text: str, repo_path: str) -> str:
+    escaped = re.escape(repo_path)
+    text = re.sub(
+        rf"{escaped}/\.worktrees/[^\s:/]+/[^\s:/]+",
+        "<repo>",
+        text,
+    )
+    return text.replace(repo_path, "<repo>")
 
 
 def _is_unsupported_optional_field_error(exc: BaseException) -> bool:

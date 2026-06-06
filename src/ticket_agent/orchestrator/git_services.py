@@ -212,11 +212,15 @@ class GhPullRequestOpener:
         return url
 
     def _gh_env_kwargs(self) -> dict[str, Any]:
-        if self._credentials is None:
-            return {}
-        env = self._credentials.gh_env(GH_ROLE_BOT)
+        env = (
+            None
+            if self._credentials is None
+            else self._credentials.gh_env(GH_ROLE_BOT)
+        )
         if env is None:
-            return {}
+            raise PullRequestCreationError(
+                "GH_BOT_TOKEN is required to open pull requests as the system user"
+            )
         return {"env": env}
 
 

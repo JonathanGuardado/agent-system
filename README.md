@@ -233,7 +233,9 @@ When a repository must be created, the admin account owns it and invites the
 bot account as a collaborator; implementation branches and PRs then use the
 bot identity. Keep both tokens only in `.env`. See
 [docs/setup-guide.md](docs/setup-guide.md#3-github-accounts) for creation and
-verification steps.
+verification steps. Code-writing GitHub operations fail fast when
+`GH_BOT_TOKEN` is missing so the runtime does not fall back to a developer's
+local `gh` login.
 
 Local prerequisites that are not environment variables:
 

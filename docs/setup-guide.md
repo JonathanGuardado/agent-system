@@ -189,6 +189,8 @@ remote when authentication should come from `GH_BOT_TOKEN`.
 
 Do not also set a process-wide `GH_TOKEN` for this runtime. GitHub commands are
 given the appropriate role token only for the duration of each operation.
+Code-writing GitHub operations fail when `GH_BOT_TOKEN` is missing instead of
+falling back to a local `gh` login.
 The runtime smoke check verifies each configured token and prints the GitHub
 login it resolves to.
 

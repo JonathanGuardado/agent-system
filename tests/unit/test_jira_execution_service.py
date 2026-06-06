@@ -70,6 +70,37 @@ def test_mark_failed_releases_claim_marks_failure_and_comments():
     assert client.comments == ["AI execution failed:\n\ntests failed"]
 
 
+def test_mark_failed_redacts_local_paths_from_public_comment():
+    client = _FakeJiraClient(
+        _ticket(
+            labels=[LABEL_AI_READY, LABEL_AI_CLAIMED],
+            fields={FIELD_AGENT_ASSIGNED_COMPONENT: "runner-1"},
+        )
+    )
+    service = JiraExecutionService(
+        client,
+        component_id="runner-1",
+        redacted_paths=["/home/jguardado/repos/ofertas-sv"],
+    )
+    reason = (
+        "DEV v2.1.9 /home/jguardado/repos/ofertas-sv/.worktrees/LAB-55/3934cc2e\n"
+        "File: /home/jguardado/repos/ofertas-sv/.worktrees/LAB-55/3934cc2e/"
+        "vitest.setup.ts:1:7\n"
+        "Cache: /home/jguardado/.cache/vitest\n"
+        "Repository path: /home/jguardado/repos/ofertas-sv"
+    )
+
+    asyncio.run(service.mark_failed("AGENT-123", reason))
+
+    comment = client.comments[0]
+    assert "/home/jguardado" not in comment
+    assert ".worktrees" not in comment
+    assert "DEV v2.1.9 <repo>" in comment
+    assert "File: <repo>/vitest.setup.ts:1:7" in comment
+    assert "Cache: <home>/.cache/vitest" in comment
+    assert "Repository path: <repo>" in comment
+
+
 def test_mark_in_review_transitions_releases_claim_and_comments_with_pr():
     client = _FakeJiraClient(
         _ticket(

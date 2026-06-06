@@ -13,6 +13,7 @@ from ticket_agent.domain.errors import (
     WorktreeCleanupError,
     WorktreeCreationError,
 )
+from ticket_agent.github import GitHubCredentials
 
 
 def test_worktree_creation_creates_expected_branch_and_path(tmp_path):
@@ -151,7 +152,7 @@ def test_push_rejects_branch_outside_agent_namespace(tmp_path):
         GitAdapter().push(repo, "feature/ABC-123")
 
 
-def test_push_creates_private_github_repo_when_origin_missing(tmp_path, monkeypatch):
+def test_push_requires_role_tokens_when_origin_missing(tmp_path, monkeypatch):
     repo = _init_repo(tmp_path / "repo")
     calls: list[tuple[str, ...]] = []
 
@@ -173,26 +174,11 @@ def test_push_creates_private_github_repo_when_origin_missing(tmp_path, monkeypa
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    GitAdapter().push(repo, "agent/ABC-123/12345678")
+    credentials = GitHubCredentials(bot_token="bot-pat")
+    with pytest.raises(PushError, match="GH_ADMIN_TOKEN and GH_BOT_TOKEN"):
+        GitAdapter(credentials=credentials).push(repo, "agent/ABC-123/12345678")
 
-    assert calls == [
-        ("git", "remote", "get-url", "origin"),
-        ("git", "rev-parse", "--path-format=absolute", "--git-common-dir"),
-        (
-            "gh",
-            "repo",
-            "create",
-            "repo",
-            "--private",
-            "--source",
-            str(repo),
-            "--remote",
-            "origin",
-        ),
-        ("git", "symbolic-ref", "--quiet", "--short", "HEAD"),
-        ("git", "push", "-u", "origin", "main"),
-        ("git", "push", "origin", "agent/ABC-123/12345678"),
-    ]
+    assert calls == [("git", "remote", "get-url", "origin")]
 
 
 def test_push_reports_origin_creation_failure(tmp_path, monkeypatch):
@@ -215,8 +201,9 @@ def test_push_reports_origin_creation_failure(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
+    credentials = GitHubCredentials(admin_token="admin-pat", bot_token="bot-pat")
     with pytest.raises(PushError, match="automatic GitHub repo creation failed"):
-        GitAdapter().push(repo, "agent/ABC-123/12345678")
+        GitAdapter(credentials=credentials).push(repo, "agent/ABC-123/12345678")
 
 
 def test_push_does_not_use_force(tmp_path, monkeypatch):
@@ -231,7 +218,8 @@ def test_push_does_not_use_force(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    GitAdapter().push(repo, "agent/ABC-123/12345678")
+    credentials = GitHubCredentials(bot_token="bot-pat")
+    GitAdapter(credentials=credentials).push(repo, "agent/ABC-123/12345678")
 
     assert calls == [
         ("git", "remote", "get-url", "origin"),
@@ -254,7 +242,10 @@ def test_ensure_pull_request_base_pushes_integration_branch(tmp_path, monkeypatc
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    GitAdapter().ensure_pull_request_base(repo, "integration/lab-30")
+    credentials = GitHubCredentials(bot_token="bot-pat")
+    GitAdapter(credentials=credentials).ensure_pull_request_base(
+        repo, "integration/lab-30"
+    )
 
     assert calls == [
         ("git", "remote", "get-url", "origin"),
@@ -282,8 +273,6 @@ def test_cleanup_removes_valid_worktree(tmp_path):
 
 
 def test_push_uses_bot_credentials_env_when_configured(tmp_path, monkeypatch):
-    from ticket_agent.github import GitHubCredentials
-
     repo = _init_repo(tmp_path / "repo")
     captured: dict[str, dict[str, object]] = {}
 
@@ -311,7 +300,7 @@ def test_push_uses_bot_credentials_env_when_configured(tmp_path, monkeypatch):
     )
 
 
-def test_push_does_not_set_env_when_credentials_absent(tmp_path, monkeypatch):
+def test_push_requires_bot_token(tmp_path, monkeypatch):
     repo = _init_repo(tmp_path / "repo")
     captured: dict[str, dict[str, object]] = {}
 
@@ -326,14 +315,13 @@ def test_push_does_not_set_env_when_credentials_absent(tmp_path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    GitAdapter().push(repo, "agent/ABC-123/12345678")
+    with pytest.raises(PushError, match="GH_BOT_TOKEN is required"):
+        GitAdapter().push(repo, "agent/ABC-123/12345678")
 
-    assert "env" not in captured["push"]
+    assert "push" not in captured
 
 
 def test_push_creates_repo_with_admin_credentials(tmp_path, monkeypatch):
-    from ticket_agent.github import GitHubCredentials
-
     repo = _init_repo(tmp_path / "repo")
     captured: dict[str, dict[str, object]] = {}
     calls: list[tuple[str, ...]] = []

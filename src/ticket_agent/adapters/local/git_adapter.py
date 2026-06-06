@@ -151,6 +151,7 @@ class GitAdapter:
     def push(self, worktree_path: str | Path, branch_name: str) -> None:
         worktree = Path(worktree_path).resolve(strict=True)
         _validate_push_branch(branch_name)
+        bot_env = self._required_git_bot_env()
         _ensure_origin_remote(
             worktree,
             timeout_seconds=self._default_timeout_seconds,
@@ -160,7 +161,7 @@ class GitAdapter:
         result = self._run_git(
             ("push", "origin", branch_name),
             cwd=worktree,
-            env=self._git_bot_env(),
+            env=bot_env,
         )
         if result.returncode != 0:
             raise PushError(_failure_message(result))
@@ -172,6 +173,7 @@ class GitAdapter:
     ) -> None:
         worktree = Path(worktree_path).resolve(strict=True)
         _validate_integration_branch(branch_name, PushError)
+        bot_env = self._required_git_bot_env()
         _ensure_origin_remote(
             worktree,
             timeout_seconds=self._default_timeout_seconds,
@@ -180,7 +182,7 @@ class GitAdapter:
         result = self._run_git(
             ("push", "origin", f"{branch_name}:{branch_name}"),
             cwd=worktree,
-            env=self._git_bot_env(),
+            env=bot_env,
         )
         if result.returncode != 0:
             raise PushError(_failure_message(result))
@@ -287,6 +289,14 @@ class GitAdapter:
             return None
         return self._credentials.git_env(GH_ROLE_BOT)
 
+    def _required_git_bot_env(self) -> Mapping[str, str]:
+        env = self._git_bot_env()
+        if env is None:
+            raise PushError(
+                "GH_BOT_TOKEN is required to push code as the system user"
+            )
+        return env
+
 
 def _failure_message(result: subprocess.CompletedProcess[str]) -> str:
     output = result.stderr.strip() or result.stdout.strip()
@@ -319,11 +329,18 @@ def _ensure_origin_remote(
     )
     if result.returncode == 0 and result.stdout.strip():
         return
+    if (
+        credentials is None
+        or not credentials.has_token_for(GH_ROLE_ADMIN)
+        or not credentials.has_token_for(GH_ROLE_BOT)
+    ):
+        raise PushError(
+            "GH_ADMIN_TOKEN and GH_BOT_TOKEN are required to create a missing "
+            "GitHub origin without using ambient local credentials"
+        )
     repo_root = _primary_repo_root(worktree, timeout_seconds=timeout_seconds)
     repo_name = _github_repo_name(repo_root)
-    admin_env = (
-        credentials.gh_env(GH_ROLE_ADMIN) if credentials is not None else None
-    )
+    admin_env = credentials.gh_env(GH_ROLE_ADMIN)
     create_result = _run_command(
         (
             "gh",
@@ -347,21 +364,14 @@ def _ensure_origin_remote(
             f"{_failure_message(create_result)}"
         )
 
-    if (
-        credentials is not None
-        and credentials.has_token_for(GH_ROLE_ADMIN)
-        and credentials.has_token_for(GH_ROLE_BOT)
-    ):
-        _authorize_bot_for_created_repo(
-            repo_root,
-            timeout_seconds=timeout_seconds,
-            credentials=credentials,
-        )
+    _authorize_bot_for_created_repo(
+        repo_root,
+        timeout_seconds=timeout_seconds,
+        credentials=credentials,
+    )
 
     default_branch = _default_branch(repo_root, timeout_seconds=timeout_seconds)
-    push_env = (
-        credentials.git_env(GH_ROLE_BOT) if credentials is not None else None
-    )
+    push_env = credentials.git_env(GH_ROLE_BOT)
     push_default_result = _run_command(
         ("git", "push", "-u", "origin", default_branch),
         cwd=repo_root,
