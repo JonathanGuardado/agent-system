@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from ticket_agent.config.repo_contract import (
@@ -172,6 +174,26 @@ def test_loads_config_paths_allowed(tmp_path):
     )
 
     assert contract.policy.config_paths_allowed == ("pyproject.toml", "poetry.lock")
+
+
+def test_lab_contract_allows_root_i18n_config():
+    repo_root = Path(__file__).resolve().parents[2]
+
+    contract = load_repo_contract(repo_root / "config" / "repos" / "lab.yaml")
+
+    assert "i18n.ts" in contract.policy.config_paths_allowed
+
+
+def test_lab_contract_runs_fresh_install_and_non_watch_tests():
+    repo_root = Path(__file__).resolve().parents[2]
+
+    contract = load_repo_contract(repo_root / "config" / "repos" / "lab.yaml")
+
+    install_script = contract.commands.install.command[-1]
+    test_script = contract.commands.test.command[-1]
+    assert "npm install --no-audit --no-fund" in install_script
+    assert "node_modules" not in install_script
+    assert "CI=true npm test -- --run" in test_script
 
 
 def test_applies_test_dirs_default(tmp_path):

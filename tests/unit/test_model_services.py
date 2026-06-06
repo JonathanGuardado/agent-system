@@ -15,6 +15,7 @@ from ticket_agent.config.repo_contract import (
     RepoContract,
     RepoInfo,
 )
+from ticket_agent.domain.errors import PolicyViolationError
 from ticket_agent.orchestrator.graph import build_ticket_graph
 from ticket_agent.orchestrator.local_services import ImplementationContext
 from ticket_agent.orchestrator.model_services import (
@@ -876,7 +877,7 @@ def test_iterative_implementation_returns_failed_result_for_protected_write(
     )
 
     result = asyncio.run(
-        IterativeImplementationService(router).implement(
+        IterativeImplementationService(router, max_turns=1).implement(
             _state(worktree_path=str(tmp_path))
         )
     )
@@ -886,6 +887,63 @@ def test_iterative_implementation_returns_failed_result_for_protected_write(
     assert implementation_result["changed_files"] == []
     assert implementation_result["error_code"] == "policy_violation"
     assert "policy violation" in implementation_result["error"]
+
+
+def test_iterative_implementation_recovers_after_policy_violation(tmp_path):
+    adapter = _SequencedWriteAdapter(
+        errors=[
+            PolicyViolationError(
+                "i18n.ts",
+                "write is outside repo contract source_dirs, test_dirs, "
+                "and config_paths_allowed",
+            ),
+            None,
+        ]
+    )
+    router = _SequenceRouter(
+        {
+            "code.implement": [
+                {
+                    "action": "write_file",
+                    "args": {
+                        "path": "i18n.ts",
+                        "content": "export const locales = ['en'];\n",
+                    },
+                },
+                {
+                    "action": "write_file",
+                    "args": {
+                        "path": "src/i18n.ts",
+                        "content": "export const locales = ['en'];\n",
+                    },
+                },
+                {
+                    "action": "finish",
+                    "args": {"summary": "Added i18n locale config."},
+                },
+            ]
+        }
+    )
+
+    result = asyncio.run(
+        IterativeImplementationService(
+            router,
+            _AdapterFactory(adapter),
+        ).implement(_state(worktree_path=str(tmp_path)))
+    )
+
+    implementation_result = result["implementation_result"]
+    assert implementation_result["status"] == "success"
+    assert implementation_result["changed_files"] == ["src/i18n.ts"]
+    assert adapter.writes == [
+        ("i18n.ts", "export const locales = ['en'];\n"),
+        ("src/i18n.ts", "export const locales = ['en'];\n"),
+    ]
+    assert len(router.calls) == 3
+    assert any(
+        "policy_violation" in message["content"]
+        for message in router.calls[1].messages
+    )
 
 
 def test_iterative_implementation_malformed_json_fails_cleanly(tmp_path):
@@ -1016,6 +1074,79 @@ def test_iterative_implementation_includes_failed_test_excerpt_on_retry(tmp_path
     assert "current_implementation_attempt: 2" in user_message
 
 
+def test_iterative_implementation_includes_failed_implementation_excerpt_on_retry(
+    tmp_path,
+):
+    router = _SequenceRouter(
+        {
+            "code.implement": [
+                {
+                    "action": "finish",
+                    "args": {"summary": "No more edits needed."},
+                }
+            ]
+        }
+    )
+
+    asyncio.run(
+        IterativeImplementationService(
+            router,
+            _AdapterFactory(_LoopFileAdapter()),
+        ).implement(
+            _state(
+                worktree_path=str(tmp_path),
+                implementation_attempts=1,
+                implementation_result={
+                    "status": "failed",
+                    "error_code": "policy_violation",
+                    "error": "policy violation for i18n.ts",
+                },
+            )
+        )
+    )
+
+    user_message = router.calls[0].messages[1]["content"]
+    assert "previous_implementation_failure" in user_message
+    assert "policy_violation" in user_message
+    assert "policy violation for i18n.ts" in user_message
+
+
+def test_failed_test_excerpt_includes_adapter_error_and_truncates(tmp_path):
+    router = _SequenceRouter(
+        {
+            "code.implement": [
+                {
+                    "action": "finish",
+                    "args": {"summary": "No more edits needed."},
+                }
+            ]
+        }
+    )
+
+    asyncio.run(
+        IterativeImplementationService(
+            router,
+            _AdapterFactory(_LoopFileAdapter()),
+        ).implement(
+            _state(
+                worktree_path=str(tmp_path),
+                implementation_attempts=1,
+                test_result={
+                    "status": "failed",
+                    "tests_passed": False,
+                    "output": "vitest failed\n" + ("x" * 7000),
+                    "error": "missing @testing-library/jest-dom",
+                },
+            )
+        )
+    )
+
+    user_message = router.calls[0].messages[1]["content"]
+    assert "previous_test_failure" in user_message
+    assert "output: vitest failed" in user_message
+    assert "...[truncated]" in user_message
+
+
 def test_iterative_implementation_context_includes_contract_write_policy(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "feature.ts").write_text("export const value = 1;\n")
@@ -1054,6 +1185,8 @@ def test_iterative_implementation_context_includes_contract_write_policy(tmp_pat
     assert ".env.example may be written only when it is listed" in user_message
     assert "Never write secret-bearing dotenv files" in user_message
     assert "Do not invent top-level directories" in user_message
+    assert "update the allowed dependency manifest" in user_message
+    assert "@testing-library/jest-dom" in user_message
 
 
 def test_iterative_graph_retry_uses_failed_test_excerpt_then_opens_pr(tmp_path):
@@ -1335,6 +1468,19 @@ class _LoopFileAdapter:
         if self._error is not None:
             raise self._error
         self.writes.append((path, content))
+
+
+class _SequencedWriteAdapter:
+    def __init__(self, errors: list[Exception | None]) -> None:
+        self._errors = list(errors)
+        self.writes: list[tuple[str, str]] = []
+
+    def write_text(self, path: str, content: str, *, encoding: str = "utf-8") -> None:
+        del encoding
+        self.writes.append((path, content))
+        error = self._errors.pop(0) if self._errors else None
+        if error is not None:
+            raise error
 
 
 class _AdapterFactory:

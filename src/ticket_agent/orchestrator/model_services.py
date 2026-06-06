@@ -56,6 +56,7 @@ _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.IGNORECASE | re.DOTA
 _TOOL_ACTIONS = frozenset({"read_file", "write_file", "list_dir", "finish"})
 _DEFAULT_MAX_TOOL_RESULT_CHARS = 6000
 _DEFAULT_MAX_IMPLEMENTATION_TURNS = 80
+_MAX_FAILURE_EXCERPT_CHARS = 6000
 
 
 class ToolCallValidationError(ValueError):
@@ -240,6 +241,7 @@ class IterativeImplementationService:
         repo_context = context_builder.build(state)
         messages = _implementation_loop_messages(state, repo_context)
         changed_files: list[str] = []
+        last_failed_tool_result: dict[str, Any] | None = None
 
         for turn_index in range(self._max_turns):
             try:
@@ -296,15 +298,21 @@ class IterativeImplementationService:
             )
 
             if tool_result.get("ok") is False:
-                return _failed_implementation_result(
-                    "Implementation stopped because a tool call failed.",
-                    [_optional_string(tool_result.get("error"), "tool call failed")],
-                    changed_files=changed_files,
-                    code=_optional_string(
-                        tool_result.get("error_code"),
-                        "tool_failed",
-                    ),
-                )
+                last_failed_tool_result = tool_result
+                if tool_result.get("error_code") == "path_boundary_violation":
+                    return _failed_result_for_tool_error(
+                        tool_result,
+                        changed_files=changed_files,
+                    )
+                continue
+
+            last_failed_tool_result = None
+
+        if last_failed_tool_result is not None:
+            return _failed_result_for_tool_error(
+                last_failed_tool_result,
+                changed_files=changed_files,
+            )
 
         return _failed_implementation_result(
             "Implementation stopped before the model called finish.",
@@ -659,6 +667,19 @@ def _failed_implementation_result(
     return result
 
 
+def _failed_result_for_tool_error(
+    tool_result: Mapping[str, Any],
+    *,
+    changed_files: Sequence[str],
+) -> dict[str, Any]:
+    return _failed_implementation_result(
+        "Implementation stopped because a tool call failed.",
+        [_optional_string(tool_result.get("error"), "tool call failed")],
+        changed_files=changed_files,
+        code=_optional_string(tool_result.get("error_code"), "tool_failed"),
+    )
+
+
 def _optional_tool_notes(args: Mapping[str, Any]) -> list[str]:
     notes = args.get("notes")
     if notes is None:
@@ -751,6 +772,9 @@ def _implementation_messages(
     repo_context: RepoContext,
 ) -> list[dict[str, str]]:
     failed_test_excerpt = _failed_test_excerpt(state.test_result)
+    failed_implementation_excerpt = _failed_implementation_excerpt(
+        state.implementation_result
+    )
     user_lines = [
         "Create an explicit file operation plan for this ticket.",
         f"ticket_key: {state.ticket_key}",
@@ -767,6 +791,10 @@ def _implementation_messages(
     ]
     if failed_test_excerpt is not None:
         user_lines.append(f"previous_test_failure: {failed_test_excerpt}")
+    if failed_implementation_excerpt is not None:
+        user_lines.append(
+            f"previous_implementation_failure: {failed_implementation_excerpt}"
+        )
     user_lines.extend(
         [
             *_write_policy_prompt_lines(repo_context),
@@ -806,6 +834,9 @@ def _implementation_loop_messages(
     repo_context: RepoContext,
 ) -> list[dict[str, str]]:
     failed_test_excerpt = _failed_test_excerpt(state.test_result)
+    failed_implementation_excerpt = _failed_implementation_excerpt(
+        state.implementation_result
+    )
     user_lines = [
         "Implement this ticket by returning one JSON tool call at a time.",
         f"ticket_key: {state.ticket_key}",
@@ -822,6 +853,10 @@ def _implementation_loop_messages(
     ]
     if failed_test_excerpt is not None:
         user_lines.append(f"previous_test_failure: {failed_test_excerpt}")
+    if failed_implementation_excerpt is not None:
+        user_lines.append(
+            f"previous_implementation_failure: {failed_implementation_excerpt}"
+        )
     user_lines.extend(
         [
             *_write_policy_prompt_lines(repo_context),
@@ -839,6 +874,15 @@ def _implementation_loop_messages(
             "Available actions are read_file, list_dir, write_file, and finish.",
             "Use read_file and list_dir when you need more context.",
             "Use write_file with the complete replacement content for that file.",
+            "When you add imports, setup files, framework config, or test helpers "
+            "that require packages, update the allowed dependency manifest "
+            "such as package.json or pyproject.toml in the same attempt.",
+            "For TypeScript React tests, do not import "
+            "@testing-library/jest-dom/vitest unless package.json includes "
+            "@testing-library/jest-dom as a dev dependency.",
+            "If a tool_result reports ok=false, use the error_code and error to "
+            "choose a safe allowed path or a smaller valid edit before trying "
+            "again.",
             "Call finish only after all required file edits have been written.",
             "Do not run tests. The graph test node runs tests after finish.",
             "Return exactly one strict JSON object per response.",
@@ -901,13 +945,53 @@ def _failed_test_excerpt(test_result: Any) -> str | None:
     if not failed:
         return None
     excerpt_parts: list[str] = []
-    for field in ("stdout", "stderr", "summary", "output", "message"):
+    for field in ("stdout", "stderr", "summary", "output", "error", "message"):
         value = test_result.get(field)
         if isinstance(value, str) and value.strip():
             excerpt_parts.append(f"{field}: {value.strip()}")
     if not excerpt_parts:
-        return _json_for_prompt(test_result)
-    return " | ".join(excerpt_parts)
+        return _truncate_failure_excerpt(_json_for_prompt(test_result))
+    return _truncate_failure_excerpt(" | ".join(excerpt_parts))
+
+
+def _failed_implementation_excerpt(implementation_result: Any) -> str | None:
+    if not isinstance(implementation_result, Mapping):
+        return None
+    status = implementation_result.get("status")
+    failed = isinstance(status, str) and status.lower() in {
+        "failed",
+        "failure",
+        "error",
+    }
+    if not failed and not (
+        implementation_result.get("error")
+        or implementation_result.get("error_code")
+    ):
+        return None
+
+    excerpt_parts: list[str] = []
+    for field in ("status", "error_code", "error", "summary"):
+        value = implementation_result.get(field)
+        if isinstance(value, str) and value.strip():
+            excerpt_parts.append(f"{field}: {value.strip()}")
+    errors = implementation_result.get("errors")
+    if isinstance(errors, Sequence) and not isinstance(errors, str):
+        cleaned_errors = [
+            item.strip()
+            for item in errors
+            if isinstance(item, str) and item.strip()
+        ]
+        if cleaned_errors:
+            excerpt_parts.append(f"errors: {'; '.join(cleaned_errors)}")
+    if not excerpt_parts:
+        return _truncate_failure_excerpt(_json_for_prompt(implementation_result))
+    return _truncate_failure_excerpt(" | ".join(excerpt_parts))
+
+
+def _truncate_failure_excerpt(excerpt: str) -> str:
+    if len(excerpt) <= _MAX_FAILURE_EXCERPT_CHARS:
+        return excerpt
+    return excerpt[: _MAX_FAILURE_EXCERPT_CHARS - 14].rstrip() + "...[truncated]"
 
 
 def _review_messages(state: TicketState) -> list[dict[str, str]]:

@@ -178,7 +178,7 @@ def test_ticket_graph_max_turns_exhausted_escalates_at_max_attempts():
     assert state.workflow_status == "escalated"
 
 
-def test_ticket_graph_policy_violation_escalates_without_retry_or_tests():
+def test_ticket_graph_policy_violation_retries_without_running_tests():
     graph = build_ticket_graph(
         TicketWorkflowNodes(
             plan=_stub("plan"),
@@ -192,18 +192,18 @@ def test_ticket_graph_policy_violation_escalates_without_retry_or_tests():
                         "status": "failed",
                         "error_code": "policy_violation",
                         "error": "policy violation for .github/workflows/ci.yml",
-                    }
+                    },
+                    {"status": "success", "changed_files": ["src/feature.py"]},
                 ]
             ),
-            run_tests=_must_not_run("run_tests"),
-            review=_must_not_run("review"),
-            open_pull_request=_must_not_run("open_pull_request"),
-            escalate=_stub(
-                "escalate",
-                workflow_status="escalated",
-                escalation_reason="implementation policy violation",
+            run_tests=_stub("run_tests", tests_passed=True),
+            review=_stub("review", review_passed=True),
+            open_pull_request=_stub(
+                "open_pull_request",
+                pull_request_url="https://github.test/pr/1",
             ),
-            report=_stub("report", workflow_status="escalated"),
+            escalate=_must_not_run("escalate"),
+            report=_stub("report", workflow_status="completed"),
         )
     )
 
@@ -214,12 +214,15 @@ def test_ticket_graph_policy_violation_escalates_without_retry_or_tests():
         "plan",
         "request_execution_approval",
         "implement",
-        "escalate",
+        "implement",
+        "run_tests",
+        "review",
+        "open_pull_request",
         "report",
     ]
-    assert state.implementation_attempts == 1
-    assert state.tests_passed is None
-    assert state.workflow_status == "escalated"
+    assert state.implementation_attempts == 2
+    assert state.tests_passed is True
+    assert state.workflow_status == "completed"
 
 
 def test_ticket_graph_unclassified_implementation_failure_escalates():

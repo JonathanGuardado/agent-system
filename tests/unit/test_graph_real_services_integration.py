@@ -122,12 +122,12 @@ def test_full_graph_writes_file_through_iterative_implementation(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Policy-violation escalation
+# Policy-violation recovery
 # ---------------------------------------------------------------------------
 
 
-def test_full_graph_escalates_immediately_on_policy_violation_write(tmp_path):
-    """A write to a protected path (`.env`) triggers immediate escalation."""
+def test_full_graph_recovers_after_policy_violation_write(tmp_path):
+    """A protected write is blocked, then the model can choose an allowed path."""
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("# app\n")
 
@@ -143,12 +143,21 @@ def test_full_graph_escalates_immediately_on_policy_violation_write(tmp_path):
                 }
             ],
             "code.implement": [
-                # Attempt to write a protected file → tool result will be ok=False
                 {
                     "action": "write_file",
                     "args": {"path": ".env", "content": "SECRET=leaked"},
                 },
-                # Should never be reached — loop exits on failed tool result
+                {
+                    "action": "write_file",
+                    "args": {
+                        "path": "src/app.py",
+                        "content": "def app():\n    return 'ok'\n",
+                    },
+                },
+                {
+                    "action": "finish",
+                    "args": {"summary": "Recovered with an allowed source edit."},
+                },
             ],
         }
     )
@@ -183,16 +192,14 @@ def test_full_graph_escalates_immediately_on_policy_violation_write(tmp_path):
 
     state = TicketState.model_validate(result)
 
-    assert state.workflow_status == "escalated"
-    assert state.pull_request_url is None
-    assert len(escalation.calls) == 1
-    ticket_key, reason = escalation.calls[0]
-    assert ticket_key == "AGENT-456"
-    assert "policy_violation" in state.implementation_result.get("error_code", "") or (
-        "implementation" in reason.lower()
-    )
-
+    assert state.workflow_status == "completed"
+    assert state.pull_request_url == "https://github.test/acme/repo/pull/8"
+    assert escalation.calls == []
     assert not (tmp_path / ".env").exists()
+    assert (tmp_path / "src" / "app.py").read_text() == "def app():\n    return 'ok'\n"
+    implement_calls = [call for call in router.calls if call.capability == "code.implement"]
+    assert len(implement_calls) == 3
+    assert "policy_violation" in implement_calls[1].messages[-1]["content"]
 
 
 # ---------------------------------------------------------------------------

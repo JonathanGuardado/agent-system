@@ -9,11 +9,11 @@ language:
 
 commands:
   install:
-    command: ["bash", "-lc", "if [ -f package.json ] && [ ! -d node_modules ]; then npm install --no-audit --no-fund; else echo 'dependencies already installed or no package.json'; fi"]
+    command: ["bash", "-lc", "if [ -f package.json ]; then npm install --no-audit --no-fund; else echo 'no package.json yet'; fi"]
     timeout_seconds: 300
     working_directory: "."
   test:
-    command: ["bash", "-lc", "if [ -f package.json ]; then npm test; else echo 'no package.json yet'; fi"]
+    command: ["bash", "-lc", "if [ -f package.json ]; then CI=true npm test -- --run; else echo 'no package.json yet'; fi"]
     timeout_seconds: 180
     working_directory: "."
   lint:
@@ -28,6 +28,7 @@ policy:
     - .env.example
     - README.md
     - index.html
+    - i18n.ts
     - package.json
     - package-lock.json
     - tsconfig.json

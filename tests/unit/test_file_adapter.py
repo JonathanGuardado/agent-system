@@ -138,6 +138,18 @@ def test_file_adapter_allows_env_example_when_explicitly_allowed(tmp_path):
     assert adapter.read_text(".env.example") == "PUBLIC_API_URL=\n"
 
 
+def test_file_adapter_allows_root_i18n_ts_when_explicitly_allowed(tmp_path):
+    worktree = _worktree(tmp_path)
+    adapter = LocalFileAdapter(
+        worktree,
+        _contract(config_paths_allowed=("i18n.ts",)),
+    )
+
+    adapter.write_text("i18n.ts", "export const locales = ['en'];\n")
+
+    assert adapter.read_text("i18n.ts") == "export const locales = ['en'];\n"
+
+
 def test_file_adapter_rejects_env_example_without_contract_permission(tmp_path):
     adapter = LocalFileAdapter(_worktree(tmp_path), _contract())
 

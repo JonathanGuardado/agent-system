@@ -203,17 +203,14 @@ def _implementation_failure_escalates_immediately(
     result: Mapping[str, Any],
 ) -> bool:
     error_code = result.get("error_code")
-    if error_code in {"policy_violation", "path_boundary_violation"}:
+    if error_code == "path_boundary_violation":
         return True
 
     error = result.get("error")
     if not isinstance(error, str):
         return False
     normalized_error = error.lower()
-    return (
-        "policy violation" in normalized_error
-        or "path escapes worktree boundary" in normalized_error
-    )
+    return "path escapes worktree boundary" in normalized_error
 
 
 def _implementation_failure_is_retryable(result: Mapping[str, Any]) -> bool:
@@ -222,5 +219,6 @@ def _implementation_failure_is_retryable(result: Mapping[str, Any]) -> bool:
         "unknown_action",
         "max_turns_exhausted",
         "model_invoke_failed",
+        "policy_violation",
         "tool_execution_failed",
     }
