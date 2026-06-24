@@ -169,6 +169,32 @@ def test_load_uses_single_repo_default_when_ticket_has_no_repo_metadata():
     assert work_item.repo_path == "/repos/agent-system"
 
 
+def test_load_resolves_local_path_from_project_defaults_without_jira_path_field():
+    ticket = _ticket(
+        key="LAB-55",
+        summary="[ofertas-sv] Establish application foundation",
+        fields={FIELD_REPOSITORY: "ofertas-sv"},
+    )
+    loader = JiraWorkItemLoader(
+        _FakeJiraClient(ticket),
+        repo_defaults={
+            "AGENT": {
+                "repository": "agent-system",
+                "repo_path": "/repos/agent-system",
+            },
+            "LAB": {
+                "repository": "ofertas-sv",
+                "repo_path": "/repos/ofertas-sv",
+            },
+        },
+    )
+
+    work_item = asyncio.run(loader.load("LAB-55"))
+
+    assert work_item.repository == "ofertas-sv"
+    assert work_item.repo_path == "/repos/ofertas-sv"
+
+
 @pytest.mark.parametrize("missing_field", [FIELD_REPOSITORY, FIELD_REPO_PATH])
 def test_load_raises_clear_error_when_required_field_is_missing(missing_field: str):
     fields = {

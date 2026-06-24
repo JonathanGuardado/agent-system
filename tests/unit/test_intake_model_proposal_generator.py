@@ -69,7 +69,8 @@ def test_model_proposal_generator_builds_multi_ticket_proposal():
     assert "Execution context:" in proposal.tickets[0].description
     assert "- Jira project: AGENT" in proposal.tickets[0].description
     assert "- Repository: agent-system" in proposal.tickets[0].description
-    assert "- Repository path: /home/agent" in proposal.tickets[0].description
+    assert "Repository path:" not in proposal.tickets[0].description
+    assert "/home/agent" not in proposal.tickets[0].description
     assert "Related tickets in this proposal" in proposal.tickets[0].description
     assert "Add login UI: Create the Slack-requested login UI" in (
         proposal.tickets[0].description
@@ -80,6 +81,7 @@ def test_model_proposal_generator_builds_multi_ticket_proposal():
     assert "Tickets must be mutually exclusive slices" in prompt
     assert "do not make multiple tickets that each build the whole app" in prompt
     assert "Return at most 10 tickets" in prompt
+    assert "/home/agent" not in prompt
 
 
 def test_model_proposal_generator_falls_back_on_invalid_model_response():
@@ -625,6 +627,7 @@ def test_model_proposal_generator_revision_preserves_prior_context():
     assert "Revise the existing Jira proposal" in prompt
     assert "edit_text: Use SAML instead" in prompt
     assert "Return the complete revised proposal, not a partial diff." in prompt
+    assert "/home/agent" not in prompt
 
 
 def test_model_revision_falls_back_when_targeted_edit_returns_partial_proposal():

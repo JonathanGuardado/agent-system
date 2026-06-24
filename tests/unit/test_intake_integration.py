@@ -22,6 +22,7 @@ from ticket_agent.intake.proposal_store import ProposalStore
 from ticket_agent.intake.slack_listener import SlackEvent, SlackIntakeListener
 from ticket_agent.jira.constants import LABEL_AI_READY
 from ticket_agent.jira.fake_client import FakeJiraClient
+from tests.constants import FAKE_AGENT_SYSTEM_REPO_PATH
 
 
 class _FakeSlack:
@@ -54,7 +55,7 @@ def test_slack_message_to_ai_ready_jira_ticket(tmp_path):
         repo_defaults={
             "AGENT": {
                 "repository": "agent-system",
-                "repo_path": "/home/jguardado/repos/agent-system",
+                "repo_path": FAKE_AGENT_SYSTEM_REPO_PATH,
             }
         },
     )
@@ -140,7 +141,7 @@ def test_plain_text_approval_creates_epic_and_child_tasks(tmp_path):
         repo_defaults={
             "AGENT": {
                 "repository": "agent-system",
-                "repo_path": "/home/jguardado/repos/agent-system",
+                "repo_path": FAKE_AGENT_SYSTEM_REPO_PATH,
             }
         },
     )

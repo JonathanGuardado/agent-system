@@ -81,7 +81,7 @@ def test_write_creates_ai_ready_ticket_with_required_fields():
     assert ticket.fields[FIELD_AGENT_RETRY_COUNT] == 0
     assert ticket.fields[FIELD_AGENT_CAPABILITIES_NEEDED] == ["code.implement"]
     assert ticket.fields[FIELD_REPOSITORY] == "agent-system"
-    assert ticket.fields[FIELD_REPO_PATH] == "/home/agent"
+    assert FIELD_REPO_PATH not in ticket.fields
     assert ticket.fields[FIELD_SLACK_CHANNEL] == "C-INTAKE"
     assert ticket.fields[FIELD_SLACK_THREAD_TS] == "t1"
 

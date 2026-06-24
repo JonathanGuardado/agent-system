@@ -20,6 +20,7 @@ from ticket_agent.orchestrator.git_services import (
 )
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.state import TicketState
+from tests.constants import FAKE_USER_HOME
 
 
 def test_git_service_commits_pushes_opens_pr_and_returns_url(tmp_path):
@@ -67,6 +68,34 @@ def test_git_service_uses_initiative_base_branch_from_ticket_state(tmp_path):
 
     assert git.ensured_bases == [(tmp_path, "integration/lab-30")]
     assert opener.calls[0]["base_branch"] == "integration/lab-30"
+
+
+def test_git_service_redacts_local_paths_from_commit_and_pull_request(tmp_path):
+    repo_path = tmp_path / "repo"
+    worktree_path = repo_path / ".worktrees" / "AGENT-123" / "12345678"
+    git = _FakeGit()
+    opener = _FakePullRequestOpener()
+    service = GitService(git=git, pull_request_opener=opener)
+    state = _state(
+        worktree_path,
+        repo_path=repo_path,
+        description=(
+            f"Repository path: {repo_path}\n"
+            f"Failure in {worktree_path}/src/app.py\n"
+            f"Cache: {FAKE_USER_HOME}/.cache/vitest"
+        ),
+    ).model_copy(update={"summary": f"Fix checkout at {repo_path}"})
+
+    asyncio.run(service.open_pull_request(state))
+
+    commit_message = git.calls[0][2]
+    body = opener.calls[0]["body"]
+    assert str(tmp_path) not in commit_message
+    assert str(tmp_path) not in body
+    assert FAKE_USER_HOME not in body
+    assert ".worktrees" not in body
+    assert "Failure in <repo>/src/app.py" in body
+    assert "Cache: <home>/.cache/vitest" in body
 
 
 def test_git_service_requires_worktree_path():
@@ -270,6 +299,38 @@ def test_gh_pull_request_opener_reuses_existing_open_pr(tmp_path, monkeypatch):
     assert result == "https://github.test/pr/existing"
     assert len(calls) == 1
     assert calls[0][:3] == ("gh", "pr", "list")
+
+
+def test_gh_pull_request_opener_redacts_paths_at_publication_boundary(
+    tmp_path, monkeypatch
+):
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(command, **kwargs):
+        del kwargs
+        calls.append(tuple(command))
+        if tuple(command[:3]) == ("gh", "pr", "list"):
+            return subprocess.CompletedProcess(command, 0, "\n", "")
+        return subprocess.CompletedProcess(command, 0, "https://github.test/pr/9\n", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    GhPullRequestOpener(
+        credentials=GitHubCredentials(bot_token="bot-pat")
+    ).open_pull_request(
+        worktree_path=tmp_path,
+        branch_name="agent/AGENT-123/12345678",
+        base_branch="main",
+        title=f"Fix {tmp_path}",
+        body=f"Failure in {tmp_path}/src/app.py",
+    )
+
+    create_command = calls[1]
+    assert str(tmp_path) not in create_command
+    assert create_command[create_command.index("--title") + 1] == "Fix <repo>"
+    assert create_command[create_command.index("--body") + 1] == (
+        "Failure in <repo>/src/app.py"
+    )
 
 
 def test_gh_pull_request_opener_raises_when_gh_times_out(tmp_path, monkeypatch):

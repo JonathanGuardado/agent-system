@@ -1,6 +1,6 @@
 # Prompt: Implement Selector Execution Contract
 
-You are working in `/home/jguardado/repos/ai-model-selector`.
+You are working in `$HOME/repos/ai-model-selector`.
 
 Goal: make `ai-model-selector` return a complete, stable execution plan that downstream routers can execute without duplicating model-selection policy.
 
@@ -96,7 +96,7 @@ Implementation tasks:
 
 Important downstream expectation:
 
-The consumer in `/home/jguardado/repos/agent-system` now expects a selection plan shaped like:
+The consumer in `$HOME/repos/agent-system` now expects a selection plan shaped like:
 
 ```python
 selection.primary.selection_tier

@@ -10,6 +10,7 @@ from ticket_agent.adapters.local.git_adapter import GitAdapter
 from ticket_agent.domain.errors import PullRequestCreationError
 from ticket_agent.github import GH_ROLE_BOT, GitHubCredentials
 from ticket_agent.orchestrator.state import TicketState
+from ticket_agent.redaction import redact_local_paths
 
 
 class GitPullRequestPort(Protocol):
@@ -125,6 +126,8 @@ class GhPullRequestOpener:
         title: str,
         body: str,
     ) -> str:
+        title = redact_local_paths(title, [worktree_path])
+        body = redact_local_paths(body, [worktree_path])
         existing_url = self._existing_pull_request_url(
             worktree_path=worktree_path,
             branch_name=branch_name,
@@ -254,7 +257,10 @@ def _required_branch_name(state: TicketState) -> str:
 
 
 def _commit_message(state: TicketState) -> str:
-    return f"{state.ticket_key}: {state.summary}"
+    return redact_local_paths(
+        f"{state.ticket_key}: {state.summary}",
+        _state_local_paths(state),
+    )
 
 
 def _pull_request_title(state: TicketState) -> str:
@@ -268,7 +274,13 @@ def _pull_request_body(state: TicketState) -> str:
     ]
     if state.description:
         parts.extend(("", state.description))
-    return "\n".join(parts)
+    return redact_local_paths("\n".join(parts), _state_local_paths(state))
+
+
+def _state_local_paths(state: TicketState) -> tuple[str, ...]:
+    return tuple(
+        path for path in (state.worktree_path, state.repo_path) if path
+    )
 
 
 def _subprocess_failure_message(result: subprocess.CompletedProcess[str]) -> str:

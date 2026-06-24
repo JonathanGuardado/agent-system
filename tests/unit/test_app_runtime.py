@@ -31,6 +31,7 @@ from ticket_agent.jira.constants import (
 from ticket_agent.jira.fake_client import FakeJiraClient
 from ticket_agent.jira.models import JiraTicket
 from ticket_agent.orchestrator.state import TicketState
+from tests.constants import FAKE_AGENT_SYSTEM_REPO_PATH
 
 
 def test_build_runtime_wires_execution_approval_commands_into_listener(tmp_path):
@@ -166,7 +167,7 @@ def test_fake_slack_to_jira_to_execution_pr_path(tmp_path):
             repo_defaults={
                 "AGENT": {
                     "repository": "agent-system",
-                    "repo_path": "/home/jguardado/repos/agent-system",
+                    "repo_path": FAKE_AGENT_SYSTEM_REPO_PATH,
                 }
             },
             poll_interval_seconds=0.01,
@@ -240,7 +241,7 @@ def test_runtime_dry_run_execution_approval_stops_before_implementation(tmp_path
             repo_defaults={
                 "AGENT": {
                     "repository": "agent-system",
-                    "repo_path": "/home/jguardado/repos/agent-system",
+                    "repo_path": FAKE_AGENT_SYSTEM_REPO_PATH,
                 }
             },
             poll_interval_seconds=0.01,
@@ -327,7 +328,7 @@ def test_runtime_dry_run_reject_releases_and_marks_failed(tmp_path):
             repo_defaults={
                 "AGENT": {
                     "repository": "agent-system",
-                    "repo_path": "/home/jguardado/repos/agent-system",
+                    "repo_path": FAKE_AGENT_SYSTEM_REPO_PATH,
                 }
             },
             poll_interval_seconds=0.01,

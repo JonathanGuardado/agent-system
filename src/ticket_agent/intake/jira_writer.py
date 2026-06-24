@@ -10,7 +10,6 @@ from ticket_agent.jira.constants import (
     FIELD_AGENT_CAPABILITIES_NEEDED,
     FIELD_AGENT_RETRY_COUNT,
     FIELD_REPOSITORY,
-    FIELD_REPO_PATH,
     FIELD_SLACK_CHANNEL,
     FIELD_SLACK_THREAD_TS,
     LABEL_AI_READY,
@@ -292,8 +291,6 @@ def _build_fields(spec: TicketSpec, proposal: Proposal) -> dict[str, object]:
         fields[FIELD_SLACK_CHANNEL] = proposal.slack_channel
     if spec.repository:
         fields[FIELD_REPOSITORY] = spec.repository
-    if spec.repo_path:
-        fields[FIELD_REPO_PATH] = spec.repo_path
     return fields
 
 

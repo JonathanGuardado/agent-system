@@ -58,10 +58,7 @@ from ticket_agent.jira.constants import (
 )
 from ticket_agent.jira.execution_coordinator import JiraExecutionCoordinator
 from ticket_agent.jira.execution_service import JiraExecutionService
-from ticket_agent.jira.work_item_loader import (
-    JiraWorkItemLoader,
-    repo_defaults_from_mapping,
-)
+from ticket_agent.jira.work_item_loader import JiraWorkItemLoader
 from ticket_agent.locking.checkpointer import SQLiteCheckpointer
 from ticket_agent.locking.reconciler import reconcile_expired_locks
 from ticket_agent.locking.sqlite_store import SQLiteLockManager
@@ -397,7 +394,7 @@ def build_runtime(
     jira_coordinator = JiraExecutionCoordinator(
         JiraWorkItemLoader(
             jira_client,
-            repo_defaults=repo_defaults_from_mapping(dict(repo_defaults)),
+            repo_defaults=repo_defaults,
         ),
         execution_service,
         runner,
@@ -454,7 +451,7 @@ def build_runtime(
             FeedbackExecutionCoordinator(
                 loader=JiraWorkItemLoader(
                     jira_client,
-                    repo_defaults=repo_defaults_from_mapping(dict(repo_defaults)),
+                    repo_defaults=repo_defaults,
                 ),
                 runner=runner,
                 worktree_cleaner=worktree_cleaner,

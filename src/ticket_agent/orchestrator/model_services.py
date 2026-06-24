@@ -21,6 +21,7 @@ from ticket_agent.orchestrator.repo_context import (
     RepoContextBuilder,
 )
 from ticket_agent.orchestrator.state import TicketState
+from ticket_agent.redaction import redact_local_paths
 
 
 class ModelServiceError(RuntimeError):
@@ -107,7 +108,7 @@ class ModelRouterPlannerService:
     async def plan(self, state: TicketState) -> dict[str, Any]:
         response = await self._model_router.invoke(
             capability="ticket.decompose",
-            messages=_planning_messages(state),
+            messages=_messages_for_model(_planning_messages(state), state),
             ticket_id=state.ticket_key,
             metadata={"workflow_node": "plan"},
         )
@@ -153,7 +154,10 @@ class ModelRouterImplementationService:
         repo_context = self._repo_context_builder.build(state)
         response = await self._model_router.invoke(
             capability="code.implement",
-            messages=_implementation_messages(state, repo_context),
+            messages=_messages_for_model(
+                _implementation_messages(state, repo_context),
+                state,
+            ),
             ticket_id=state.ticket_key,
             metadata={"workflow_node": "implement"},
         )
@@ -247,7 +251,7 @@ class IterativeImplementationService:
             try:
                 response = await self._model_router.invoke(
                     capability="code.implement",
-                    messages=messages,
+                    messages=_messages_for_model(messages, state),
                     ticket_id=state.ticket_key,
                     metadata={
                         "workflow_node": "implement",
@@ -403,7 +407,7 @@ class ModelRouterReviewService:
     async def review(self, state: TicketState) -> dict[str, Any]:
         response = await self._model_router.invoke(
             capability="code.verify",
-            messages=_review_messages(state),
+            messages=_messages_for_model(_review_messages(state), state),
             ticket_id=state.ticket_key,
             metadata={"workflow_node": "review"},
         )
@@ -738,7 +742,6 @@ def _planning_messages(state: TicketState) -> list[dict[str, str]]:
                     f"summary: {state.summary}",
                     f"description: {state.description}",
                     f"repository: {state.repository or ''}",
-                    f"repo_path: {state.repo_path or ''}",
                     f"max_attempts: {state.max_attempts}",
                     "Plan only this Jira ticket's Ticket scope. Treat any "
                     "Original Slack request text as background for product "
@@ -747,7 +750,7 @@ def _planning_messages(state: TicketState) -> list[dict[str, str]]:
                     "Do not plan sibling tickets, duplicate the whole app, "
                     "invent a different framework, or create a different "
                     "repository/app path than the ticket context implies.",
-                    "files_to_modify entries must be paths relative to repo_path "
+                    "files_to_modify entries must be repository-relative paths "
                     "and should stay inside the ticket's scoped app/module.",
                     "Required JSON schema:",
                     (
@@ -785,8 +788,6 @@ def _implementation_messages(
         f"implementation_attempts: {state.implementation_attempts}",
         f"max_attempts: {state.max_attempts}",
         f"repository: {state.repository or ''}",
-        f"repo_path: {state.repo_path or ''}",
-        f"worktree_path: {state.worktree_path or ''}",
         f"repo_context: {_json_for_prompt(repo_context.to_prompt_dict())}",
     ]
     if failed_test_excerpt is not None:
@@ -848,8 +849,6 @@ def _implementation_loop_messages(
         f"implementation_attempts_completed: {state.implementation_attempts}",
         f"max_attempts: {state.max_attempts}",
         f"repository: {state.repository or ''}",
-        f"repo_path: {state.repo_path or ''}",
-        f"worktree_path: {state.worktree_path or ''}",
     ]
     if failed_test_excerpt is not None:
         user_lines.append(f"previous_test_failure: {failed_test_excerpt}")
@@ -1038,6 +1037,22 @@ def _review_messages(state: TicketState) -> list[dict[str, str]]:
 
 def _json_for_prompt(value: Any) -> str:
     return json.dumps(value, sort_keys=True)
+
+
+def _messages_for_model(
+    messages: Sequence[Mapping[str, str]],
+    state: TicketState,
+) -> list[dict[str, str]]:
+    local_paths = tuple(
+        path for path in (state.worktree_path, state.repo_path) if path
+    )
+    return [
+        {
+            "role": message["role"],
+            "content": redact_local_paths(message["content"], local_paths),
+        }
+        for message in messages
+    ]
 
 
 def _changed_files_from_state(state: TicketState) -> list[str]:

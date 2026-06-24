@@ -212,6 +212,16 @@ def test_builder_returns_empty_when_worktree_path_missing():
     assert context.file_contents == {}
 
 
+def test_prompt_dict_omits_machine_local_paths(tmp_path: Path):
+    context = RepoContextBuilder().build(_state(tmp_path))
+
+    prompt_context = context.to_prompt_dict()
+
+    assert "repo_path" not in prompt_context
+    assert "worktree_path" not in prompt_context
+    assert str(tmp_path) not in str(prompt_context)
+
+
 def test_builder_caps_files_listed(tmp_path: Path):
     for index in range(50):
         _write(tmp_path / "src" / f"mod_{index:03d}.py", "x\n")

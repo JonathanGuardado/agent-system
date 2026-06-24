@@ -30,6 +30,7 @@ from ticket_agent.domain.intake import (
 )
 from ticket_agent.intake.proposal_store import PROPOSAL_TTL_SECONDS
 from ticket_agent.jira.constants import LABEL_AI_READY
+from ticket_agent.redaction import redact_local_paths
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -546,7 +547,6 @@ def _build_ticket_specs(
                     request_text=text,
                     project_key=project_key,
                     repository=repository,
-                    repo_path=repo_path,
                     capabilities=capabilities_needed,
                     request_in_scope=request_in_scope,
                     include_original_request=include_original_request,
@@ -585,7 +585,6 @@ def _ticket_spec_from_model_ticket(
             request_text=request_text,
             project_key=project_key,
             repository=default_repository,
-            repo_path=default_repo_path,
             capabilities=capabilities,
             request_in_scope=request_in_scope,
             sibling_scopes=sibling_scopes,
@@ -860,7 +859,10 @@ def _model_proposal_messages(
     request: ProposalRequest,
     prior: Proposal | None,
 ) -> list[dict[str, str]]:
-    prior_json = "{}" if prior is None else json.dumps(prior.model_dump(mode="json"))
+    prior_json = redact_local_paths(
+        json.dumps(_prior_proposal_for_model(prior)),
+        _proposal_local_paths(prior),
+    )
     task = (
         "Revise the existing Jira proposal using this Slack edit."
         if prior is not None
@@ -902,7 +904,10 @@ def _model_proposal_messages(
                     f"{text_label}: {request.text}",
                     f"mode: {request.resolution.mode.value}",
                     f"capability: {request.resolution.capability}",
-                    f"repo_defaults: {json.dumps(request.repo_defaults)}",
+                    (
+                        "repo_defaults: "
+                        f"{json.dumps(_repo_defaults_for_model(request.repo_defaults))}"
+                    ),
                     f"prior_proposal: {prior_json}",
                     *revision_instructions,
                     *delivery_instructions,
@@ -949,6 +954,39 @@ def _model_proposal_messages(
             ),
         },
     ]
+
+
+def _repo_defaults_for_model(
+    repo_defaults: Mapping[str, Mapping[str, str]],
+) -> dict[str, dict[str, str]]:
+    """Expose repository identity to the model without local checkout paths."""
+
+    safe_defaults: dict[str, dict[str, str]] = {}
+    for project_key, defaults in repo_defaults.items():
+        repository = defaults.get("repository")
+        if repository:
+            safe_defaults[project_key] = {"repository": repository}
+    return safe_defaults
+
+
+def _prior_proposal_for_model(prior: Proposal | None) -> dict[str, object]:
+    """Serialize prior proposal context without internal execution locations."""
+
+    if prior is None:
+        return {}
+    payload = prior.model_dump(mode="json")
+    tickets = payload.get("tickets")
+    if isinstance(tickets, list):
+        for ticket in tickets:
+            if isinstance(ticket, dict):
+                ticket.pop("repo_path", None)
+    return payload
+
+
+def _proposal_local_paths(prior: Proposal | None) -> list[str]:
+    if prior is None:
+        return []
+    return [ticket.repo_path for ticket in prior.tickets if ticket.repo_path]
 
 
 def _coerce_model_payload(response: object) -> dict[str, object]:
@@ -1062,7 +1100,6 @@ def _execution_ready_description(
     request_text: str,
     project_key: str | None,
     repository: str | None,
-    repo_path: str | None,
     capabilities: Sequence[str],
     request_in_scope: bool = False,
     include_original_request: bool = True,
@@ -1074,8 +1111,6 @@ def _execution_ready_description(
         context_lines.append(f"- Jira project: {project_key}")
     if repository:
         context_lines.append(f"- Repository: {repository}")
-    if repo_path:
-        context_lines.append(f"- Repository path: {repo_path}")
     if capabilities:
         context_lines.append(f"- Capabilities: {', '.join(capabilities)}")
 

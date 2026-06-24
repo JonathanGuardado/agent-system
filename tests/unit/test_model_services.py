@@ -27,6 +27,7 @@ from ticket_agent.orchestrator.model_services import (
 )
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.state import TicketState
+from tests.constants import FAKE_AGENT_SYSTEM_REPO_PATH, FAKE_USER_HOME
 
 
 def test_planner_calls_router_and_parses_dict_response():
@@ -81,7 +82,32 @@ def test_planner_prompt_limits_scope_to_ticket_not_original_request():
     assert "Plan only this Jira ticket's Ticket scope" in prompt
     assert "Original Slack request text as background" in prompt
     assert "Do not plan sibling tickets" in prompt
-    assert "files_to_modify entries must be paths relative to repo_path" in prompt
+    assert "files_to_modify entries must be repository-relative paths" in prompt
+
+
+def test_planner_redacts_local_paths_before_calling_model():
+    repo_path = FAKE_AGENT_SYSTEM_REPO_PATH
+    worktree_path = f"{repo_path}/.worktrees/AGENT-123/12345678"
+    router = _FakeRouter(
+        {"ticket.decompose": {"plan": "Edit relative files."}}
+    )
+
+    asyncio.run(
+        ModelRouterPlannerService(router).plan(
+            _state(
+                repo_path=repo_path,
+                worktree_path=worktree_path,
+                description=f"Failure in {worktree_path}/src/app.py",
+            )
+        )
+    )
+
+    prompt = router.calls[0].messages[1]["content"]
+    assert FAKE_USER_HOME not in prompt
+    assert ".worktrees" not in prompt
+    assert "repo_path:" not in prompt
+    assert "worktree_path:" not in prompt
+    assert "Failure in <repo>/src/app.py" in prompt
 
 
 def test_planner_parses_json_string_response():
@@ -380,6 +406,10 @@ def test_implementation_calls_router_and_writes_files_through_adapter(tmp_path):
     )
 
     assert router.calls[0].capability == "code.implement"
+    prompt = router.calls[0].messages[1]["content"]
+    assert str(tmp_path) not in prompt
+    assert "repo_path:" not in prompt
+    assert "worktree_path:" not in prompt
     assert factory.calls == [str(tmp_path)]
     assert adapter.writes == [
         ("src/api/users.py", "def list_users():\n    return []\n"),

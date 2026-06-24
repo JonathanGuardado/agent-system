@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import fields
 from pathlib import Path
 import re
@@ -25,7 +26,7 @@ class JiraWorkItemLoader:
     def __init__(
         self,
         client: JiraClient,
-        repo_defaults: dict[str, str] | None = None,
+        repo_defaults: Mapping[str, str | Mapping[str, str]] | None = None,
     ) -> None:
         self._client = client
         self._repo_defaults = repo_defaults or {}
@@ -34,8 +35,9 @@ class JiraWorkItemLoader:
         """Fetch a Jira ticket and convert it into a TicketWorkItem."""
 
         ticket = await self._client.get_ticket(ticket_key)
-        repository = _repo_value(ticket, FIELD_REPOSITORY, self._repo_defaults)
-        repo_path = _repo_value(ticket, FIELD_REPO_PATH, self._repo_defaults)
+        repo_defaults = _repo_defaults_for_ticket(ticket, self._repo_defaults)
+        repository = _repo_value(ticket, FIELD_REPOSITORY, repo_defaults)
+        repo_path = _repo_value(ticket, FIELD_REPO_PATH, repo_defaults)
 
         return TicketWorkItem(
             ticket_key=ticket.key,
@@ -76,6 +78,59 @@ def _repo_value(
     raise JiraWorkItemLoadError(
         f"Jira ticket {ticket.key} is missing required field: {field_name}"
     )
+
+
+def _repo_defaults_for_ticket(
+    ticket: JiraTicket,
+    configured: Mapping[str, str | Mapping[str, str]],
+) -> dict[str, str]:
+    if not configured:
+        return {}
+
+    flat = {
+        key: value
+        for key, value in configured.items()
+        if isinstance(value, str) and value.strip()
+    }
+    if flat:
+        return flat
+
+    grouped = {
+        key.upper(): value
+        for key, value in configured.items()
+        if isinstance(value, Mapping)
+    }
+    project_key = ticket.key.partition("-")[0].upper()
+    project_defaults = grouped.get(project_key)
+    if project_defaults is not None:
+        return _normalized_repo_defaults(project_defaults)
+
+    repository = _optional_string(ticket, FIELD_REPOSITORY) or _summary_repository(
+        ticket.summary
+    )
+    if repository:
+        matches = [
+            defaults
+            for defaults in grouped.values()
+            if defaults.get("repository", "").casefold() == repository.casefold()
+        ]
+        if len(matches) == 1:
+            return _normalized_repo_defaults(matches[0])
+
+    if len(grouped) == 1:
+        return _normalized_repo_defaults(next(iter(grouped.values())))
+    return {}
+
+
+def _normalized_repo_defaults(defaults: Mapping[str, str]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    repository = defaults.get("repository")
+    repo_path = defaults.get("repo_path")
+    if repository and repository.strip():
+        result[FIELD_REPOSITORY] = repository.strip()
+    if repo_path and repo_path.strip():
+        result[FIELD_REPO_PATH] = str(Path(repo_path).expanduser())
+    return result
 
 
 def _description_context_value(description: str, field_name: str) -> str | None:

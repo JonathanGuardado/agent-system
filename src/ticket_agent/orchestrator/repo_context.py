@@ -230,8 +230,6 @@ class RepoContext:
             "summary": self.summary,
             "description": self.description,
             "repository": self.repository,
-            "repo_path": self.repo_path,
-            "worktree_path": self.worktree_path,
             "decomposition": self.decomposition,
             "files_to_modify": list(self.files_to_modify),
             "relevant_files": list(self.relevant_files),

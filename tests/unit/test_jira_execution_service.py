@@ -18,6 +18,7 @@ from ticket_agent.jira.constants import (
 )
 from ticket_agent.jira.execution_service import JiraExecutionService
 from ticket_agent.jira.models import JiraExecutionError, JiraTicket
+from tests.constants import FAKE_OFERTAS_SV_REPO_PATH, FAKE_USER_HOME
 
 _ConfiguredFailure = BaseException | list[BaseException | None]
 
@@ -80,20 +81,20 @@ def test_mark_failed_redacts_local_paths_from_public_comment():
     service = JiraExecutionService(
         client,
         component_id="runner-1",
-        redacted_paths=["/home/jguardado/repos/ofertas-sv"],
+        redacted_paths=[FAKE_OFERTAS_SV_REPO_PATH],
     )
     reason = (
-        "DEV v2.1.9 /home/jguardado/repos/ofertas-sv/.worktrees/LAB-55/3934cc2e\n"
-        "File: /home/jguardado/repos/ofertas-sv/.worktrees/LAB-55/3934cc2e/"
+        f"DEV v2.1.9 {FAKE_OFERTAS_SV_REPO_PATH}/.worktrees/LAB-55/3934cc2e\n"
+        f"File: {FAKE_OFERTAS_SV_REPO_PATH}/.worktrees/LAB-55/3934cc2e/"
         "vitest.setup.ts:1:7\n"
-        "Cache: /home/jguardado/.cache/vitest\n"
-        "Repository path: /home/jguardado/repos/ofertas-sv"
+        f"Cache: {FAKE_USER_HOME}/.cache/vitest\n"
+        f"Repository path: {FAKE_OFERTAS_SV_REPO_PATH}"
     )
 
     asyncio.run(service.mark_failed("AGENT-123", reason))
 
     comment = client.comments[0]
-    assert "/home/jguardado" not in comment
+    assert FAKE_USER_HOME not in comment
     assert ".worktrees" not in comment
     assert "DEV v2.1.9 <repo>" in comment
     assert "File: <repo>/vitest.setup.ts:1:7" in comment
