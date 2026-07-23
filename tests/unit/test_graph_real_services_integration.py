@@ -148,6 +148,10 @@ def test_full_graph_recovers_after_policy_violation_write(tmp_path):
                     "args": {"path": ".env", "content": "SECRET=leaked"},
                 },
                 {
+                    "action": "read_file",
+                    "args": {"path": "src/app.py"},
+                },
+                {
                     "action": "write_file",
                     "args": {
                         "path": "src/app.py",
@@ -198,7 +202,7 @@ def test_full_graph_recovers_after_policy_violation_write(tmp_path):
     assert not (tmp_path / ".env").exists()
     assert (tmp_path / "src" / "app.py").read_text() == "def app():\n    return 'ok'\n"
     implement_calls = [call for call in router.calls if call.capability == "code.implement"]
-    assert len(implement_calls) == 3
+    assert len(implement_calls) == 4
     assert "policy_violation" in implement_calls[1].messages[-1]["content"]
 
 

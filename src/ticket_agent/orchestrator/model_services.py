@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal, Protocol
 
@@ -38,7 +39,16 @@ class ModelRouterProtocol(Protocol):
 
 
 FileAdapterFactory = Callable[[str], Any]
-ToolAction = Literal["read_file", "write_file", "list_dir", "finish"]
+TestRunner = Callable[[], Mapping[str, Any]]
+ToolAction = Literal[
+    "read_file",
+    "write_file",
+    "list_dir",
+    "search",
+    "edit_file",
+    "run_tests",
+    "finish",
+]
 
 _MODEL_ENVELOPE_FIELDS = ("content", "text", "message", "data")
 _MODEL_ENVELOPE_METADATA_FIELDS = frozenset(
@@ -54,9 +64,23 @@ _MODEL_ENVELOPE_METADATA_FIELDS = frozenset(
     }
 )
 _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
-_TOOL_ACTIONS = frozenset({"read_file", "write_file", "list_dir", "finish"})
+_TOOL_ACTIONS = frozenset(
+    {
+        "read_file",
+        "write_file",
+        "list_dir",
+        "search",
+        "edit_file",
+        "run_tests",
+        "finish",
+    }
+)
 _DEFAULT_MAX_TOOL_RESULT_CHARS = 6000
 _DEFAULT_MAX_IMPLEMENTATION_TURNS = 80
+_DEFAULT_MAX_TEST_RUNS = 5
+_DEFAULT_SEARCH_RESULT_CAP = 50
+_MAX_SEARCH_RESULT_CAP = 200
+_MAX_SEARCH_LINE_CHARS = 200
 _MAX_FAILURE_EXCERPT_CHARS = 6000
 
 
@@ -82,8 +106,11 @@ class ToolCall(BaseModel):
         if self.action not in _TOOL_ACTIONS:
             raise ValueError(f"unknown action: {self.action!r}")
 
-        if self.action in {"read_file", "write_file", "list_dir"}:
+        if self.action in {"read_file", "write_file", "list_dir", "edit_file"}:
             _tool_arg_string(self.args, "path", self.action)
+        if self.action == "read_file":
+            _optional_tool_arg_int(self.args, "offset", self.action, minimum=1)
+            _optional_tool_arg_int(self.args, "limit", self.action, minimum=1)
         if self.action == "write_file":
             _tool_arg_string(
                 self.args,
@@ -91,6 +118,23 @@ class ToolCall(BaseModel):
                 self.action,
                 allow_empty=True,
             )
+        if self.action == "search":
+            _tool_arg_string(self.args, "pattern", self.action)
+            if "path" in self.args:
+                _tool_arg_string(self.args, "path", self.action)
+            _optional_tool_arg_int(
+                self.args, "max_results", self.action, minimum=1
+            )
+        if self.action == "edit_file":
+            _tool_arg_string(self.args, "old_string", self.action)
+            _tool_arg_string(
+                self.args,
+                "new_string",
+                self.action,
+                allow_empty=True,
+            )
+            if "replace_all" in self.args:
+                _optional_tool_arg_bool(self.args, "replace_all", self.action)
         if self.action == "finish":
             _tool_arg_string(self.args, "summary", self.action)
             notes = self.args.get("notes")
@@ -178,6 +222,21 @@ class ModelRouterImplementationService:
         return {"implementation_result": result}
 
 
+@dataclass
+class _LoopContext:
+    """Mutable per-run state threaded through implementation tool calls."""
+
+    files: Any
+    test_runner: TestRunner | None
+    max_test_runs: int
+    changed_files: list[str] = field(default_factory=list)
+    # Paths for which the model has seen a complete, untruncated view (or that
+    # did not exist, so there is nothing to destroy). A write to any other
+    # existing path is a blind overwrite and is rejected.
+    complete_view_paths: set[str] = field(default_factory=set)
+    test_runs: int = 0
+
+
 class IterativeImplementationService:
     """Run a provider-agnostic JSON tool-call implementation loop."""
 
@@ -189,17 +248,21 @@ class IterativeImplementationService:
         *,
         max_turns: int = _DEFAULT_MAX_IMPLEMENTATION_TURNS,
         tool_result_max_chars: int = _DEFAULT_MAX_TOOL_RESULT_CHARS,
+        max_test_runs: int = _DEFAULT_MAX_TEST_RUNS,
     ) -> None:
         if max_turns < 1:
             raise ValueError("max_turns must be at least 1")
         if tool_result_max_chars < 256:
             raise ValueError("tool_result_max_chars must be at least 256")
+        if max_test_runs < 1:
+            raise ValueError("max_test_runs must be at least 1")
 
         self._model_router = model_router
         self._file_adapter_factory = file_adapter_factory or LocalFileAdapter
         self._repo_context_builder = repo_context_builder or RepoContextBuilder()
         self._max_turns = max_turns
         self._tool_result_max_chars = tool_result_max_chars
+        self._max_test_runs = max_test_runs
 
     async def implement(self, state: TicketState) -> dict[str, Any]:
         if not state.worktree_path:
@@ -228,6 +291,7 @@ class IterativeImplementationService:
             state,
             context.files,
             repo_contract=context.contract,
+            test_runner=getattr(context, "test_runner", None),
         )
 
     async def _run_loop(
@@ -236,6 +300,7 @@ class IterativeImplementationService:
         files: Any,
         *,
         repo_contract: Any | None = None,
+        test_runner: TestRunner | None = None,
     ) -> dict[str, Any]:
         context_builder = (
             self._repo_context_builder
@@ -243,8 +308,16 @@ class IterativeImplementationService:
             else RepoContextBuilder(repo_contract=repo_contract)
         )
         repo_context = context_builder.build(state)
-        messages = _implementation_loop_messages(state, repo_context)
-        changed_files: list[str] = []
+        messages = _implementation_loop_messages(
+            state,
+            repo_context,
+            tests_available=test_runner is not None,
+        )
+        loop = _LoopContext(
+            files=files,
+            test_runner=test_runner,
+            max_test_runs=self._max_test_runs,
+        )
         last_failed_tool_result: dict[str, Any] | None = None
 
         for turn_index in range(self._max_turns):
@@ -265,14 +338,14 @@ class IterativeImplementationService:
                     "Implementation stopped because the model returned an invalid "
                     "tool call.",
                     [str(exc)],
-                    changed_files=changed_files,
+                    changed_files=loop.changed_files,
                     code=getattr(exc, "code", "invalid_tool_call"),
                 )
             except Exception as exc:
                 return _failed_implementation_result(
                     "Implementation stopped because the model call failed.",
                     [f"{type(exc).__name__}: {exc}"],
-                    changed_files=changed_files,
+                    changed_files=loop.changed_files,
                     code="model_invoke_failed",
                 )
 
@@ -286,11 +359,11 @@ class IterativeImplementationService:
             if tool_call.action == "finish":
                 return _successful_implementation_result(
                     tool_call.args["summary"],
-                    changed_files,
+                    loop.changed_files,
                     _optional_tool_notes(tool_call.args),
                 )
 
-            tool_result = self._execute_tool_call(files, tool_call, changed_files)
+            tool_result = self._execute_tool_call(loop, tool_call)
             messages.append(
                 {
                     "role": "user",
@@ -306,7 +379,7 @@ class IterativeImplementationService:
                 if tool_result.get("error_code") == "path_boundary_violation":
                     return _failed_result_for_tool_error(
                         tool_result,
-                        changed_files=changed_files,
+                        changed_files=loop.changed_files,
                     )
                 continue
 
@@ -315,87 +388,307 @@ class IterativeImplementationService:
         if last_failed_tool_result is not None:
             return _failed_result_for_tool_error(
                 last_failed_tool_result,
-                changed_files=changed_files,
+                changed_files=loop.changed_files,
             )
 
         return _failed_implementation_result(
             "Implementation stopped before the model called finish.",
             [f"max_turns exhausted after {self._max_turns} turns"],
-            changed_files=changed_files,
+            changed_files=loop.changed_files,
             code="max_turns_exhausted",
         )
 
     def _execute_tool_call(
         self,
-        files: Any,
+        loop: _LoopContext,
         tool_call: ToolCall,
-        changed_files: list[str],
     ) -> dict[str, Any]:
         try:
             if tool_call.action == "read_file":
-                path = tool_call.args["path"]
-                try:
-                    content = files.read_text(path)
-                except FileNotFoundError:
-                    return {
-                        "ok": True,
-                        "action": "read_file",
-                        "path": path,
-                        "missing": True,
-                        "content": "",
-                        "truncated": False,
-                    }
-                return {
-                    "ok": True,
-                    "action": "read_file",
-                    "path": path,
-                    **_truncated_content(content, self._tool_result_max_chars),
-                }
-
+                return self._read_file(loop, tool_call)
             if tool_call.action == "list_dir":
-                path = tool_call.args["path"]
-                listed_files = list(files.list_files(path))
-                return {
-                    "ok": True,
-                    "action": "list_dir",
-                    "path": path,
-                    **_truncated_file_list(
-                        listed_files,
-                        self._tool_result_max_chars,
-                    ),
-                }
+                return self._list_dir(loop, tool_call)
+            if tool_call.action == "search":
+                return self._search(loop, tool_call)
+            if tool_call.action == "edit_file":
+                return self._edit_file(loop, tool_call)
+            if tool_call.action == "run_tests":
+                return self._run_tests(loop)
+            return self._write_file(loop, tool_call)
+        except PolicyViolationError as exc:
+            return _tool_error(
+                tool_call.action,
+                exc,
+                "policy_violation",
+                self._tool_result_max_chars,
+            )
+        except PathBoundaryError as exc:
+            return _tool_error(
+                tool_call.action,
+                exc,
+                "path_boundary_violation",
+                self._tool_result_max_chars,
+            )
+        except (AgentSystemError, OSError, ValueError, RuntimeError) as exc:
+            return _tool_error(
+                tool_call.action,
+                exc,
+                "tool_execution_failed",
+                self._tool_result_max_chars,
+            )
 
-            path = tool_call.args["path"]
-            content = tool_call.args["content"]
-            files.write_text(path, content)
-            if path not in changed_files:
-                changed_files.append(path)
+    def _read_file(
+        self,
+        loop: _LoopContext,
+        tool_call: ToolCall,
+    ) -> dict[str, Any]:
+        path = tool_call.args["path"]
+        offset = tool_call.args.get("offset")
+        limit = tool_call.args.get("limit")
+        try:
+            content = loop.files.read_text(path)
+        except FileNotFoundError:
+            # A file that does not exist cannot be blindly overwritten.
+            loop.complete_view_paths.add(path)
             return {
                 "ok": True,
+                "action": "read_file",
+                "path": path,
+                "missing": True,
+                "content": "",
+                "truncated": False,
+                "complete": True,
+            }
+
+        if offset is None and limit is None:
+            payload = _truncated_content(content, self._tool_result_max_chars)
+            complete = not payload["truncated"]
+            if complete:
+                loop.complete_view_paths.add(path)
+            return {
+                "ok": True,
+                "action": "read_file",
+                "path": path,
+                "complete": complete,
+                **payload,
+            }
+
+        lines = content.splitlines(keepends=True)
+        total_lines = len(lines)
+        start_index = (offset - 1) if offset else 0
+        start_index = min(max(start_index, 0), total_lines)
+        end_index = total_lines if limit is None else min(start_index + limit, total_lines)
+        selected = "".join(lines[start_index:end_index])
+        payload = _truncated_content(selected, self._tool_result_max_chars)
+        complete = (
+            start_index == 0 and end_index >= total_lines and not payload["truncated"]
+        )
+        if complete:
+            loop.complete_view_paths.add(path)
+        return {
+            "ok": True,
+            "action": "read_file",
+            "path": path,
+            "start_line": start_index + 1,
+            "end_line": end_index,
+            "total_lines": total_lines,
+            "complete": complete,
+            **payload,
+        }
+
+    def _list_dir(
+        self,
+        loop: _LoopContext,
+        tool_call: ToolCall,
+    ) -> dict[str, Any]:
+        path = tool_call.args["path"]
+        listed_files = list(loop.files.list_files(path))
+        return {
+            "ok": True,
+            "action": "list_dir",
+            "path": path,
+            **_truncated_file_list(listed_files, self._tool_result_max_chars),
+        }
+
+    def _search(
+        self,
+        loop: _LoopContext,
+        tool_call: ToolCall,
+    ) -> dict[str, Any]:
+        pattern = tool_call.args["pattern"]
+        search_path = tool_call.args.get("path", ".")
+        max_results = _search_result_cap(tool_call.args.get("max_results"))
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            return {
+                "ok": False,
+                "action": "search",
+                "error": _truncate_text(str(exc), self._tool_result_max_chars),
+                "error_code": "invalid_pattern",
+            }
+
+        matches: list[str] = []
+        files_searched = 0
+        truncated = False
+        for rel_path in loop.files.list_files(search_path):
+            try:
+                text = loop.files.read_text(rel_path)
+            except (FileNotFoundError, UnicodeDecodeError, OSError):
+                continue
+            if "\x00" in text:
+                continue
+            files_searched += 1
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                if regex.search(line):
+                    snippet = _truncate_text(line.strip(), _MAX_SEARCH_LINE_CHARS)
+                    matches.append(f"{rel_path}:{lineno}:{snippet}")
+                    if len(matches) >= max_results:
+                        truncated = True
+                        break
+            if truncated:
+                break
+
+        joined = "\n".join(matches)
+        if len(joined) > self._tool_result_max_chars:
+            truncated = True
+            while matches and len("\n".join(matches)) > self._tool_result_max_chars:
+                matches.pop()
+        return {
+            "ok": True,
+            "action": "search",
+            "pattern": pattern,
+            "matches": matches,
+            "match_count": len(matches),
+            "files_searched": files_searched,
+            "truncated": truncated,
+        }
+
+    def _edit_file(
+        self,
+        loop: _LoopContext,
+        tool_call: ToolCall,
+    ) -> dict[str, Any]:
+        path = tool_call.args["path"]
+        old_string = tool_call.args["old_string"]
+        new_string = tool_call.args["new_string"]
+        replace_all = tool_call.args.get("replace_all", False)
+        try:
+            content = loop.files.read_text(path)
+        except FileNotFoundError:
+            return {
+                "ok": False,
+                "action": "edit_file",
+                "path": path,
+                "error": "file does not exist; use write_file to create it",
+                "error_code": "edit_target_not_found",
+            }
+
+        occurrences = content.count(old_string)
+        if occurrences == 0:
+            return {
+                "ok": False,
+                "action": "edit_file",
+                "path": path,
+                "error": "old_string was not found in the file",
+                "error_code": "edit_target_not_found",
+            }
+        if occurrences > 1 and not replace_all:
+            return {
+                "ok": False,
+                "action": "edit_file",
+                "path": path,
+                "error": (
+                    f"old_string matches {occurrences} times; add surrounding "
+                    "context to make it unique or set replace_all to true"
+                ),
+                "error_code": "edit_target_ambiguous",
+            }
+
+        if replace_all:
+            new_content = content.replace(old_string, new_string)
+            replacements = occurrences
+        else:
+            new_content = content.replace(old_string, new_string, 1)
+            replacements = 1
+
+        loop.files.write_text(path, new_content)
+        # Reading the whole file to edit it means we hold a complete view.
+        loop.complete_view_paths.add(path)
+        if path not in loop.changed_files:
+            loop.changed_files.append(path)
+        return {
+            "ok": True,
+            "action": "edit_file",
+            "path": path,
+            "replacements": replacements,
+        }
+
+    def _write_file(
+        self,
+        loop: _LoopContext,
+        tool_call: ToolCall,
+    ) -> dict[str, Any]:
+        path = tool_call.args["path"]
+        content = tool_call.args["content"]
+        exists = getattr(loop.files, "exists", None)
+        if (
+            callable(exists)
+            and exists(path)
+            and path not in loop.complete_view_paths
+        ):
+            return {
+                "ok": False,
                 "action": "write_file",
                 "path": path,
+                "error": (
+                    "refusing to overwrite a file you have not fully read; read "
+                    "the whole file first or use edit_file for a targeted change"
+                ),
+                "error_code": "truncated_write_rejected",
             }
-        except PolicyViolationError as exc:
+        loop.files.write_text(path, content)
+        # We just wrote the whole content, so we hold a complete view.
+        loop.complete_view_paths.add(path)
+        if path not in loop.changed_files:
+            loop.changed_files.append(path)
+        return {
+            "ok": True,
+            "action": "write_file",
+            "path": path,
+        }
+
+    def _run_tests(self, loop: _LoopContext) -> dict[str, Any]:
+        if loop.test_runner is None:
             return {
                 "ok": False,
-                "action": tool_call.action,
-                "error": _truncate_text(str(exc), self._tool_result_max_chars),
-                "error_code": "policy_violation",
+                "action": "run_tests",
+                "error": "run_tests is not available in this run",
+                "error_code": "tests_unavailable",
             }
-        except PathBoundaryError as exc:
+        if loop.test_runs >= loop.max_test_runs:
             return {
                 "ok": False,
-                "action": tool_call.action,
-                "error": _truncate_text(str(exc), self._tool_result_max_chars),
-                "error_code": "path_boundary_violation",
+                "action": "run_tests",
+                "error": (
+                    f"test run budget of {loop.max_test_runs} runs is exhausted"
+                ),
+                "error_code": "test_budget_exhausted",
             }
-        except (AgentSystemError, OSError, ValueError, RuntimeError) as exc:
+        loop.test_runs += 1
+        try:
+            result = loop.test_runner()
+        except Exception as exc:  # noqa: BLE001 - surface any runner failure to model
             return {
                 "ok": False,
-                "action": tool_call.action,
-                "error": _truncate_text(str(exc), self._tool_result_max_chars),
-                "error_code": "tool_execution_failed",
+                "action": "run_tests",
+                "error": _truncate_text(
+                    f"{type(exc).__name__}: {exc}",
+                    self._tool_result_max_chars,
+                ),
+                "error_code": "test_run_failed",
             }
+        return _summarized_test_result(result, self._tool_result_max_chars)
 
 
 class ModelRouterReviewService:
@@ -623,6 +916,34 @@ def _tool_arg_string(
     return value
 
 
+def _optional_tool_arg_int(
+    args: Mapping[str, Any],
+    name: str,
+    action: str,
+    *,
+    minimum: int,
+) -> int | None:
+    if name not in args:
+        return None
+    value = args[name]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{action}.args.{name} must be an integer")
+    if value < minimum:
+        raise ValueError(f"{action}.args.{name} must be >= {minimum}")
+    return value
+
+
+def _optional_tool_arg_bool(
+    args: Mapping[str, Any],
+    name: str,
+    action: str,
+) -> bool:
+    value = args[name]
+    if not isinstance(value, bool):
+        raise ValueError(f"{action}.args.{name} must be a boolean")
+    return value
+
+
 def _tool_arg_string_list(value: Any, name: str, action: str) -> list[str]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         raise ValueError(f"{action}.args.{name} must be a list of strings")
@@ -721,6 +1042,46 @@ def _truncate_text(text: str, max_chars: int) -> str:
         return text
     suffix = f"\n...[truncated {len(text) - max_chars} chars]"
     return text[: max(0, max_chars - len(suffix))] + suffix
+
+
+def _tool_error(
+    action: str,
+    exc: Exception,
+    error_code: str,
+    max_chars: int,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "action": action,
+        "error": _truncate_text(str(exc), max_chars),
+        "error_code": error_code,
+    }
+
+
+def _search_result_cap(requested: Any) -> int:
+    if not isinstance(requested, int) or isinstance(requested, bool):
+        return _DEFAULT_SEARCH_RESULT_CAP
+    return max(1, min(requested, _MAX_SEARCH_RESULT_CAP))
+
+
+def _summarized_test_result(result: Any, max_chars: int) -> dict[str, Any]:
+    if not isinstance(result, Mapping):
+        return {
+            "ok": True,
+            "action": "run_tests",
+            "tests_passed": None,
+            "output": "",
+        }
+    output = result.get("output") or result.get("stdout") or ""
+    return {
+        "ok": True,
+        "action": "run_tests",
+        "tests_passed": result.get("tests_passed"),
+        "status": result.get("status"),
+        "exit_code": result.get("exit_code"),
+        "timed_out": result.get("timed_out"),
+        "output": _truncate_text(str(output), max_chars),
+    }
 
 
 def _planning_messages(state: TicketState) -> list[dict[str, str]]:
@@ -833,6 +1194,8 @@ def _implementation_messages(
 def _implementation_loop_messages(
     state: TicketState,
     repo_context: RepoContext,
+    *,
+    tests_available: bool = False,
 ) -> list[dict[str, str]]:
     failed_test_excerpt = _failed_test_excerpt(state.test_result)
     failed_implementation_excerpt = _failed_implementation_excerpt(
@@ -856,23 +1219,54 @@ def _implementation_loop_messages(
         user_lines.append(
             f"previous_implementation_failure: {failed_implementation_excerpt}"
         )
+    run_tests_actions = (
+        ['{"action": "run_tests", "args": {}}'] if tests_available else []
+    )
     user_lines.extend(
         [
             *_write_policy_prompt_lines(repo_context),
             "Tool call schema:",
-            '{"action": "read_file", "args": {"path": "relative/path.py"}}',
+            (
+                '{"action": "read_file", "args": '
+                '{"path": "relative/path.py", "offset": 1, "limit": 200}}'
+            ),
             '{"action": "list_dir", "args": {"path": "src"}}',
+            (
+                '{"action": "search", "args": '
+                '{"pattern": "regex", "path": "src", "max_results": 50}}'
+            ),
+            (
+                '{"action": "edit_file", "args": '
+                '{"path": "relative/path.py", "old_string": "exact text", '
+                '"new_string": "replacement", "replace_all": false}}'
+            ),
             (
                 '{"action": "write_file", "args": '
                 '{"path": "relative/path.py", "content": "complete file content"}}'
             ),
+            *run_tests_actions,
             (
                 '{"action": "finish", "args": '
                 '{"summary": "string", "notes": ["optional string"]}}'
             ),
-            "Available actions are read_file, list_dir, write_file, and finish.",
-            "Use read_file and list_dir when you need more context.",
-            "Use write_file with the complete replacement content for that file.",
+            (
+                "Available actions are read_file, list_dir, search, edit_file, "
+                "write_file"
+                + (", run_tests," if tests_available else ",")
+                + " and finish."
+            ),
+            "Use search to locate code by pattern before reading whole files; "
+            "use list_dir and read_file when you need more context.",
+            "read_file accepts optional 1-based offset and limit to page through "
+            "large files; a result with complete=false means you have not seen "
+            "the whole file yet.",
+            "Prefer edit_file for changes to existing files: give an old_string "
+            "that is unique in the file and the exact new_string to replace it. "
+            "Set replace_all to true only when you intend to replace every "
+            "occurrence.",
+            "Use write_file only to create a new file or to fully rewrite a file "
+            "whose complete content you have read; a blind write_file over a file "
+            "you have not fully read is rejected as truncated_write_rejected.",
             "When you add imports, setup files, framework config, or test helpers "
             "that require packages, update the allowed dependency manifest "
             "such as package.json or pyproject.toml in the same attempt.",
@@ -882,8 +1276,21 @@ def _implementation_loop_messages(
             "If a tool_result reports ok=false, use the error_code and error to "
             "choose a safe allowed path or a smaller valid edit before trying "
             "again.",
-            "Call finish only after all required file edits have been written.",
-            "Do not run tests. The graph test node runs tests after finish.",
+            *(
+                [
+                    "Call run_tests to run the repo-contract test command inside "
+                    "the worktree; read tests_passed in the result. Fix failures "
+                    "and run again until tests pass before you finish. run_tests "
+                    "is limited to a small number of runs per attempt.",
+                ]
+                if tests_available
+                else [
+                    "You cannot run tests in this run; the graph test node runs "
+                    "tests after finish.",
+                ]
+            ),
+            "Call finish only after all required file edits have been written"
+            + (" and tests pass." if tests_available else "."),
             "Return exactly one strict JSON object per response.",
             "No markdown fences. No prose before or after JSON.",
         ]

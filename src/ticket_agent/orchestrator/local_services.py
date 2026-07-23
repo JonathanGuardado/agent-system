@@ -45,6 +45,8 @@ ContractLoader = Callable[[Path], RepoContract]
 FileAdapterFactory = Callable[[Path, RepoContract], FilePort]
 ShellFactory = Callable[[Path, RepoContract], ShellPort]
 TestAdapterFactory = Callable[[ShellPort, RepoContract], TestPort]
+TestRunner = Callable[[], "TestResult"]
+TestRunnerFactory = Callable[[Path, RepoContract], TestRunner]
 ImplementationStep = Callable[
     ["ImplementationContext"],
     ImplementationResult | Awaitable[ImplementationResult],
@@ -71,6 +73,7 @@ class ImplementationContext:
     branch_name: str | None
     lock_id: str | None
     files: FilePort
+    test_runner: TestRunner | None = None
 
 
 @dataclass(frozen=True)
@@ -136,6 +139,7 @@ class LocalImplementationService:
         file_adapter_factory: FileAdapterFactory = LocalFileAdapter,
         implementation_step: ImplementationStep | None = None,
         lock_id_factory: LockIdFactory | None = None,
+        test_runner_factory: TestRunnerFactory | None = None,
     ) -> None:
         self._contract_dir = Path(contract_dir)
         self._contract_loader = contract_loader
@@ -143,6 +147,9 @@ class LocalImplementationService:
         self._file_adapter_factory = file_adapter_factory
         self._implementation_step = implementation_step or _prepare_only_step
         self._lock_id_factory = lock_id_factory or _new_short_lock_id
+        self._test_runner_factory = (
+            test_runner_factory or _make_contract_test_runner
+        )
 
     async def implement(self, state: TicketState) -> dict[str, Any]:
         contract_path = _contract_path(state, self._contract_dir)
@@ -173,6 +180,9 @@ class LocalImplementationService:
                 self._lock_id_factory,
             )
             files = self._file_adapter_factory(worktree.worktree_path, contract)
+            test_runner = self._test_runner_factory(
+                worktree.worktree_path, contract
+            )
             context = ImplementationContext(
                 state=state,
                 contract=contract,
@@ -181,6 +191,7 @@ class LocalImplementationService:
                 branch_name=worktree.branch_name,
                 lock_id=worktree.lock_id,
                 files=files,
+                test_runner=test_runner,
             )
             implementation_result = self._implementation_step(context)
             if inspect.isawaitable(implementation_result):
@@ -395,6 +406,29 @@ def _build_contract_shell(worktree_path: Path, contract: RepoContract) -> ShellP
         worktree_path,
         allowed_commands=allowed_commands,
     )
+
+
+def _make_contract_test_runner(
+    worktree_path: Path,
+    contract: RepoContract,
+) -> TestRunner:
+    """Build a zero-arg runner for the repo-contract test command.
+
+    The returned callable runs the contract's test command through the same
+    TestAdapter path as AdapterTestService, so the model-callable run_tests
+    action can never run an auto-detected or arbitrary command.
+    """
+
+    def run() -> TestResult:
+        try:
+            shell = _build_contract_shell(worktree_path, contract)
+            adapter = LocalTestAdapter(shell, contract)
+            command_result = adapter.run_tests()
+        except (AgentSystemError, OSError, ValueError) as exc:
+            return _failed_result(f"test adapter failed: {exc}")
+        return _command_result_to_test_result(command_result)
+
+    return run
 
 
 def _prepare_only_step(context: ImplementationContext) -> ImplementationResult:

@@ -26,6 +26,17 @@ Current phase:
 - P3: ✅ Local tool adapters
 - P4: ✅ Internal ModelRouter + provider clients
 - P5: ✅ MVP runtime wiring
+- P6: ✅ Implementation loop upgrade (search, edit, paginated reads, in-loop tests)
+- P7: ⬜ Acceptance criteria pipeline (intake → plan → review)
+- P8: ⬜ Bug-fix work profile (reproduce-first)
+- P9: ⬜ Diff-based review + lint gate
+- P10: ⬜ Run transcripts + funnel metrics
+- P11: ⬜ Config single-source-of-truth cleanup
+
+P6–P11 are specified in the "Roadmap" section below. Work them in order:
+P6 raises the capability ceiling of the whole system and unblocks the value
+of every later phase. One phase per PR. When a phase lands, mark it ✅ here
+and check its boxes in the roadmap section.
 
 MVP work now includes:
 - LangGraph StateGraph (graph.py) with full node sequence and routing
@@ -49,8 +60,201 @@ MVP work now includes:
 Deferred after MVP:
 - brand-new Jira project creation
 - Slack Block Kit buttons
-- model-callable shell/test/git tools
+- model-callable shell/git tools (a model-callable `run_tests` action is
+  planned in P6; it may only run the repo-contract test command through
+  TestAdapter)
 - MCP/OpenClaw/multi-host execution
+- auto-filing bug tickets from CI failures (revisit after P11)
+
+## Roadmap: capability phases P6–P11
+
+These phases close the gap between "the pipeline works" and "the system can
+autonomously turn ideas into merged-quality PRs." Each phase below is a
+self-contained spec: an implementing session should be able to complete a
+phase from this section plus the referenced files, without new design
+decisions. Every phase ships with unit tests under `tests/unit/` and updates
+the phase list at the top of this file.
+
+### P6 — Implementation loop upgrade (do this first)
+
+Goal: `IterativeImplementationService` in
+`src/ticket_agent/orchestrator/model_services.py` currently exposes only
+`read_file`, `list_dir`, `write_file`, `finish`. That caps success at small
+changes in small repos. Extend the JSON tool-call contract to:
+
+```txt
+read_file:  {path, offset?, limit?}   # offset = 1-based start line, limit = line count
+list_dir:   {path}
+search:     {pattern, path?, max_results?}
+edit_file:  {path, old_string, new_string, replace_all?}
+write_file: {path, content}
+run_tests:  {}
+finish:     {summary, notes?}
+```
+
+Behavior rules:
+
+- `read_file` without `offset`/`limit` keeps current behavior (truncated at
+  `tool_result_max_chars`). With `offset`/`limit` it returns only those
+  lines. The result must state whether the returned view is complete.
+- `search` is read-only regex search over worktree text files. It must only
+  visit paths the FileAdapter would allow, skip binary files, cap results
+  (default 50 matches), and return `path:line:matched-line` entries,
+  truncated to `tool_result_max_chars`.
+- `edit_file` performs exact-string replacement. Fail with error code
+  `edit_target_not_found` when `old_string` is absent, and
+  `edit_target_ambiguous` when it matches more than once without
+  `replace_all: true`. Successful edits append the path to `changed_files`.
+- Truncated-write guard: track, per path, within one loop run, whether the
+  model has ever seen a complete view of the file (untruncated read, or the
+  file did not previously exist). If not, reject `write_file` for that path
+  with error code `truncated_write_rejected` and instruct the model to use
+  `edit_file`. This prevents silent destruction of unseen file content.
+- `run_tests` executes the repo-contract test command through the existing
+  TestAdapter inside the worktree. Never auto-detect the command. Budget:
+  max 5 runs per implementation attempt; further calls fail with
+  `test_budget_exhausted`. Return the structured TestAdapter result
+  (pass/fail, truncated stdout/stderr summary, timeout flag).
+- Wiring: `LocalImplementationService` (orchestrator/local_services.py)
+  already prepares the worktree context; extend the context it hands to
+  `implement_context(...)` with a test runner so
+  `IterativeImplementationService` never constructs adapters itself.
+- Update the system prompt in `_implementation_loop_messages` to document
+  every action, the edit-over-rewrite preference, and the run-tests-before-
+  finish convention.
+
+P6 checklist:
+
+- [x] `search` action with boundary, binary-skip, and cap tests
+- [x] `edit_file` action with not-found / ambiguous / replace_all tests
+- [x] paginated `read_file` with complete-view flag
+- [x] truncated-write guard with negative test
+- [x] `run_tests` action via TestAdapter with budget test
+- [x] prompt update in `_implementation_loop_messages`
+- [x] no shell/git actions exposed to the model (negative test)
+
+P6 landed. Notes for later phases: the model-callable `run_tests` action is
+wired through `ImplementationContext.test_runner`, built by
+`_make_contract_test_runner` in `orchestrator/local_services.py` (contract
+test command via `LocalTestAdapter` only). The per-run loop state lives in
+`_LoopContext` in `orchestrator/model_services.py`; `complete_view_paths`
+tracks which files may be safely rewritten. P6 tests are in
+`tests/unit/test_model_services_p6_actions.py`.
+
+### P7 — Acceptance criteria pipeline
+
+Goal: make testable acceptance criteria flow from intake through planning to
+review, so review has something falsifiable to check.
+
+- ProposalGenerator (`intake/proposal_generator.py`): each proposed ticket
+  gains `acceptance_criteria: list[str]` (1–7 short, testable statements).
+  Write them into the Jira description under an `Acceptance Criteria`
+  heading via JiraWriter.
+- Clarifying questions: when the intake model judges a request too ambiguous
+  to propose, it may return a clarifying-question payload instead of a
+  proposal. The Slack listener posts the question in the intake thread and
+  treats the human reply as a revision input (reuse the existing proposal
+  revision flow in `intake/approval_flow.py`). One clarifying round max,
+  then propose with stated assumptions.
+- Planning: `_planning_messages` includes the criteria; the plan payload
+  must include a `criteria_coverage` mapping of criterion → planned step.
+- Review: `_review_messages` includes the criteria; the review payload must
+  include a per-criterion verdict (`met: bool` plus one-line evidence). Any
+  unmet criterion routes to `rejected`.
+
+P7 checklist:
+
+- [ ] proposal schema + Jira description rendering
+- [ ] clarifying-question round in Slack intake (single round)
+- [ ] plan prompt + `criteria_coverage` validation
+- [ ] review per-criterion verdicts drive accept/reject routing
+
+### P8 — Bug-fix work profile
+
+Goal: bugs get a reproduce-first workflow instead of the generic feature
+flow.
+
+- Profile detection: Jira issue type `Bug` or label `bug` sets
+  `work_profile: "bug"` on `TicketState` (default `"feature"`).
+- Bug planning: the plan must include a reproduction section — expected
+  behavior, actual behavior, and where the regression test will live.
+- Bug implementation prompt: write the failing test first, call `run_tests`
+  to confirm it fails for the expected reason, then fix, then `run_tests`
+  green. The `finish` summary must name the regression test.
+- Review for bugs additionally checks that a regression test exists in
+  `changed_files`.
+- Out of scope for P8: auto-filing bugs from CI or PR feedback (deferred).
+
+P8 checklist:
+
+- [ ] `work_profile` on TicketState + detection from Jira fields
+- [ ] bug-specific plan and implementation prompts
+- [ ] review requires regression test for bug profile
+- [ ] tests for profile routing and prompt selection
+
+### P9 — Diff-based review + lint gate
+
+Goal: review judges the real diff, and lint stops style/static regressions
+before a PR opens.
+
+- GitAdapter (`adapters/local/git_adapter.py`) gains read-only
+  `diff_stat()` and `diff_text(max_chars_per_file)` against the base branch
+  inside the worktree. No new write operations.
+- The review node input includes the real diff (per-file truncation, keep
+  the `changed_files` list) instead of only model-produced summaries.
+- Lint gate: after tests pass in the RUN_TESTS node, run the repo-contract
+  `lint` command when the contract defines one (it is currently dead
+  config). Lint failure routes exactly like test failure
+  (`retry → IMPLEMENT`). Reuse the AdapterTestService pattern; keep lint
+  output in state for the implementation retry prompt.
+
+P9 checklist:
+
+- [ ] GitAdapter diff methods with truncation tests
+- [ ] review prompt consumes real diff
+- [ ] lint execution from repo contract + routing test
+- [ ] contract without lint command skips the gate cleanly
+
+### P10 — Run transcripts + funnel metrics
+
+Goal: make runs debuggable and improvement measurable.
+
+- TranscriptRecorder: append-only JSONL per ticket run at
+  `.agent-system-data/transcripts/{TICKET-KEY}-{lock8}.jsonl`. Record node
+  enter/exit, every ModelRouter attempt (capability, provider, model,
+  tokens, latency, success/error), and every implementation tool call and
+  truncated result. All recorded content must pass through the existing
+  `redaction` module. Inject the recorder through the node runner and
+  router factory; default to a no-op recorder so tests stay silent.
+- Funnel metrics: SQLite table `ticket_funnel` (ticket_key, claimed_at,
+  implemented_at, tests_passed_at, pr_opened_at, merged_at, escalated_at,
+  escalation_reason). Written from orchestrator nodes and the merged-
+  delivery poller. Add `scripts/report_funnel.py` to print stage counts and
+  conversion rates.
+
+P10 checklist:
+
+- [ ] TranscriptRecorder + redaction coverage test
+- [ ] recorder wired into node runner and router (no-op default)
+- [ ] `ticket_funnel` writes at each stage
+- [ ] `scripts/report_funnel.py`
+
+### P11 — Config single source of truth
+
+Goal: stop `capabilities.yaml` / `models.yaml` / `task_profiles.yaml` from
+drifting between this repo and `ai-model-selector`.
+
+- This repo's `config/` is canonical. Verify
+  `router/selector_config.py` always loads selector config from explicit
+  paths in this repo — never from the `ai-model-selector` package's bundled
+  `config/`.
+- In the `ai-model-selector` repo, mark its `config/` as examples only
+  (README note). No selector code changes.
+
+P11 checklist:
+
+- [ ] selector config paths verified/enforced from this repo
+- [ ] ai-model-selector README marks bundled config as example-only
 
 ## Runtime model
 
@@ -514,33 +718,6 @@ Required router test coverage:
 - Ollama provider sends `think: false` when calling Qwen.
 - Components call ModelRouter, not provider clients directly.
 
-## Current P3 implementation checklist
-
-- [x] FileAdapter path boundary enforcement
-- [x] FileAdapter protected path policy
-- [x] ShellAdapter allowlist and denylist
-- [x] ShellAdapter env isolation
-- [x] ShellAdapter timeout handling
-- [x] RepoContract
-- [x] TestAdapter using repo contract test command
-- [x] GitAdapter worktree creation
-- [x] GitAdapter commit/push/cleanup
-- [x] Unit tests for adapter failure modes
-
-## Current P4 implementation checklist
-
-- [x] Internal ModelRouter foundation
-- [x] ProviderClient interface
-- [x] ai-model-selector adapter/config wrapper
-- [x] fallback chain
-- [x] router tests
-- [x] DeepSeekProvider
-- [x] GeminiProvider
-- [x] OllamaProvider
-- [x] provider tests
-- [x] no-secret logging/error behavior verified
-- [x] router factory
-
 ## Important references
 
 Architecture spec:
@@ -564,6 +741,11 @@ Do not:
 - Add FastAPI or a `localhost:8080` router service
 - Add MCP or OpenClaw yet
 - Auto-detect test commands
+- Give the model shell or git tool actions. `run_tests` (P6) is the only
+  model-callable command, and it must run the repo-contract test command
+  through TestAdapter — nothing else.
+- Let the model bypass FileAdapter boundaries via `search` or `edit_file`
+- Implement more than one roadmap phase in a single PR
 - Add MiniMax or GLM to v1
 - Add cost-aware routing in v1
 - Push to main

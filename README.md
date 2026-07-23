@@ -288,6 +288,39 @@ Local prerequisites that are not environment variables:
    PATH="$PWD/.venv/bin:$PATH" ticket-agent
    ```
 
+## Roadmap
+
+The MVP pipeline (P0–P5) is complete: Slack intake, Jira tickets, detection,
+locking, the LangGraph workflow, implementation, tests, PR creation, and
+feedback polling all run end to end. The next phases close the gap between
+"the pipeline works" and "the system autonomously turns ideas into
+merge-quality PRs." Full implementation specs for each phase live in
+[CLAUDE.md](CLAUDE.md#roadmap-capability-phases-p6p11); work them in order,
+one phase per PR.
+
+- **P6 — Implementation loop upgrade. (done)** The coding loop gained
+  `search` (regex over the worktree), `edit_file` (exact-string patching
+  instead of full-file rewrites), paginated `read_file`, a guard that blocks
+  blind rewrites of partially-read files, and a bounded `run_tests` action
+  that runs the repo-contract test command inside the loop.
+- **P7 — Acceptance criteria pipeline.** Intake proposals include testable
+  acceptance criteria (with one clarifying-question round in Slack when a
+  request is ambiguous), plans must cover each criterion, and review issues
+  a per-criterion verdict instead of a general opinion.
+- **P8 — Bug-fix work profile.** Tickets typed/labeled as bugs get a
+  reproduce-first flow: write a failing regression test, confirm it fails,
+  fix, confirm green. Review requires the regression test.
+- **P9 — Diff-based review + lint gate.** Review reads the real git diff
+  from the worktree, and the repo contract's `lint` command runs after
+  tests, routing back to implementation on failure.
+- **P10 — Transcripts + funnel metrics.** Every run writes a redacted JSONL
+  transcript (model attempts, tool calls, node transitions), and a
+  `ticket_funnel` table tracks claimed → implemented → tests passed → PR
+  opened → merged, with a report script.
+- **P11 — Config ownership.** This repo's `config/` becomes the single
+  source of truth for selector configuration; `ai-model-selector`'s bundled
+  configs are marked example-only.
+
 ## Tests
 
 Unit tests live under `tests/unit/`.
