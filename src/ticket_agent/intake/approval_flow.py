@@ -124,6 +124,10 @@ class ApprovalFlow:
         draft = await _generate_proposal(self._generator, request)
         if draft.needs_clarification:
             assert draft.clarification is not None
+            # Persist the placeholder so the answer returns through _revise with
+            # this as prior, which disables a second clarification round.
+            if draft.pending_proposal is not None:
+                self._store.save(draft.pending_proposal)
             await self._post(channel, thread_ts, user_id, draft.clarification)
             self._emit_event(
                 "intake.clarification_requested",

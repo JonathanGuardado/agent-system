@@ -303,10 +303,13 @@ one phase per PR.
   instead of full-file rewrites), paginated `read_file`, a guard that blocks
   blind rewrites of partially-read files, and a bounded `run_tests` action
   that runs the repo-contract test command inside the loop.
-- **P7 — Acceptance criteria pipeline.** Intake proposals include testable
-  acceptance criteria (with one clarifying-question round in Slack when a
-  request is ambiguous), plans must cover each criterion, and review issues
-  a per-criterion verdict instead of a general opinion.
+- **P7 — Acceptance criteria pipeline. (done)** Intake proposals now include
+  testable acceptance criteria (with one clarifying-question round in Slack
+  when a request is ambiguous), rendered into the Jira description under an
+  `Acceptance Criteria` heading. Plans return a `criteria_coverage` map, and
+  review returns a per-criterion verdict that routes to rejected when any
+  criterion is unmet. Multi-ticket proposals are ordered foundation-first so
+  the first ticket establishes the shared scaffold the rest build on.
 - **P8 — Bug-fix work profile.** Tickets typed/labeled as bugs get a
   reproduce-first flow: write a failing regression test, confirm it fails,
   fix, confirm green. Review requires the regression test.

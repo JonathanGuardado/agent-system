@@ -27,7 +27,7 @@ Current phase:
 - P4: ✅ Internal ModelRouter + provider clients
 - P5: ✅ MVP runtime wiring
 - P6: ✅ Implementation loop upgrade (search, edit, paginated reads, in-loop tests)
-- P7: ⬜ Acceptance criteria pipeline (intake → plan → review)
+- P7: ✅ Acceptance criteria pipeline (intake → plan → review)
 - P8: ⬜ Bug-fix work profile (reproduce-first)
 - P9: ⬜ Diff-based review + lint gate
 - P10: ⬜ Run transcripts + funnel metrics
@@ -164,10 +164,24 @@ review, so review has something falsifiable to check.
 
 P7 checklist:
 
-- [ ] proposal schema + Jira description rendering
-- [ ] clarifying-question round in Slack intake (single round)
-- [ ] plan prompt + `criteria_coverage` validation
-- [ ] review per-criterion verdicts drive accept/reject routing
+- [x] proposal schema + Jira description rendering
+- [x] clarifying-question round in Slack intake (single round)
+- [x] plan prompt + `criteria_coverage` validation
+- [x] review per-criterion verdicts drive accept/reject routing
+
+P7 landed. Notes for later phases: the acceptance-criteria format lives in
+`domain/acceptance.py` (`render_acceptance_criteria` / `parse_acceptance_criteria`
+are inverses). Criteria are the source of truth in the Jira description under
+the `Acceptance Criteria:` heading — there is no Jira custom field for them;
+the planner and reviewer re-parse them from `state.description`. The planner
+emits `criteria_coverage` and the reviewer emits `criteria_verdicts`; any
+verdict with `met` != true forces the review to `rejected`. The single-round
+clarification stores a 0-ticket DRAFTING placeholder (see
+`_clarification_placeholder`) so the user's answer returns through `_revise`
+with clarification disabled. Foundation-first ordering is instructed in the
+proposal prompt; the first ticket establishes the shared scaffold/types/schema
+and later tickets receive sibling scopes as coordination context. P7 tests are
+in `tests/unit/test_p7_acceptance_criteria.py`.
 
 ### P8 — Bug-fix work profile
 

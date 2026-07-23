@@ -50,6 +50,7 @@ class TicketSpec(BaseModel):
     priority: str | None = None
     labels: list[str] = Field(default_factory=list)
     capabilities_needed: list[str] = Field(default_factory=list)
+    acceptance_criteria: list[str] = Field(default_factory=list)
     repository: str | None = None
     repo_path: str | None = None
 

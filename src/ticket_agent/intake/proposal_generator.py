@@ -21,6 +21,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from ticket_agent.domain.acceptance import (
+    ACCEPTANCE_HEADING,
+    render_acceptance_criteria,
+)
 from ticket_agent.domain.intake import (
     IntakeMode,
     IntakeResolution,
@@ -74,6 +78,10 @@ class ProposalDraft:
 
     proposal: Proposal | None = None
     clarification: str | None = None
+    # When a clarification is posted, this DRAFTING placeholder is stored so
+    # the user's answer routes back as a revision (prior set), which bounds
+    # clarification to a single round.
+    pending_proposal: Proposal | None = None
 
     @property
     def needs_clarification(self) -> bool:
@@ -111,6 +119,7 @@ class _ModelTicketPayload(BaseModel):
     priority: str | None = None
     labels: list[str] = Field(default_factory=list)
     capabilities_needed: list[str] = Field(default_factory=list)
+    acceptance_criteria: list[str] = Field(default_factory=list)
     # repository and repo_path are not accepted from the model;
     # they are resolved from repo_defaults or prior proposal only.
 
@@ -128,6 +137,9 @@ class _ModelProposalPayload(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
     effort_estimate: str | None = None
     tickets: list[_ModelTicketPayload] = Field(default_factory=list)
+    # Set only when the request is too ambiguous to propose; honored once,
+    # on the first pass (prior is None). See _proposal_from_payload.
+    clarification: str | None = None
 
 
 class DeterministicProposalGenerator:
@@ -153,15 +165,20 @@ class DeterministicProposalGenerator:
         request: ProposalRequest,
         prior: Proposal | None = None,
     ) -> ProposalDraft:
+        # A prior with no tickets is a clarification-round placeholder: the
+        # user's reply is the answer, so regenerate fresh from the combined
+        # original request plus the answer rather than diff-revising nothing.
+        placeholder_followup = prior is not None and not prior.tickets
         replan = prior is not None and _requests_full_replan(request.text)
-        if prior is not None and not replan:
+        if prior is not None and not replan and not placeholder_followup:
             return _deterministic_revision(request, prior)
 
-        text = (
-            _original_request_from_proposal(prior)
-            if replan and prior is not None
-            else request.text.strip()
-        )
+        if placeholder_followup and prior is not None:
+            text = _combine_clarification(prior, request.text)
+        elif replan and prior is not None:
+            text = _original_request_from_proposal(prior)
+        else:
+            text = request.text.strip()
         if not text:
             return ProposalDraft(
                 clarification="Could you describe what you'd like the agent to do?",
@@ -319,7 +336,11 @@ class ModelRouterProposalGenerator:
         try:
             invocation = self._model_router.invoke(
                 "ticket.decompose",
-                _model_proposal_messages(request, prior),
+                _model_proposal_messages(
+                    request,
+                    prior,
+                    clarification_allowed=prior is None,
+                ),
                 ticket_id=None,
                 metadata={"workflow_node": "intake_proposal"},
             )
@@ -383,6 +404,31 @@ class ModelRouterProposalGenerator:
             )
             return await self._fallback_generate(request, prior)
 
+    def _clarification_placeholder(self, request: ProposalRequest) -> Proposal:
+        """Build a DRAFTING placeholder capturing the original request.
+
+        Stored while awaiting a clarification answer. It carries the original
+        request text in epic_description/summary so the follow-up revision can
+        recover it via _original_request_from_proposal.
+        """
+
+        now = self._clock()
+        text = request.text.strip()
+        return Proposal(
+            proposal_id=self._proposal_id_factory(),
+            slack_user_id=request.slack_user_id,
+            slack_channel=request.slack_channel,
+            slack_thread_ts=request.slack_thread_ts,
+            mode=request.resolution.mode,
+            title=_proposal_title(text),
+            summary=text,
+            epic_description=text,
+            tickets=[],
+            status=ProposalStatus.DRAFTING,
+            created_at=now,
+            expires_at=now + timedelta(seconds=self._ttl_seconds),
+        )
+
     async def _fallback_generate(
         self,
         request: ProposalRequest,
@@ -399,6 +445,21 @@ class ModelRouterProposalGenerator:
         prior: Proposal | None,
         payload: _ModelProposalPayload,
     ) -> ProposalDraft:
+        model_clarification = _clean_optional(payload.clarification)
+        if (
+            model_clarification is not None
+            and prior is None
+            and not payload.tickets
+        ):
+            # First-pass ambiguity: ask once and stash a placeholder so the
+            # answer returns as a revision (clarification disabled thereafter).
+            return ProposalDraft(
+                clarification=model_clarification,
+                pending_proposal=self._clarification_placeholder(
+                    request,
+                ),
+            )
+
         if not payload.tickets:
             raise ValueError("model proposal must include at least one ticket")
 
@@ -539,6 +600,7 @@ def _build_ticket_specs(
     for summary in summaries:
         title = _summary_slice_title(summary)
         body = _summary_slice_body(summary)
+        criteria = _default_acceptance_criteria(title, body)
         specs.append(
             TicketSpec(
                 summary=_scoped_summary(title, repository),
@@ -548,6 +610,7 @@ def _build_ticket_specs(
                     project_key=project_key,
                     repository=repository,
                     capabilities=capabilities_needed,
+                    acceptance_criteria=criteria,
                     request_in_scope=request_in_scope,
                     include_original_request=include_original_request,
                     parent_epic_has_request=parent_epic_has_request,
@@ -556,6 +619,7 @@ def _build_ticket_specs(
                 issue_type="Task",
                 labels=[LABEL_AI_READY],
                 capabilities_needed=list(capabilities_needed),
+                acceptance_criteria=criteria,
                 repository=repository,
                 repo_path=repo_path,
             )
@@ -578,6 +642,9 @@ def _ticket_spec_from_model_ticket(
     capabilities = _ordered_unique(
         ticket.capabilities_needed or [default_capability]
     )
+    criteria = _clean_string_list(ticket.acceptance_criteria) or (
+        _default_acceptance_criteria(ticket.summary, ticket.description)
+    )
     return TicketSpec(
         summary=_scoped_summary(ticket.summary, default_repository),
         description=_execution_ready_description(
@@ -586,6 +653,7 @@ def _ticket_spec_from_model_ticket(
             project_key=project_key,
             repository=default_repository,
             capabilities=capabilities,
+            acceptance_criteria=criteria,
             request_in_scope=request_in_scope,
             sibling_scopes=sibling_scopes,
         ),
@@ -593,6 +661,7 @@ def _ticket_spec_from_model_ticket(
         priority=_clean_optional(ticket.priority),
         labels=labels,
         capabilities_needed=capabilities,
+        acceptance_criteria=criteria,
         # Always use trusted context — model cannot override repository or repo_path.
         repository=default_repository,
         repo_path=default_repo_path,
@@ -858,6 +927,8 @@ def _revision_expects_existing_ticket_count(text: str) -> bool:
 def _model_proposal_messages(
     request: ProposalRequest,
     prior: Proposal | None,
+    *,
+    clarification_allowed: bool = False,
 ) -> list[dict[str, str]]:
     prior_json = redact_local_paths(
         json.dumps(_prior_proposal_for_model(prior)),
@@ -915,11 +986,17 @@ def _model_proposal_messages(
                     "without reading Slack: include concrete files/directories, "
                     "scope boundaries, acceptance checks, and test expectations "
                     "in the ticket description.",
+                    "Give each ticket 1 to 7 acceptance_criteria: short, testable "
+                    "statements a reviewer can verify true or false (observable "
+                    "behavior or a named test), not restatements of the summary.",
                     "Tickets must be mutually exclusive slices. For a single "
                     "app MVP, do not make multiple tickets that each build the "
-                    "whole app; create one foundation/app-shell ticket and "
-                    "separate feature tickets for homepage, search/filtering, "
-                    "favorites, forms, data, or tests as needed.",
+                    "whole app; order them so the first ticket establishes the "
+                    "shared foundation and app shell (project scaffold, shared "
+                    "types and enum values, data schema, localization and test "
+                    "harness), then separate feature tickets for homepage, "
+                    "search/filtering, favorites, forms, data, or tests build on "
+                    "that foundation.",
                     "If the requester asks for one final PR, one preview PR, "
                     "or a single pull request but does not explicitly ask for "
                     "exactly one Jira ticket/task, still return detailed Jira "
@@ -943,16 +1020,33 @@ def _model_proposal_messages(
                         '"tickets": [{"summary": "string", '
                         '"description": "string", "issue_type": "Task", '
                         '"priority": null, "labels": ["ai-ready"], '
-                        '"capabilities_needed": ["code.implement"]}]}'
+                        '"capabilities_needed": ["code.implement"], '
+                        '"acceptance_criteria": ["testable statement"]}]}'
                     ),
                     "Create multiple tickets only when the request naturally "
                     "contains multiple deliverable slices.",
+                    *_clarification_instructions(clarification_allowed),
                     "Do not create brand-new Jira projects.",
                     "Return JSON only. No markdown fences. No prose before or "
                     "after JSON.",
                 ]
             ),
         },
+    ]
+
+
+def _clarification_instructions(clarification_allowed: bool) -> list[str]:
+    if clarification_allowed:
+        return [
+            "If the request is too ambiguous to scope into tickets, return "
+            '{"clarification": "one focused question"} with no tickets, asking '
+            "the single most important question. Only do this when you truly "
+            "cannot propose reasonable tickets; otherwise propose tickets and "
+            "record any guesses in assumptions.",
+        ]
+    return [
+        "Do not ask for clarification. Proceed with the best reasonable "
+        "proposal and record any guesses in assumptions.",
     ]
 
 
@@ -1037,6 +1131,31 @@ def _clean_string_list(values: Sequence[str]) -> list[str]:
     return [value.strip() for value in values if isinstance(value, str) and value.strip()]
 
 
+def _combine_clarification(prior: Proposal, answer: str) -> str:
+    original = _original_request_from_proposal(prior).strip()
+    reply = answer.strip()
+    if not reply:
+        return original
+    if not original:
+        return reply
+    return f"{original}\n\nClarification answer: {reply}"
+
+
+def _default_acceptance_criteria(title: str, body: str) -> list[str]:
+    """Fallback criteria when the model does not supply testable criteria.
+
+    Kept generic but testable so the deterministic path and any model ticket
+    that omits criteria still carry a usable contract for planning and review.
+    """
+
+    scope = (title or "").strip() or "The ticket scope"
+    return [
+        f"{scope} is implemented as described in the Ticket scope.",
+        "Focused automated tests cover the new behavior and pass.",
+        "No sibling-ticket scope or unrelated files are changed.",
+    ]
+
+
 def _ordered_unique(values: Sequence[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -1101,6 +1220,7 @@ def _execution_ready_description(
     project_key: str | None,
     repository: str | None,
     capabilities: Sequence[str],
+    acceptance_criteria: Sequence[str] = (),
     request_in_scope: bool = False,
     include_original_request: bool = True,
     parent_epic_has_request: bool = False,
@@ -1148,11 +1268,15 @@ def _execution_ready_description(
             "Related tickets in this proposal (coordination only; do not "
             "implement them here):\n" + _format_sibling_scopes(sibling_scopes)
         )
+    criteria_section = render_acceptance_criteria(acceptance_criteria)
+    if criteria_section:
+        sections.append(criteria_section)
     sections.append(
         "Acceptance checks:\n"
         "- Implement only the Ticket scope for this ticket.\n"
         "- Do not implement sibling tickets or the full original request unless "
         "this ticket explicitly scopes that work.\n"
+        "- Satisfy every item under Acceptance Criteria above.\n"
         "- Add or update focused tests for the requested behavior.\n"
         "- Run the relevant test command and capture any remaining failures."
     )
@@ -1528,7 +1652,11 @@ def _original_request_from_proposal(proposal: Proposal) -> str:
         "Original Slack request (background only; do not implement work "
         "outside Ticket scope):\n"
     )
-    delimiters = ("\n\nRelated tickets in this proposal", "\n\nAcceptance checks:")
+    delimiters = (
+        "\n\nRelated tickets in this proposal",
+        f"\n\n{ACCEPTANCE_HEADING}",
+        "\n\nAcceptance checks:",
+    )
     for ticket in proposal.tickets:
         if marker not in ticket.description:
             continue

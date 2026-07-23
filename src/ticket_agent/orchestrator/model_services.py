@@ -12,6 +12,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ticket_agent.adapters.local.file_adapter import LocalFileAdapter
+from ticket_agent.domain.acceptance import parse_acceptance_criteria
 from ticket_agent.domain.errors import (
     AgentSystemError,
     PathBoundaryError,
@@ -162,7 +163,7 @@ class ModelRouterPlannerService:
             "plan or summary",
         )
 
-        return {
+        decomposition: dict[str, Any] = {
             "plan": plan,
             "files_to_modify": _optional_string_list(
                 payload.get("files_to_modify"),
@@ -176,6 +177,16 @@ class ModelRouterPlannerService:
                 "requires_human_review",
             ),
         }
+        criteria = parse_acceptance_criteria(state.description)
+        if criteria:
+            decomposition["acceptance_criteria"] = criteria
+            coverage = payload.get("criteria_coverage")
+            if isinstance(coverage, Mapping):
+                decomposition["criteria_coverage"] = {
+                    str(key): _optional_string(value, "")
+                    for key, value in coverage.items()
+                }
+        return decomposition
 
 
 class ModelRouterImplementationService:
@@ -711,12 +722,25 @@ class ModelRouterReviewService:
             "passed or approved",
         )
 
+        issues = _optional_string_list(payload.get("issues"), "issues")
+        verdicts = _parse_criteria_verdicts(payload.get("criteria_verdicts"))
+        unmet = [verdict["criterion"] for verdict in verdicts if not verdict["met"]]
+        if unmet:
+            # An explicit unmet acceptance criterion overrides a passed verdict.
+            passed = False
+            issues = [
+                *issues,
+                *(f"Unmet acceptance criterion: {criterion}" for criterion in unmet),
+            ]
+
         result: dict[str, Any] = {
             "passed": passed,
             "status": "approved" if passed else "rejected",
             "reasoning": _optional_string(payload.get("reasoning"), ""),
-            "issues": _optional_string_list(payload.get("issues"), "issues"),
+            "issues": issues,
         }
+        if verdicts:
+            result["criteria_verdicts"] = verdicts
         if "confidence" in payload and payload["confidence"] is not None:
             result["confidence"] = _float_field(payload["confidence"], "confidence")
         return result
@@ -1085,6 +1109,21 @@ def _summarized_test_result(result: Any, max_chars: int) -> dict[str, Any]:
 
 
 def _planning_messages(state: TicketState) -> list[dict[str, str]]:
+    criteria = parse_acceptance_criteria(state.description)
+    criteria_lines: list[str] = []
+    if criteria:
+        criteria_lines = [
+            "acceptance_criteria (the plan must cover every one of these):",
+            *(f"- {criterion}" for criterion in criteria),
+            "Include a criteria_coverage object mapping each acceptance "
+            "criterion (verbatim) to the plan step that satisfies it. Every "
+            "criterion must appear as a key.",
+        ]
+    coverage_schema = (
+        ', "criteria_coverage": {"criterion": "plan step"}'
+        if criteria
+        else ""
+    )
     return [
         {
             "role": "system",
@@ -1104,6 +1143,7 @@ def _planning_messages(state: TicketState) -> list[dict[str, str]]:
                     f"description: {state.description}",
                     f"repository: {state.repository or ''}",
                     f"max_attempts: {state.max_attempts}",
+                    *criteria_lines,
                     "Plan only this Jira ticket's Ticket scope. Treat any "
                     "Original Slack request text as background for product "
                     "context, not as authorization to implement the whole "
@@ -1119,7 +1159,9 @@ def _planning_messages(state: TicketState) -> list[dict[str, str]]:
                         '"files_to_modify": ["relative/path.py"], '
                         '"risks": ["string"], '
                         '"complexity": "low|medium|high", '
-                        '"requires_human_review": false}'
+                        '"requires_human_review": false'
+                        + coverage_schema
+                        + "}"
                     ),
                     "Paths must be relative, must not contain '..', and must "
                     "not be absolute.",
@@ -1400,7 +1442,49 @@ def _truncate_failure_excerpt(excerpt: str) -> str:
     return excerpt[: _MAX_FAILURE_EXCERPT_CHARS - 14].rstrip() + "...[truncated]"
 
 
+def _parse_criteria_verdicts(value: Any) -> list[dict[str, Any]]:
+    """Normalize a model-returned criteria_verdicts array.
+
+    Ignores malformed entries. A missing ``met`` is treated as not met so a
+    reviewer cannot pass a criterion by omitting the flag.
+    """
+
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    verdicts: list[dict[str, Any]] = []
+    for entry in value:
+        if not isinstance(entry, Mapping):
+            continue
+        criterion = _optional_string(entry.get("criterion"), "")
+        if not criterion:
+            continue
+        verdicts.append(
+            {
+                "criterion": criterion,
+                "met": entry.get("met") is True,
+                "evidence": _optional_string(entry.get("evidence"), ""),
+            }
+        )
+    return verdicts
+
+
 def _review_messages(state: TicketState) -> list[dict[str, str]]:
+    criteria = parse_acceptance_criteria(state.description)
+    criteria_lines: list[str] = []
+    verdict_schema = ""
+    if criteria:
+        criteria_lines = [
+            "acceptance_criteria (judge each one against the actual changes):",
+            *(f"- {criterion}" for criterion in criteria),
+            "Return a criteria_verdicts array with one entry per criterion: "
+            '{"criterion": "verbatim text", "met": true, "evidence": '
+            '"one line pointing to the change or test"}. Set passed to false '
+            "if any criterion is not met.",
+        ]
+        verdict_schema = (
+            ', "criteria_verdicts": [{"criterion": "string", '
+            '"met": true, "evidence": "string"}]'
+        )
     return [
         {
             "role": "system",
@@ -1429,10 +1513,13 @@ def _review_messages(state: TicketState) -> list[dict[str, str]]:
                         "changed_files: "
                         f"{_json_for_prompt(_changed_files_from_state(state))}"
                     ),
+                    *criteria_lines,
                     "Required JSON schema:",
                     (
                         '{"passed": true, "reasoning": "string", '
-                        '"issues": ["string"], "confidence": 0.0}'
+                        '"issues": ["string"], "confidence": 0.0'
+                        + verdict_schema
+                        + "}"
                     ),
                     "Return JSON only. No markdown fences. No prose before or "
                     "after JSON.",
