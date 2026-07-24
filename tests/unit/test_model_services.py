@@ -1104,6 +1104,81 @@ def test_iterative_implementation_includes_failed_test_excerpt_on_retry(tmp_path
     assert "current_implementation_attempt: 2" in user_message
 
 
+def test_iterative_implementation_includes_review_rejection_excerpt_on_rework(
+    tmp_path,
+):
+    router = _SequenceRouter(
+        {
+            "code.implement": [
+                {
+                    "action": "finish",
+                    "args": {"summary": "Addressed review issues."},
+                }
+            ]
+        }
+    )
+
+    asyncio.run(
+        IterativeImplementationService(
+            router,
+            _AdapterFactory(_LoopFileAdapter()),
+        ).implement(
+            _state(
+                worktree_path=str(tmp_path),
+                implementation_attempts=1,
+                tests_passed=True,
+                test_result={"status": "passed", "tests_passed": True},
+                review_passed=False,
+                verification_result={
+                    "passed": False,
+                    "status": "rejected",
+                    "reasoning": "Pagination criterion is not satisfied.",
+                    "issues": [
+                        "Unmet acceptance criterion: page_size respected",
+                    ],
+                },
+            )
+        )
+    )
+
+    user_message = router.calls[0].messages[1]["content"]
+    assert "previous_review_rejection" in user_message
+    assert "Pagination criterion is not satisfied." in user_message
+    assert "Unmet acceptance criterion: page_size respected" in user_message
+    assert "previous_test_failure" not in user_message
+
+
+def test_iterative_implementation_omits_review_excerpt_when_review_passed(
+    tmp_path,
+):
+    router = _SequenceRouter(
+        {
+            "code.implement": [
+                {
+                    "action": "finish",
+                    "args": {"summary": "No more edits needed."},
+                }
+            ]
+        }
+    )
+
+    asyncio.run(
+        IterativeImplementationService(
+            router,
+            _AdapterFactory(_LoopFileAdapter()),
+        ).implement(
+            _state(
+                worktree_path=str(tmp_path),
+                review_passed=True,
+                verification_result={"passed": True, "status": "approved"},
+            )
+        )
+    )
+
+    user_message = router.calls[0].messages[1]["content"]
+    assert "previous_review_rejection" not in user_message
+
+
 def test_iterative_implementation_includes_failed_implementation_excerpt_on_retry(
     tmp_path,
 ):

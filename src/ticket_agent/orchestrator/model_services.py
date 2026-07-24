@@ -1181,6 +1181,7 @@ def _implementation_messages(
     failed_implementation_excerpt = _failed_implementation_excerpt(
         state.implementation_result
     )
+    rejected_review_excerpt = _rejected_review_excerpt(state)
     user_lines = [
         "Create an explicit file operation plan for this ticket.",
         f"ticket_key: {state.ticket_key}",
@@ -1199,6 +1200,8 @@ def _implementation_messages(
         user_lines.append(
             f"previous_implementation_failure: {failed_implementation_excerpt}"
         )
+    if rejected_review_excerpt is not None:
+        user_lines.append(f"previous_review_rejection: {rejected_review_excerpt}")
     user_lines.extend(
         [
             *_write_policy_prompt_lines(repo_context),
@@ -1243,6 +1246,7 @@ def _implementation_loop_messages(
     failed_implementation_excerpt = _failed_implementation_excerpt(
         state.implementation_result
     )
+    rejected_review_excerpt = _rejected_review_excerpt(state)
     user_lines = [
         "Implement this ticket by returning one JSON tool call at a time.",
         f"ticket_key: {state.ticket_key}",
@@ -1260,6 +1264,15 @@ def _implementation_loop_messages(
     if failed_implementation_excerpt is not None:
         user_lines.append(
             f"previous_implementation_failure: {failed_implementation_excerpt}"
+        )
+    if rejected_review_excerpt is not None:
+        user_lines.append(
+            f"previous_review_rejection: {rejected_review_excerpt}"
+        )
+        user_lines.append(
+            "The previous implementation passed tests but was rejected by "
+            "review. Address every listed issue and unmet acceptance "
+            "criterion before you finish."
         )
     run_tests_actions = (
         ['{"action": "run_tests", "args": {}}'] if tests_available else []
@@ -1433,6 +1446,32 @@ def _failed_implementation_excerpt(implementation_result: Any) -> str | None:
             excerpt_parts.append(f"errors: {'; '.join(cleaned_errors)}")
     if not excerpt_parts:
         return _truncate_failure_excerpt(_json_for_prompt(implementation_result))
+    return _truncate_failure_excerpt(" | ".join(excerpt_parts))
+
+
+def _rejected_review_excerpt(state: TicketState) -> str | None:
+    if state.review_passed is not False:
+        return None
+    result = state.verification_result
+    if not isinstance(result, Mapping):
+        return None
+
+    excerpt_parts: list[str] = []
+    reasoning = result.get("reasoning")
+    if isinstance(reasoning, str) and reasoning.strip():
+        excerpt_parts.append(f"reasoning: {reasoning.strip()}")
+    issues = result.get("issues")
+    if isinstance(issues, Sequence) and not isinstance(issues, str):
+        cleaned_issues = [
+            item.strip() for item in issues if isinstance(item, str) and item.strip()
+        ]
+        if cleaned_issues:
+            excerpt_parts.append(f"issues: {'; '.join(cleaned_issues)}")
+    error = result.get("error")
+    if isinstance(error, str) and error.strip():
+        excerpt_parts.append(f"error: {error.strip()}")
+    if not excerpt_parts:
+        return _truncate_failure_excerpt(_json_for_prompt(result))
     return _truncate_failure_excerpt(" | ".join(excerpt_parts))
 
 

@@ -106,6 +106,7 @@ def build_ticket_graph(
         route_after_review,
         {
             "accepted": OPEN_PULL_REQUEST,
+            "rework": IMPLEMENT,
             "rejected": ESCALATE,
         },
     )
@@ -189,8 +190,17 @@ def route_after_tests(state: TicketState) -> Literal["passed", "retry", "failed"
     return "failed"
 
 
-def route_after_review(state: TicketState) -> Literal["accepted", "rejected"]:
-    return "accepted" if state.review_passed is True else "rejected"
+def route_after_review(
+    state: TicketState,
+) -> Literal["accepted", "rework", "rejected"]:
+    if state.review_passed is True:
+        return "accepted"
+    if (
+        state.review_passed is False
+        and state.implementation_attempts < state.max_attempts
+    ):
+        return "rework"
+    return "rejected"
 
 
 def route_after_pull_request(state: TicketState) -> Literal["opened", "failed"]:

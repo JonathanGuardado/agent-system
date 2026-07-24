@@ -414,7 +414,7 @@ def test_ticket_graph_open_pr_without_url_escalates():
     assert state.workflow_status == "escalated"
 
 
-def test_ticket_graph_failed_review_escalates():
+def test_ticket_graph_failed_review_escalates_when_attempts_exhausted():
     graph = build_ticket_graph(
         TicketWorkflowNodes(
             plan=_stub("plan"),
@@ -439,7 +439,7 @@ def test_ticket_graph_failed_review_escalates():
         )
     )
 
-    result = asyncio.run(graph.ainvoke(_initial_state()))
+    result = asyncio.run(graph.ainvoke(_initial_state(max_attempts=1)))
     state = TicketState.model_validate(result)
 
     assert state.visited_nodes == [
@@ -456,6 +456,94 @@ def test_ticket_graph_failed_review_escalates():
     assert state.verification_result == {"status": "rejected"}
 
 
+def test_ticket_graph_rejected_review_reworks_implementation_then_accepts():
+    graph = build_ticket_graph(
+        TicketWorkflowNodes(
+            plan=_stub("plan"),
+            request_execution_approval=_stub(
+                "request_execution_approval",
+                execution_approved=True,
+            ),
+            implement=implement_ticket,
+            run_tests=_stub("run_tests", tests_passed=True),
+            review=_review_pass_after_attempt(2),
+            open_pull_request=_stub(
+                "open_pull_request",
+                pull_request_url="https://github.test/pr/1",
+            ),
+            escalate=_must_not_run("escalate"),
+            report=_stub("report", workflow_status="completed"),
+        )
+    )
+
+    result = asyncio.run(graph.ainvoke(_initial_state()))
+    state = TicketState.model_validate(result)
+
+    assert state.visited_nodes == [
+        "plan",
+        "request_execution_approval",
+        "implement",
+        "run_tests",
+        "review",
+        "implement",
+        "run_tests",
+        "review",
+        "open_pull_request",
+        "report",
+    ]
+    assert state.implementation_attempts == 2
+    assert state.review_passed is True
+    assert state.workflow_status == "completed"
+
+
+def test_ticket_graph_rejected_review_reworks_until_attempts_exhausted():
+    graph = build_ticket_graph(
+        TicketWorkflowNodes(
+            plan=_stub("plan"),
+            request_execution_approval=_stub(
+                "request_execution_approval",
+                execution_approved=True,
+            ),
+            implement=implement_ticket,
+            run_tests=_stub("run_tests", tests_passed=True),
+            review=_stub(
+                "review",
+                review_passed=False,
+                verification_result={
+                    "status": "rejected",
+                    "issues": ["Unmet acceptance criterion: pagination works"],
+                },
+            ),
+            open_pull_request=_must_not_run("open_pull_request"),
+            escalate=_stub(
+                "escalate",
+                workflow_status="escalated",
+                escalation_reason="review rejected",
+            ),
+            report=_stub("report", workflow_status="escalated"),
+        )
+    )
+
+    result = asyncio.run(graph.ainvoke(_initial_state(max_attempts=2)))
+    state = TicketState.model_validate(result)
+
+    assert state.visited_nodes == [
+        "plan",
+        "request_execution_approval",
+        "implement",
+        "run_tests",
+        "review",
+        "implement",
+        "run_tests",
+        "review",
+        "escalate",
+        "report",
+    ]
+    assert state.implementation_attempts == 2
+    assert state.workflow_status == "escalated"
+    assert state.escalation_reason == "review rejected"
+
+
 def _initial_state(**updates: Any) -> TicketState:
     return TicketState(
         ticket_key="AGENT-123",
@@ -470,6 +558,26 @@ def _stub(name: str, **updates: Any):
             "current_node": name,
             "visited_nodes": [*state.visited_nodes, name],
             **updates,
+        }
+
+    return node
+
+
+def _review_pass_after_attempt(minimum_attempt: int):
+    async def node(state: TicketState) -> Mapping[str, Any]:
+        review_passed = state.implementation_attempts >= minimum_attempt
+        return {
+            "current_node": "review",
+            "visited_nodes": [*state.visited_nodes, "review"],
+            "review_passed": review_passed,
+            "verification_result": {
+                "status": "approved" if review_passed else "rejected",
+                "issues": (
+                    []
+                    if review_passed
+                    else ["Unmet acceptance criterion: pagination works"]
+                ),
+            },
         }
 
     return node

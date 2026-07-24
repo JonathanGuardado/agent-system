@@ -93,6 +93,9 @@ class TicketNodeRunner:
             service_updates=implementation_update,
             workflow_status="implementing",
             implementation_attempts=state.implementation_attempts + 1,
+            # A fresh attempt invalidates any reason carried from a prior
+            # review rejection; escalation reasons must describe this attempt.
+            escalation_reason=None,
         )
 
     async def run_tests(self, state: TicketState) -> TicketStateUpdate:

@@ -175,7 +175,11 @@ are inverses). Criteria are the source of truth in the Jira description under
 the `Acceptance Criteria:` heading — there is no Jira custom field for them;
 the planner and reviewer re-parse them from `state.description`. The planner
 emits `criteria_coverage` and the reviewer emits `criteria_verdicts`; any
-verdict with `met` != true forces the review to `rejected`. The single-round
+verdict with `met` != true forces the review to `rejected`. A rejected review
+routes back to IMPLEMENT (rework) while `implementation_attempts` <
+`max_attempts`, with the rejection reasoning/issues injected into the retry
+prompt as `previous_review_rejection`; once attempts are exhausted it
+escalates. The single-round
 clarification stores a 0-ticket DRAFTING placeholder (see
 `_clarification_placeholder`) so the user's answer returns through `_revise`
 with clarification disabled. Foundation-first ordering is instructed in the
