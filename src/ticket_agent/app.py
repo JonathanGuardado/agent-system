@@ -87,6 +87,16 @@ from ticket_agent.orchestrator.model_services import (
     ModelRouterProtocol,
     ModelRouterReviewService,
 )
+from ticket_agent.observability.telemetry import (
+    NullTelemetryRecorder,
+    TelemetryRecorder,
+    open_telemetry_store,
+)
+from ticket_agent.observability.transcripts import (
+    JsonlTranscriptRecorder,
+    NullTranscriptRecorder,
+    TranscriptRecorder,
+)
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.runner import OrchestratorRunner
 from ticket_agent.orchestrator.services import (
@@ -156,6 +166,7 @@ class RuntimeConfig:
     github_feedback_poll_interval_seconds: float = 60.0
     github_feedback_ignore_self_comments: bool = False
     execution_mode: str = "execute"
+    transcripts_enabled: bool = False
     execution_approval_policy: str = "auto"
 
 
@@ -324,11 +335,16 @@ def build_runtime(
         emit=emit,
     )
 
+    transcripts = _build_transcript_recorder(runtime_config, data_dir, repo_defaults)
+    telemetry = _build_telemetry_recorder(runtime_config, database_paths)
+
     router = model_router
     if planner is None or implementation is None or review is None:
-        router = router or create_model_router()
+        router = router or create_model_router(transcripts=transcripts)
     implementation_loop = (
-        None if implementation is not None else IterativeImplementationService(router)
+        None
+        if implementation is not None
+        else IterativeImplementationService(router, transcripts=transcripts)
     )
     worktree_cleaner = WorktreeCleanupService()
 
@@ -364,6 +380,8 @@ def build_runtime(
             credentials=credentials,
         ),
         escalation=escalation or JiraEscalationService(execution_service),
+        transcripts=transcripts,
+        telemetry=telemetry,
     )
     graph = build_persistent_ticket_graph(node_runner, checkpointer=checkpointer)
 
@@ -375,6 +393,7 @@ def build_runtime(
         claim_ticket=execution_service.mark_claimed,
         checkpointer=checkpointer,
         heartbeat_interval_s=runtime_config.heartbeat_interval_s,
+        telemetry=telemetry,
     )
     detector_queue = queue or asyncio.Queue()
     detector = DetectionComponent(
@@ -828,6 +847,11 @@ def load_app_config(
         ),
         execution_mode=_env_value(merged_env, "AGENT_SYSTEM_EXECUTION_MODE")
         or "execute",
+        transcripts_enabled=_bool_env(
+            merged_env,
+            "AGENT_SYSTEM_TRANSCRIPTS_ENABLED",
+            default=False,
+        ),
         execution_approval_policy=_env_value(
             merged_env,
             "AGENT_SYSTEM_EXECUTION_APPROVAL_POLICY",
@@ -1040,7 +1064,56 @@ def _database_paths(data_dir: Path) -> dict[str, Path]:
         "ticket_locks": data_dir / "ticket_locks.sqlite3",
         "feedback_store": data_dir / "github_feedback.sqlite3",
         "delivery_store": data_dir / "github_delivery.sqlite3",
+        "telemetry_store": data_dir / "loop_telemetry.sqlite3",
     }
+
+
+def _transcript_dir(data_dir: Path) -> Path:
+    return data_dir / "transcripts"
+
+
+def _build_telemetry_recorder(
+    config: RuntimeConfig,
+    database_paths: Mapping[str, Path],
+) -> TelemetryRecorder:
+    """Open the telemetry store, or fall back to the no-op recorder.
+
+    Gated on the same flag as transcripts: both are opt-in run analysis,
+    and enabling one without the other yields a half-readable picture.
+    """
+
+    if not config.transcripts_enabled:
+        return NullTelemetryRecorder()
+    return open_telemetry_store(database_paths["telemetry_store"])
+
+
+def _build_transcript_recorder(
+    config: RuntimeConfig,
+    data_dir: Path,
+    repo_defaults: Mapping[str, Mapping[str, str]],
+) -> TranscriptRecorder:
+    """Build the transcript sink, defaulting to the no-op recorder.
+
+    Transcripts are opt-in: they are per-run debugging output, and a process
+    that cannot open the sink must keep running rather than fail to start.
+    """
+
+    if not config.transcripts_enabled:
+        return NullTranscriptRecorder()
+    try:
+        return JsonlTranscriptRecorder(
+            _transcript_dir(data_dir),
+            local_paths=[
+                defaults["repo_path"]
+                for defaults in repo_defaults.values()
+                if defaults.get("repo_path")
+            ],
+        )
+    except OSError as exc:
+        logging.getLogger(__name__).warning(
+            "transcripts requested but unavailable, continuing without: %s", exc
+        )
+        return NullTranscriptRecorder()
 
 
 def _runtime_repo_defaults(

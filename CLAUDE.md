@@ -28,15 +28,29 @@ Current phase:
 - P5: ✅ MVP runtime wiring
 - P6: ✅ Implementation loop upgrade (search, edit, paginated reads, in-loop tests)
 - P7: ✅ Acceptance criteria pipeline (intake → plan → review)
-- P8: ⬜ Bug-fix work profile (reproduce-first)
-- P9: ⬜ Diff-based review + lint gate
-- P10: ⬜ Run transcripts + funnel metrics
+- P8: ⏸️ Bug-fix work profile (reproduce-first) — **deferred**, see below
+- P9: ⬜ Diff-based review + lint gate (becomes checker stages in P14/P15)
+- P10: 🔶 Run transcripts + funnel metrics (P10.1 landed; P10.2 partial)
 - P11: ⬜ Config single-source-of-truth cleanup
 
-P6–P11 are specified in the "Roadmap" section below. Work them in order:
-P6 raises the capability ceiling of the whole system and unblocks the value
-of every later phase. One phase per PR. When a phase lands, mark it ✅ here
-and check its boxes in the roadmap section.
+Then the goal-pursuit milestones:
+
+- P12: 🔶 Goal contract + durable spine (schemas landed; contract/spine pending)
+- P13: ⬜ Harness manifest + trust root + sandbox
+- P14: ⬜ Evidence gates: isolated verification at a committed SHA
+- P15: ⬜ Independent review loop (checker ≠ maker across fallbacks)
+- P16: ⬜ Demo evidence
+- P17: ⬜ Autonomous delivery: outbox, attestation, trusted CI, promotion PR
+
+**P8 is deferred, deliberately.** A work profile is a *strategy* inside the
+implementation loop. Strategies are only worth building once the loop can tell
+whether they worked — which needs transcripts (P10.1), evidence gates (P14),
+and an independent checker (P15). Building a reproduce-first profile before
+then means tuning a strategy against a verification gate that can pass
+vacuously. Revisit P8 once P15 has run on real tickets.
+
+One phase per PR; multiple PRs per phase is fine. When a phase lands, mark it
+✅ here and check its boxes in the roadmap section.
 
 MVP work now includes:
 - LangGraph StateGraph (graph.py) with full node sequence and routing
@@ -252,10 +266,90 @@ Goal: make runs debuggable and improvement measurable.
 
 P10 checklist:
 
-- [ ] TranscriptRecorder + redaction coverage test
-- [ ] recorder wired into node runner and router (no-op default)
-- [ ] `ticket_funnel` writes at each stage
-- [ ] `scripts/report_funnel.py`
+- [x] TranscriptRecorder + redaction coverage test
+- [x] recorder wired into node runner, router, and implementation loop
+      (no-op default everywhere)
+- [x] `ticket_funnel` writes at each stage that exists today —
+      `claimed` from `OrchestratorRunner` (the funnel's denominator, recorded
+      where the lock is already held), and `planned`/`approved`/`implemented`/
+      `pr_opened`/`escalated` from `TicketNodeRunner._record_stage`.
+      `committed`/`verified`/`reviewed`/`demoed`/`merged` are declared but
+      stay zero until the COMMIT/VERIFY topology and the delivery poller land
+      — honest zeros for stages that do not exist yet, not broken wiring.
+- [x] `scripts/report_loops.py` (supersedes the planned `report_funnel.py`)
+
+A node running is **not** the same as its stage being reached: approval only
+counts when granted, and a PR only when a URL came back. Recording on node
+entry regardless would make every conversion rate read 100%.
+
+P10.1 landed. Notes for later phases: the sink is process-wide and routed by
+`ticket_key`, not a per-run object — services are built once in `app.py` and
+`ModelRouter.invoke` already receives `ticket_id`, so `invoke()`'s documented
+signature is unchanged. Transcripts are opt-in via
+`AGENT_SYSTEM_TRANSCRIPTS_ENABLED` (default false) and every hook takes a
+recorder defaulting to `NullTranscriptRecorder`.
+
+Three rules that are load-bearing rather than stylistic:
+
+- **Record through `safe_record`, never `recorder.record` directly.**
+  `TranscriptRecorder` is a Protocol, so the never-raises guarantee cannot
+  live only in `JsonlTranscriptRecorder`; any other implementation would
+  otherwise propagate into the pipeline it is meant to observe.
+- **Shapes and sizes, never content.** `_safe_tool_args` keeps
+  `path`/`pattern`/`offset`/`limit` and reduces `content`/`old_string`/
+  `new_string` to `<field>_chars`. A gate's output can be megabytes and a
+  file write can be a secret.
+- **`redaction.py` now filters credentials as well as paths**, and the router's
+  log path is redacted too — previously only prompts were.
+
+P10 tests are in `tests/unit/test_observability.py` and
+`tests/unit/test_observability_hooks.py`.
+
+### P12 — Goal contract + durable spine
+
+Goal: pursue a *goal*, not a ticket queue. The schema layer landed first so
+later phases import types instead of forward-referencing them.
+
+Landed in `goal/types.py` and `orchestrator/gates.py`:
+
+- **Phases are not terminal statuses.** A `LoopState` always carries a
+  `GoalPhase`; it carries a `TerminalStatus` only when the phase is `closed`,
+  and the constructor rejects any other combination. `ready_for_promotion` is
+  a *phase* a run can still leave. Collapsing these into one enum is what lets
+  "the criteria look met" read as "done".
+- **`GateStatus` has five members, not four.** `not_runnable` (tried, could
+  not run), `skipped` (policy said no), and **`not_run`** (never reached,
+  routing short-circuited) are different facts. Every expected gate is seeded
+  to `not_run`, so a partial record can never masquerade as complete, and
+  `VerificationRecord.authorized` denies on any of them.
+- **Two authorizations, deliberately separate.** `CandidateAuthorization`
+  answers *may this SHA merge* and is scoped to one commit.
+  `GoalAchievement` answers *is the objective met* and is scoped to the
+  contract. Ticket 1 of 5 is routinely authorized while the goal is nowhere
+  near achieved — requiring achievement to merge would deadlock the sequence.
+- **`GoalAchievement.achieved` requires a confirmed promotion PR.** Evidence
+  that the criteria are met is not the same as having presented the work.
+- **Autonomy resolution is monotone and fail-closed.**
+  `resolve_autonomy(...)` takes a `min` across configured mode, risk class,
+  harness readiness, sandbox availability, gate enforcement, and halt state,
+  so no input can ever *raise* autonomy. An unrecognized mode yields
+  `observe`. A required gate below `enforce` caps at `implement` — a gate in
+  shadow authorizes nothing. No sandbox caps at `propose` unless each command
+  is human-approved.
+
+P12 checklist:
+
+- [x] schema vocabulary with canonical-JSON digests
+- [x] `TicketState` `extra="forbid"` (see below) + `committing`/`verifying`
+- [ ] `GoalContract` compilation, signing, and intake authorization
+- [ ] durable spine + action journal with bounded duplicate spend
+
+**`TicketState` now sets `model_config = ConfigDict(extra="forbid")`.** Under
+pydantic's default `extra="ignore"`, a node returning an undeclared field had
+its update *silently dropped*: the graph advanced, the value was missing
+downstream, and the ticket escalated with no explanation. Adding a node field
+now requires declaring it in `state.py`, and adding a workflow status requires
+extending the `WorkflowStatus` Literal.
 
 ### P11 — Config single source of truth
 

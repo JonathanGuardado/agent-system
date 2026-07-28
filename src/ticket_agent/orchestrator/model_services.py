@@ -18,6 +18,13 @@ from ticket_agent.domain.errors import (
     PathBoundaryError,
     PolicyViolationError,
 )
+from ticket_agent.observability.transcripts import (
+    NullTranscriptRecorder,
+    TranscriptEvent,
+    TranscriptRecorder,
+    safe_record,
+    safe_tool_args,
+)
 from ticket_agent.orchestrator.repo_context import (
     RepoContext,
     RepoContextBuilder,
@@ -260,6 +267,7 @@ class IterativeImplementationService:
         max_turns: int = _DEFAULT_MAX_IMPLEMENTATION_TURNS,
         tool_result_max_chars: int = _DEFAULT_MAX_TOOL_RESULT_CHARS,
         max_test_runs: int = _DEFAULT_MAX_TEST_RUNS,
+        transcripts: TranscriptRecorder | None = None,
     ) -> None:
         if max_turns < 1:
             raise ValueError("max_turns must be at least 1")
@@ -274,6 +282,53 @@ class IterativeImplementationService:
         self._max_turns = max_turns
         self._tool_result_max_chars = tool_result_max_chars
         self._max_test_runs = max_test_runs
+        self._transcripts = transcripts or NullTranscriptRecorder()
+
+    def _record_loop(
+        self,
+        state: TicketState,
+        name: str,
+        payload: dict[str, Any],
+    ) -> None:
+        safe_record(
+            self._transcripts,
+            TranscriptEvent(
+                ticket_key=state.ticket_key,
+                kind="loop",
+                name=name,
+                payload=payload,
+                run_id=state.lock_id,
+                goal_id=state.goal_id,
+                phase="implementing",
+            ),
+        )
+
+    def _record_loop_end(
+        self,
+        state: TicketState,
+        result: dict[str, Any],
+        *,
+        turns_used: int,
+    ) -> dict[str, Any]:
+        """Record why the loop stopped, then return the result unchanged.
+
+        Wrapping the return keeps every exit path instrumented without adding
+        a branch at each of the six ``return`` statements -- and an exit that
+        is added later but not wrapped shows up as a missing ``loop.end``
+        rather than as silence.
+        """
+
+        self._record_loop(
+            state,
+            "loop.end",
+            {
+                "status": result.get("status"),
+                "error_code": result.get("error_code"),
+                "turns_used": turns_used,
+                "changed_file_count": len(result.get("changed_files") or ()),
+            },
+        )
+        return result
 
     async def implement(self, state: TicketState) -> dict[str, Any]:
         if not state.worktree_path:
@@ -331,11 +386,35 @@ class IterativeImplementationService:
         )
         last_failed_tool_result: dict[str, Any] | None = None
 
+        self._record_loop(
+            state,
+            "loop.start",
+            {
+                "max_turns": self._max_turns,
+                "max_test_runs": self._max_test_runs,
+                "tests_available": test_runner is not None,
+                "message_count": len(messages),
+            },
+        )
+        turns_used = 0
+
         for turn_index in range(self._max_turns):
+            turns_used = turn_index + 1
+            prompt_messages = _messages_for_model(messages, state)
+            self._record_loop(
+                state,
+                f"turn.{turns_used}.call",
+                {
+                    "message_count": len(prompt_messages),
+                    "total_chars": sum(
+                        len(str(m.get("content", ""))) for m in prompt_messages
+                    ),
+                },
+            )
             try:
                 response = await self._model_router.invoke(
                     capability="code.implement",
-                    messages=_messages_for_model(messages, state),
+                    messages=prompt_messages,
                     ticket_id=state.ticket_key,
                     metadata={
                         "workflow_node": "implement",
@@ -345,19 +424,27 @@ class IterativeImplementationService:
                 payload = _coerce_model_payload(response)
                 tool_call = _tool_call_from_payload(payload)
             except (ModelServiceError, ToolCallValidationError) as exc:
-                return _failed_implementation_result(
-                    "Implementation stopped because the model returned an invalid "
-                    "tool call.",
-                    [str(exc)],
-                    changed_files=loop.changed_files,
-                    code=getattr(exc, "code", "invalid_tool_call"),
+                return self._record_loop_end(
+                    state,
+                    _failed_implementation_result(
+                        "Implementation stopped because the model returned an invalid "
+                        "tool call.",
+                        [str(exc)],
+                        changed_files=loop.changed_files,
+                        code=getattr(exc, "code", "invalid_tool_call"),
+                    ),
+                    turns_used=turns_used,
                 )
             except Exception as exc:
-                return _failed_implementation_result(
-                    "Implementation stopped because the model call failed.",
-                    [f"{type(exc).__name__}: {exc}"],
-                    changed_files=loop.changed_files,
-                    code="model_invoke_failed",
+                return self._record_loop_end(
+                    state,
+                    _failed_implementation_result(
+                        "Implementation stopped because the model call failed.",
+                        [f"{type(exc).__name__}: {exc}"],
+                        changed_files=loop.changed_files,
+                        code="model_invoke_failed",
+                    ),
+                    turns_used=turns_used,
                 )
 
             messages.append(
@@ -368,13 +455,28 @@ class IterativeImplementationService:
             )
 
             if tool_call.action == "finish":
-                return _successful_implementation_result(
-                    tool_call.args["summary"],
-                    loop.changed_files,
-                    _optional_tool_notes(tool_call.args),
+                return self._record_loop_end(
+                    state,
+                    _successful_implementation_result(
+                        tool_call.args["summary"],
+                        loop.changed_files,
+                        _optional_tool_notes(tool_call.args),
+                    ),
+                    turns_used=turns_used,
                 )
 
             tool_result = self._execute_tool_call(loop, tool_call)
+            self._record_loop(
+                state,
+                f"turn.{turns_used}.result",
+                {
+                    "action": tool_call.action,
+                    "args": safe_tool_args(tool_call.args),
+                    "ok": tool_result.get("ok"),
+                    "error_code": tool_result.get("error_code"),
+                    "changed_file_count": len(loop.changed_files),
+                },
+            )
             messages.append(
                 {
                     "role": "user",
@@ -388,25 +490,37 @@ class IterativeImplementationService:
             if tool_result.get("ok") is False:
                 last_failed_tool_result = tool_result
                 if tool_result.get("error_code") == "path_boundary_violation":
-                    return _failed_result_for_tool_error(
-                        tool_result,
-                        changed_files=loop.changed_files,
+                    return self._record_loop_end(
+                        state,
+                        _failed_result_for_tool_error(
+                            tool_result,
+                            changed_files=loop.changed_files,
+                        ),
+                        turns_used=turns_used,
                     )
                 continue
 
             last_failed_tool_result = None
 
         if last_failed_tool_result is not None:
-            return _failed_result_for_tool_error(
-                last_failed_tool_result,
-                changed_files=loop.changed_files,
+            return self._record_loop_end(
+                state,
+                _failed_result_for_tool_error(
+                    last_failed_tool_result,
+                    changed_files=loop.changed_files,
+                ),
+                turns_used=turns_used,
             )
 
-        return _failed_implementation_result(
-            "Implementation stopped before the model called finish.",
-            [f"max_turns exhausted after {self._max_turns} turns"],
-            changed_files=loop.changed_files,
-            code="max_turns_exhausted",
+        return self._record_loop_end(
+            state,
+            _failed_implementation_result(
+                "Implementation stopped before the model called finish.",
+                [f"max_turns exhausted after {self._max_turns} turns"],
+                changed_files=loop.changed_files,
+                code="max_turns_exhausted",
+            ),
+            turns_used=turns_used,
         )
 
     def _execute_tool_call(

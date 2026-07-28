@@ -40,6 +40,10 @@ LOCAL_TABLES = {
         "checkpoint_writes",
         "thread_id",
     ),
+    # Delivery fingerprints were previously missed by --all-local, so a reset
+    # left merged-PR state behind and the next run skipped those deliveries.
+    "github_delivery.sqlite3": ("feedback_fingerprints", "fingerprint"),
+    "github_feedback.sqlite3": ("feedback_fingerprints", "fingerprint"),
 }
 PROPOSAL_TABLE = ("intake_proposals.sqlite3", "active_proposals")
 

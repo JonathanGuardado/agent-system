@@ -4,6 +4,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ticket_agent.observability.telemetry import (
+    NullTelemetryRecorder,
+    TelemetryRecorder,
+)
+from ticket_agent.observability.transcripts import (
+    NullTranscriptRecorder,
+    TranscriptEvent,
+    TranscriptRecorder,
+    safe_record,
+)
 from ticket_agent.orchestrator.services import (
     ApprovalDecision,
     ApprovalService,
@@ -35,6 +45,8 @@ class TicketNodeRunner:
         review: ReviewService,
         pull_request: PullRequestService,
         escalation: EscalationService,
+        transcripts: TranscriptRecorder | None = None,
+        telemetry: TelemetryRecorder | None = None,
     ) -> None:
         self._planner = planner
         self._approval = approval
@@ -43,10 +55,95 @@ class TicketNodeRunner:
         self._review = review
         self._pull_request = pull_request
         self._escalation = escalation
+        self._transcripts = transcripts or NullTranscriptRecorder()
+        self._telemetry = telemetry or NullTelemetryRecorder()
+
+    def _mark_node(
+        self,
+        state: TicketState,
+        node_name: str,
+        *,
+        service_updates: dict[str, Any] | None = None,
+        **updates: Any,
+    ) -> TicketStateUpdate:
+        """Build the state update and record that the node ran.
+
+        Every node returns through here, so this is the one place node
+        transitions are observed. What gets recorded is deliberately thin:
+        the update *keys* plus a short allowlist of scalars. Recording whole
+        update dicts would put gate output -- potentially megabytes, and
+        potentially secret -- into the transcript.
+        """
+
+        update = _node_update(
+            state, node_name, service_updates=service_updates, **updates
+        )
+        self._record_node(state, node_name, update)
+        self._record_stage(state, node_name, update)
+        return update
+
+    def _record_stage(
+        self,
+        state: TicketState,
+        node_name: str,
+        update: TicketStateUpdate,
+    ) -> None:
+        """Record the funnel stage a node reached, when it reached one.
+
+        Not every node maps to a stage, and a node running is not the same as
+        its stage being reached: approval only counts when it was granted, and
+        a PR only counts when a URL came back. Recording on entry regardless
+        would make every conversion rate read 100%.
+        """
+
+        stage = _NODE_STAGES.get(node_name)
+        if stage is None:
+            return
+        if node_name == "request_execution_approval" and not update.get(
+            "execution_approved"
+        ):
+            return
+        if node_name == "open_pull_request" and not update.get("pull_request_url"):
+            return
+
+        if stage == "escalated":
+            self._telemetry.record_escalation(
+                state.ticket_key,
+                str(update.get("escalation_reason") or "unspecified"),
+            )
+            return
+        self._telemetry.record_stage(state.ticket_key, stage, goal_id=state.goal_id)
+
+    def _record_node(
+        self,
+        state: TicketState,
+        node_name: str,
+        update: TicketStateUpdate,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "update_keys": sorted(k for k in update if k != "visited_nodes"),
+            "attempt": state.implementation_attempts,
+        }
+        for key in _RECORDED_SCALARS:
+            value = update.get(key)
+            if value is not None:
+                payload[key] = value
+        safe_record(
+            self._transcripts,
+            TranscriptEvent(
+                ticket_key=state.ticket_key,
+                kind="node",
+                name=node_name,
+                payload=payload,
+                run_id=state.lock_id,
+                goal_id=state.goal_id,
+                phase=str(update.get("workflow_status") or state.workflow_status),
+            ),
+        )
 
     async def plan(self, state: TicketState) -> TicketStateUpdate:
         decomposition = await self._planner.plan(state)
-        return _mark_node(
+        return self._mark_node(
             state,
             "plan",
             workflow_status="planned",
@@ -66,7 +163,7 @@ class TicketNodeRunner:
         }
         if decision.approved is False and decision.reason:
             updates["escalation_reason"] = decision.reason
-        return _mark_node(
+        return self._mark_node(
             state,
             "request_execution_approval",
             workflow_status="waiting_for_approval",
@@ -87,7 +184,7 @@ class TicketNodeRunner:
                 "error": error,
                 "errors": [*state.errors, error],
             }
-        return _mark_node(
+        return self._mark_node(
             state,
             "implement",
             service_updates=implementation_update,
@@ -104,7 +201,7 @@ class TicketNodeRunner:
         except Exception as exc:
             error = _error_message(exc)
             test_result = {"status": "failed", "tests_passed": False, "error": error}
-        return _mark_node(
+        return self._mark_node(
             state,
             "run_tests",
             workflow_status="testing",
@@ -128,7 +225,7 @@ class TicketNodeRunner:
             positive_statuses={"accepted", "approved", "passed", "success"},
             negative_statuses={"rejected", "failed", "failure"},
         )
-        return _mark_node(
+        return self._mark_node(
             state,
             "review",
             workflow_status="reviewing",
@@ -146,7 +243,7 @@ class TicketNodeRunner:
             pull_request_url = await self._pull_request.open_pull_request(state)
         except Exception as exc:
             error = _error_message(exc)
-            return _mark_node(
+            return self._mark_node(
                 state,
                 "open_pull_request",
                 workflow_status="opening_pull_request",
@@ -156,7 +253,7 @@ class TicketNodeRunner:
             )
         if not pull_request_url:
             error = "pull request service did not return a PR URL"
-            return _mark_node(
+            return self._mark_node(
                 state,
                 "open_pull_request",
                 workflow_status="opening_pull_request",
@@ -164,7 +261,7 @@ class TicketNodeRunner:
                 error=error,
                 errors=[*state.errors, error],
             )
-        return _mark_node(
+        return self._mark_node(
             state,
             "open_pull_request",
             workflow_status="opening_pull_request",
@@ -174,7 +271,7 @@ class TicketNodeRunner:
     async def escalate(self, state: TicketState) -> TicketStateUpdate:
         reason = _escalation_reason(state)
         await self._escalation.escalate(state, reason)
-        return _mark_node(
+        return self._mark_node(
             state,
             "escalate",
             workflow_status="escalated",
@@ -185,7 +282,7 @@ class TicketNodeRunner:
         status: WorkflowStatus = (
             "escalated" if state.workflow_status == "escalated" else "completed"
         )
-        return _mark_node(state, "report", workflow_status=status)
+        return self._mark_node(state, "report", workflow_status=status)
 
     def as_workflow_nodes(self) -> TicketWorkflowNodes:
         from ticket_agent.orchestrator.graph import TicketWorkflowNodes
@@ -202,7 +299,31 @@ class TicketNodeRunner:
         )
 
 
-def _mark_node(
+#: Nodes that mark a funnel stage. Nodes absent here reach no stage:
+#: run_tests and review get theirs when the VERIFY topology lands.
+_NODE_STAGES: dict[str, str] = {
+    "plan": "planned",
+    "request_execution_approval": "approved",
+    "implement": "implemented",
+    "open_pull_request": "pr_opened",
+    "escalate": "escalated",
+}
+
+
+#: Update values small and non-sensitive enough to record verbatim. Anything
+#: not listed here is represented only by its key.
+_RECORDED_SCALARS: tuple[str, ...] = (
+    "workflow_status",
+    "execution_approved",
+    "execution_approval_status",
+    "tests_passed",
+    "review_passed",
+    "candidate_sha",
+    "verification_attempts",
+)
+
+
+def _node_update(
     state: TicketState,
     node_name: str,
     *,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
@@ -13,6 +12,8 @@ from uuid import uuid4
 
 from ticket_agent.domain.errors import TicketLockError
 from ticket_agent.domain.execution import TicketLock
+from ticket_agent.sqlite_support import connect as _connect
+from ticket_agent.sqlite_support import write_transaction as _write_transaction
 
 
 LockIdFactory = Callable[[], str]
@@ -448,33 +449,6 @@ class SQLiteTicketLockStore:
         now_dt = _to_datetime(now)
         with self._connection_lock, _write_transaction(self._connection):
             return _delete_expired(self._connection, now=now_dt)
-
-
-def _connect(db_path: str | Path, busy_timeout_ms: int) -> sqlite3.Connection:
-    path = Path(db_path)
-    if path != Path(":memory:"):
-        path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(
-        str(path),
-        check_same_thread=False,
-        isolation_level=None,
-    )
-    connection.row_factory = sqlite3.Row
-    connection.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
-    connection.execute("PRAGMA journal_mode = WAL")
-    return connection
-
-
-@contextmanager
-def _write_transaction(connection: sqlite3.Connection):
-    connection.execute("BEGIN IMMEDIATE")
-    try:
-        yield
-    except Exception:
-        connection.execute("ROLLBACK")
-        raise
-    else:
-        connection.execute("COMMIT")
 
 
 def _initialize_schema(connection: sqlite3.Connection) -> None:

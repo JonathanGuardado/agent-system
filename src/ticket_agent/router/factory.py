@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ticket_agent.observability.transcripts import TranscriptRecorder
 from ticket_agent.router.model_router import ModelRouter
 from ticket_agent.router.providers import (
     DeepSeekProvider,
@@ -11,7 +12,11 @@ from ticket_agent.router.providers import (
 from ticket_agent.router.selector_config import load_model_selector
 
 
-def create_model_router(*, timeout_s: int = 120) -> ModelRouter:
+def create_model_router(
+    *,
+    timeout_s: int = 120,
+    transcripts: TranscriptRecorder | None = None,
+) -> ModelRouter:
     deepseek = load_provider("deepseek")
     gemini = load_provider("gemini")
     ollama = load_provider("ollama")
@@ -36,4 +41,5 @@ def create_model_router(*, timeout_s: int = 120) -> ModelRouter:
         selector=load_model_selector(),
         providers=providers,
         timeout_s=timeout_s,
+        transcripts=transcripts,
     )

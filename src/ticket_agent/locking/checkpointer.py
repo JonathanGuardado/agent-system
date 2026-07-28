@@ -10,14 +10,15 @@ Thread-safety: all public methods are protected by an RLock.
 from __future__ import annotations
 
 import random
-import sqlite3
 from collections.abc import AsyncIterator, Iterator, Sequence
-from contextlib import contextmanager
 from pathlib import Path
 from threading import RLock
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
+
+from ticket_agent.sqlite_support import connect as _connect
+from ticket_agent.sqlite_support import write_transaction as _write_transaction
 from langgraph.checkpoint.base import (
     WRITES_IDX_MAP,
     BaseCheckpointSaver,
@@ -415,33 +416,6 @@ class SQLiteCheckpointer(BaseCheckpointSaver):
             )
             for row in rows
         ]
-
-
-def _connect(db_path: str | Path, busy_timeout_ms: int) -> sqlite3.Connection:
-    path = Path(db_path)
-    if path != Path(":memory:"):
-        path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(
-        str(path),
-        check_same_thread=False,
-        isolation_level=None,
-    )
-    conn.row_factory = sqlite3.Row
-    conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
-    conn.execute("PRAGMA journal_mode = WAL")
-    return conn
-
-
-@contextmanager
-def _write_transaction(conn: sqlite3.Connection):
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        yield
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
-    else:
-        conn.execute("COMMIT")
 
 
 __all__ = ["SQLiteCheckpointer"]

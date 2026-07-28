@@ -12,6 +12,10 @@ from typing import Any, Protocol
 
 from ticket_agent.domain.errors import TicketLockError
 from ticket_agent.domain.execution import TicketLock
+from ticket_agent.observability.telemetry import (
+    NullTelemetryRecorder,
+    TelemetryRecorder,
+)
 from ticket_agent.orchestrator.state import TicketState
 
 Lock = TicketLock
@@ -127,6 +131,7 @@ class OrchestratorRunner:
         claim_ticket: ClaimTicket | None = None,
         checkpointer: CheckpointCleaner | None = None,
         heartbeat_interval_s: float = 600.0,
+        telemetry: TelemetryRecorder | None = None,
     ) -> None:
         if heartbeat_interval_s <= 0:
             raise ValueError("heartbeat_interval_s must be positive")
@@ -139,6 +144,7 @@ class OrchestratorRunner:
         self._claim_ticket = claim_ticket
         self._checkpointer = checkpointer
         self._heartbeat_interval_s = float(heartbeat_interval_s)
+        self._telemetry = telemetry or NullTelemetryRecorder()
 
     async def run_ticket(self, work_item: TicketWorkItem) -> TicketState:
         """Run one ticket through the graph when its lock can be acquired."""
@@ -277,6 +283,10 @@ class OrchestratorRunner:
             await result
 
     async def _claim_jira_ticket(self, ticket_key: str) -> None:
+        # "claimed" is the funnel's denominator, so it is recorded here rather
+        # than at a graph node: the lock is already held by this point, and a
+        # ticket that fails before the first node still entered the funnel.
+        self._telemetry.record_stage(ticket_key, "claimed")
         if self._claim_ticket is None:
             return
         try:

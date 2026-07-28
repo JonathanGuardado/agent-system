@@ -6,7 +6,6 @@ import json
 import re
 import sqlite3
 from collections.abc import Awaitable, Callable, Mapping
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from inspect import isawaitable
@@ -16,6 +15,8 @@ from typing import Any, Literal, Protocol
 
 from langgraph.types import Command, interrupt
 
+from ticket_agent.sqlite_support import connect as _connect
+from ticket_agent.sqlite_support import write_transaction as _write_transaction
 from ticket_agent.orchestrator.services import ApprovalDecision
 from ticket_agent.orchestrator.state import TicketState
 
@@ -705,33 +706,6 @@ def _string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item.strip() for item in value if isinstance(item, str) and item.strip()]
-
-
-def _connect(db_path: str | Path, busy_timeout_ms: int) -> sqlite3.Connection:
-    path = Path(db_path)
-    if path != Path(":memory:"):
-        path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(
-        str(path),
-        check_same_thread=False,
-        isolation_level=None,
-    )
-    conn.row_factory = sqlite3.Row
-    conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
-    conn.execute("PRAGMA journal_mode = WAL")
-    return conn
-
-
-@contextmanager
-def _write_transaction(conn: sqlite3.Connection):
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        yield
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
-    else:
-        conn.execute("COMMIT")
 
 
 def _row_to_approval(row: sqlite3.Row) -> ExecutionApproval:

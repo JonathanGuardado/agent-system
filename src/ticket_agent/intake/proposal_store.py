@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections.abc import Callable
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 
 from ticket_agent.domain.intake import Proposal, ProposalStatus
+from ticket_agent.sqlite_support import connect as _connect
+from ticket_agent.sqlite_support import (
+    write_transaction as _write_transaction,
+)
 
 
 Clock = Callable[[], datetime]
@@ -223,33 +225,6 @@ def _proposal_to_row(proposal: Proposal) -> tuple[object, ...]:
         _datetime_text(_ensure_aware(proposal.created_at)),
         _datetime_text(_ensure_aware(proposal.expires_at)),
     )
-
-
-def _connect(db_path: str | Path, busy_timeout_ms: int) -> sqlite3.Connection:
-    path = Path(db_path)
-    if path != Path(":memory:"):
-        path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(
-        str(path),
-        check_same_thread=False,
-        isolation_level=None,
-    )
-    connection.row_factory = sqlite3.Row
-    connection.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
-    connection.execute("PRAGMA journal_mode = WAL")
-    return connection
-
-
-@contextmanager
-def _write_transaction(connection: sqlite3.Connection):
-    connection.execute("BEGIN IMMEDIATE")
-    try:
-        yield
-    except Exception:
-        connection.execute("ROLLBACK")
-        raise
-    else:
-        connection.execute("COMMIT")
 
 
 def _utcnow() -> datetime:

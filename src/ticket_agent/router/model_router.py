@@ -8,6 +8,13 @@ from typing import Any
 
 from ticket_agent.domain.errors import AllBackendsFailedError
 from ticket_agent.domain.model import ModelAttempt, ModelResponse
+from ticket_agent.observability.transcripts import (
+    NullTranscriptRecorder,
+    TranscriptEvent,
+    TranscriptRecorder,
+    safe_record,
+)
+from ticket_agent.redaction import redact
 from ticket_agent.router.providers import ProviderClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -19,12 +26,54 @@ class ModelRouter:
         selector: Any | None = None,
         providers: Mapping[str, ProviderClient] | None = None,
         timeout_s: int = 120,
+        *,
+        transcripts: TranscriptRecorder | None = None,
     ) -> None:
         if timeout_s <= 0:
             raise ValueError("timeout_s must be positive")
         self._selector = selector if selector is not None else _load_default_selector()
         self._providers = dict(providers or {})
         self._timeout_s = timeout_s
+        self._transcripts = transcripts or NullTranscriptRecorder()
+
+    def _log_model_event(
+        self,
+        event_name: str,
+        payload: Mapping[str, Any],
+        *,
+        level: int = logging.INFO,
+    ) -> None:
+        """Log a router event and fan it out to the transcript.
+
+        Bound to the instance so the four existing call sites feed the
+        recorder without touching any of them. Note the log line is redacted
+        here: redaction previously covered only the prompt path, so provider
+        errors echoing a URL or a token reached the log unfiltered.
+        """
+
+        _log_model_event(event_name, payload, level=level)
+
+        ticket_key = payload.get("ticket_id")
+        if not isinstance(ticket_key, str) or not ticket_key:
+            return
+        recorded = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"ticket_id", "metadata"}
+        }
+        metadata = payload.get("metadata")
+        if isinstance(metadata, Mapping):
+            recorded["workflow_node"] = metadata.get("workflow_node")
+            recorded["implementation_turn"] = metadata.get("implementation_turn")
+        safe_record(
+            self._transcripts,
+            TranscriptEvent(
+                ticket_key=ticket_key,
+                kind="model",
+                name=event_name,
+                payload=recorded,
+            ),
+        )
 
     async def invoke(
         self,
@@ -52,7 +101,7 @@ class ModelRouter:
                 "ticket_id": ticket_id,
                 "metadata": metadata or {},
             }
-            _log_model_event("model.invoke_attempt_started", event_context)
+            self._log_model_event("model.invoke_attempt_started", event_context)
 
             if provider is None:
                 error = f"provider not configured: {provider_name}"
@@ -65,7 +114,7 @@ class ModelRouter:
                         latency_ms=_elapsed_ms(started),
                     )
                 )
-                _log_model_event(
+                self._log_model_event(
                     "model.invoke_attempt_failed",
                     {**event_context, "error": error, "latency_ms": _elapsed_ms(started)},
                     level=logging.WARNING,
@@ -89,7 +138,7 @@ class ModelRouter:
                         latency_ms=_elapsed_ms(started),
                     )
                 )
-                _log_model_event(
+                self._log_model_event(
                     "model.invoke_attempt_failed",
                     {**event_context, "error": error, "latency_ms": _elapsed_ms(started)},
                     level=logging.WARNING,
@@ -105,7 +154,7 @@ class ModelRouter:
                     latency_ms=latency_ms,
                 )
             )
-            _log_model_event(
+            self._log_model_event(
                 "model.invoke_attempt_completed",
                 {
                     **event_context,
@@ -127,7 +176,7 @@ class ModelRouter:
                 attempts=tuple(attempts),
             )
 
-        _log_model_event(
+        self._log_model_event(
             "model.invoke_all_backends_failed",
             {
                 "capability": decision.capability,
@@ -215,10 +264,12 @@ def _log_model_event(
     *,
     level: int = logging.INFO,
 ) -> None:
-    _LOGGER.log(
-        level,
-        json.dumps({"event": event_name, **_jsonable_mapping(payload)}, sort_keys=True),
+    # Redact on the way out. Provider errors quote request URLs and echo
+    # headers, so the log path needs the same filter the prompt path has.
+    line = json.dumps(
+        {"event": event_name, **_jsonable_mapping(payload)}, sort_keys=True
     )
+    _LOGGER.log(level, redact(line))
 
 
 def _jsonable_mapping(payload: Mapping[str, Any]) -> dict[str, Any]:
