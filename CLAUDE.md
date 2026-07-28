@@ -35,7 +35,7 @@ Current phase:
 
 Then the goal-pursuit milestones:
 
-- P12: 🔶 Goal contract + durable spine (schemas landed; contract/spine pending)
+- P12: 🔶 Goal contract + durable spine (P12.0/P12.1 landed; spine pending)
 - P13: 🔶 Harness manifest + trust root + sandbox (P13.1/P13.2 landed)
 - P14: ⬜ Evidence gates: isolated verification at a committed SHA
 - P15: ⬜ Independent review loop (checker ≠ maker across fallbacks)
@@ -402,8 +402,47 @@ P12 checklist:
 
 - [x] schema vocabulary with canonical-JSON digests
 - [x] `TicketState` `extra="forbid"` (see below) + `committing`/`verifying`
-- [ ] `GoalContract` compilation, signing, and intake authorization
+- [x] `GoalContract` compilation, signing, and intake authorization
 - [ ] durable spine + action journal with bounded duplicate spend
+
+P12.1 landed. Authorization is a conjunction of three **independent** judgements
+in `goal/`, and any one of them sends the request to a human:
+
+- **`policy.py` — who and what, by rule.** Risk is decided by versioned *data*
+  (`config/policy/risk.yaml`), hashed into `policy_digest` and carried on the
+  contract. No model assigns a risk class: a system that lets the agent grade
+  its own risk has no risk classification. `classify_request` (at intake) and
+  `classify_changes` (at authorization, PR 7) deliberately share one rule set,
+  because the interesting failure is when the two disagree.
+- **`semantic_check.py` — meaning, by a different model.** Rules answer "is
+  this in policy"; they cannot answer "is this what the person asked for". The
+  checker compares the compiled contract to the **verbatim request**, on a
+  provider disjoint from the compiler's, and can only *flag*, never widen. If
+  the router falls back onto the compiler's own provider it fails closed.
+- **`contract.py` — the allowlist.** Empty means empty. Treating "unconfigured"
+  as "everyone" is how an internal tool becomes an open one.
+
+Fail-closed throughout: an unclassifiable request, an unreachable checker, an
+unparseable response, and a missing signature are four different things, and
+none of them may read as approval.
+
+**Signing (`signing.py`) is tamper-evidence, not tamper-prevention.** It makes a
+forged or hand-edited row loud. On a single-host deployment the agent runs as
+the operator's user and can read the key, so a compromised agent can still mint
+valid signatures. Real prevention needs a separate signing principal — a
+deployment change, not a code change. Do not let the presence of an HMAC imply
+more than this.
+
+`Proposal` gained `original_request` because `_original_request_from_proposal`
+falls back to `proposal.summary`, which is *model-written*. Checking a compiled
+contract against a model's summary of the request is the blind-reviewer defect
+in a new costume.
+
+Env: `AGENT_SYSTEM_GOAL_ALLOWLIST_USERS`, `AGENT_SYSTEM_GOAL_ALLOWLIST_CHANNELS`,
+`AGENT_SYSTEM_SIGNING_KEY_PATH`, `AGENT_SYSTEM_RISK_POLICY_PATH`. All unset by
+default, which authorizes nothing; `runtime_smoke` reports the posture. Contracts
+are recorded on approval but **nothing gates on them yet** — the autonomy ladder
+that consumes them lands with the spine. Tests: `tests/unit/test_goal_contract.py`.
 
 **`TicketState` now sets `model_config = ConfigDict(extra="forbid")`.** Under
 pydantic's default `extra="ignore"`, a node returning an undeclared field had

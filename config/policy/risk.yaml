@@ -1,0 +1,67 @@
+# Deterministic risk and scope rules.
+#
+# This file is DATA, not code. It is hashed into `policy_digest` and carried on
+# every goal contract, so a later gate can tell whether the policy that
+# authorized a change is still the policy in force.
+#
+# Nothing here is decided by a model. A system that lets the agent grade its
+# own risk has no risk classification.
+version: 1
+
+# Repositories the agent may work in. An EMPTY list permits nothing — silence
+# is not consent. Add a repository here only when you intend unattended work
+# in it.
+repositories:
+  - ofertas-sv
+
+# Path patterns and the risk they carry. `human_only` never runs unattended;
+# `elevated` requires a human to review the attestation before merge.
+change_classes:
+  - name: ci
+    patterns: [".github/*", ".gitlab-ci.yml", "Jenkinsfile"]
+    risk: human_only
+    reason: continuous integration config decides what verification runs
+
+  - name: delivery-config
+    patterns: ["config/repos/*", "config/policy/*", "CODEOWNERS"]
+    risk: human_only
+    reason: delivery configuration governs the agent itself
+
+  - name: secrets
+    patterns: [".env", ".env.*", "secrets/*"]
+    risk: human_only
+    reason: credential material must never be agent-authored
+
+  - name: dependency-manifest
+    patterns:
+      - package.json
+      - package-lock.json
+      - pyproject.toml
+      - poetry.lock
+      - requirements*.txt
+      - go.mod
+      - Cargo.toml
+    risk: elevated
+    reason: dependency changes introduce third-party code
+
+  - name: infrastructure
+    patterns: ["Dockerfile", "docker-compose*.yml", "*.tf", "k8s/*"]
+    risk: elevated
+    reason: infrastructure changes affect the running environment
+
+  - name: migration
+    patterns: ["**/migrations/*", "supabase/migrations/*"]
+    risk: elevated
+    reason: schema migrations are difficult to reverse
+
+# Size above which a change stops being routine.
+thresholds:
+  max_changed_files: 40
+  max_diff_bytes: 200000
+  over_threshold_risk: elevated
+
+baseline_risk: standard
+
+# What an unclassifiable request gets. Deliberately the most restrictive
+# value: a request the rules cannot place is unknown, not safe.
+unclassifiable_risk: human_only

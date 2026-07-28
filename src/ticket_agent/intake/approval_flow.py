@@ -14,6 +14,7 @@ from ticket_agent.domain.intake import (
     ProposalStatus,
     TicketSpec,
 )
+from ticket_agent.goal.authorizer import GoalAuthorizer
 from ticket_agent.intake.intent_resolver import IntakeIntentResolver
 from ticket_agent.intake.jira_writer import JiraWriteResult, JiraWriter
 from ticket_agent.intake.proposal_generator import (
@@ -77,6 +78,7 @@ class ApprovalFlow:
         slack: SlackPoster,
         repo_defaults: Mapping[str, Mapping[str, str]] | None = None,
         emit: Callable[[str, dict[str, object]], None] | None = None,
+        goal_authorizer: GoalAuthorizer | None = None,
     ) -> None:
         self._resolver = resolver
         self._generator = generator
@@ -85,6 +87,7 @@ class ApprovalFlow:
         self._slack = slack
         self._repo_defaults: Mapping[str, Mapping[str, str]] = repo_defaults or {}
         self._emit = emit
+        self._goal_authorizer = goal_authorizer
 
     async def handle_new_request(
         self,
@@ -220,6 +223,7 @@ class ApprovalFlow:
             )
 
         self._store.mark_status(proposal.proposal_id, ProposalStatus.CONFIRMED)
+        await self._record_goal_contract(proposal, result)
         message = _format_confirmation_message(result)
         await self._post(
             channel,
@@ -240,6 +244,43 @@ class ApprovalFlow:
             proposal=proposal,
             write_result=result,
             posted_message=message,
+        )
+
+    async def _record_goal_contract(
+        self,
+        proposal: Proposal,
+        result: JiraWriteResult,
+    ) -> None:
+        """Compile and store what this approval authorized.
+
+        Records only. Nothing gates on the outcome yet -- the autonomy ladder
+        that consumes it lands with the durable spine. The event is emitted
+        either way so an unauthorized-but-approved goal is visible rather than
+        silent.
+        """
+
+        if self._goal_authorizer is None:
+            return
+        try:
+            outcome = await self._goal_authorizer.authorize(proposal, result)
+        except Exception as exc:  # noqa: BLE001 - never break intake
+            self._emit_event(
+                "goal.contract_failed",
+                {"proposal_id": proposal.proposal_id, "error": str(exc)},
+            )
+            return
+        if outcome is None:
+            return
+        self._emit_event(
+            "goal.contract_recorded",
+            {
+                "proposal_id": proposal.proposal_id,
+                "goal_id": outcome.contract.goal_id,
+                "risk_class": outcome.contract.risk_class,
+                "authorized": outcome.authorized,
+                "signed": outcome.signature is not None,
+                "reasons": list(outcome.escalation_reasons()),
+            },
         )
 
     async def _cancel(

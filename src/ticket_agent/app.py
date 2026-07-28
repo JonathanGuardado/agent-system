@@ -29,6 +29,15 @@ from ticket_agent.feedback.github import (
     SQLiteFeedbackStore,
 )
 from ticket_agent.github import GitHubCredentials
+from ticket_agent.goal.authorizer import ProposalGoalAuthorizer
+from ticket_agent.goal.contract import (
+    Allowlist,
+    GoalContractCompiler,
+    SQLiteGoalContractStore,
+)
+from ticket_agent.goal.policy import load_risk_policy
+from ticket_agent.goal.semantic_check import ModelSemanticChecker
+from ticket_agent.goal.signing import SigningError, load_signer
 from ticket_agent.intake.approval_flow import ApprovalFlow, SlackPoster
 from ticket_agent.intake.intent_resolver import IntakeIntentResolver
 from ticket_agent.intake.jira_writer import JiraWriter
@@ -167,6 +176,10 @@ class RuntimeConfig:
     github_feedback_ignore_self_comments: bool = False
     execution_mode: str = "execute"
     transcripts_enabled: bool = False
+    risk_policy_path: Path = Path("config/policy/risk.yaml")
+    signing_key_path: Path | None = None
+    goal_allowlist_users: tuple[str, ...] = ()
+    goal_allowlist_channels: tuple[str, ...] = ()
     execution_approval_policy: str = "auto"
 
 
@@ -491,6 +504,9 @@ def build_runtime(
         slack=slack,
         repo_defaults=repo_defaults,
         emit=emit,
+        goal_authorizer=_build_goal_authorizer(
+            runtime_config, data_dir, database_paths, router
+        ),
     )
     dry_run_finalizer = _DryRunExecutionFinalizer(execution_service, slack)
     execution_approval_handler = ExecutionApprovalCommandHandler(
@@ -852,6 +868,19 @@ def load_app_config(
             "AGENT_SYSTEM_TRANSCRIPTS_ENABLED",
             default=False,
         ),
+        risk_policy_path=Path(
+            _env_value(merged_env, "AGENT_SYSTEM_RISK_POLICY_PATH")
+            or "config/policy/risk.yaml"
+        ),
+        signing_key_path=(
+            Path(signing_key)
+            if (signing_key := _env_value(merged_env, "AGENT_SYSTEM_SIGNING_KEY_PATH"))
+            else None
+        ),
+        goal_allowlist_users=_csv_env(merged_env, "AGENT_SYSTEM_GOAL_ALLOWLIST_USERS"),
+        goal_allowlist_channels=_csv_env(
+            merged_env, "AGENT_SYSTEM_GOAL_ALLOWLIST_CHANNELS"
+        ),
         execution_approval_policy=_env_value(
             merged_env,
             "AGENT_SYSTEM_EXECUTION_APPROVAL_POLICY",
@@ -1056,6 +1085,11 @@ def _install_signal_handlers(
                 continue
 
 
+def _csv_env(env: Mapping[str, str], name: str) -> tuple[str, ...]:
+    raw = _env_value(env, name) or ""
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
 def _database_paths(data_dir: Path) -> dict[str, Path]:
     return {
         "proposal_store": data_dir / "intake_proposals.sqlite3",
@@ -1065,11 +1099,49 @@ def _database_paths(data_dir: Path) -> dict[str, Path]:
         "feedback_store": data_dir / "github_feedback.sqlite3",
         "delivery_store": data_dir / "github_delivery.sqlite3",
         "telemetry_store": data_dir / "loop_telemetry.sqlite3",
+        "goal_contracts": data_dir / "goal_contracts.sqlite3",
     }
 
 
 def _transcript_dir(data_dir: Path) -> Path:
     return data_dir / "transcripts"
+
+
+def _build_goal_authorizer(
+    config: RuntimeConfig,
+    data_dir: Path,
+    database_paths: Mapping[str, Path],
+    router: Any,
+) -> ProposalGoalAuthorizer | None:
+    """Build the goal-contract authorizer, or None when unconfigured.
+
+    Returns None rather than a permissive stand-in: a system that cannot sign
+    or has nobody allowlisted should record nothing, not record something that
+    looks authorized.
+    """
+
+    if not config.goal_allowlist_users:
+        return None
+    try:
+        signer = load_signer(config.signing_key_path, data_dir=data_dir)
+    except SigningError as exc:
+        raise StartupConfigError(f"signing key is unusable: {exc}") from exc
+
+    compiler = GoalContractCompiler(
+        policy=load_risk_policy(config.risk_policy_path),
+        allowlist=Allowlist(
+            users=frozenset(config.goal_allowlist_users),
+            channels=frozenset(config.goal_allowlist_channels),
+        ),
+        signer=signer,
+        semantic_checker=(
+            ModelSemanticChecker(router) if router is not None else None
+        ),
+    )
+    return ProposalGoalAuthorizer(
+        compiler,
+        SQLiteGoalContractStore(database_paths["goal_contracts"]),
+    )
 
 
 def _build_telemetry_recorder(

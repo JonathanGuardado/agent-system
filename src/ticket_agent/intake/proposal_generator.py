@@ -280,6 +280,7 @@ class DeterministicProposalGenerator:
             ),
             title=title,
             summary=summary,
+            original_request=request.text,
             tickets=tickets,
             truncated_ticket_count=0,
             revision_count=revision_count,

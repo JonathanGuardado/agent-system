@@ -70,6 +70,13 @@ class Proposal(BaseModel):
     created_epic_key: str | None = None
     title: str
     summary: str
+    #: The requester's verbatim words, captured at intake.
+    #:
+    #: Kept separately from `summary` because `summary` is model-written. The
+    #: semantic check in goal/semantic_check.py compares the compiled contract
+    #: against *this*; comparing it against a model's summary would be checking
+    #: a summary with a summary, which catches nothing.
+    original_request: str = ""
     assumptions: list[str] = Field(default_factory=list)
     effort_estimate: str | None = None
     tickets: list[TicketSpec] = Field(default_factory=list)

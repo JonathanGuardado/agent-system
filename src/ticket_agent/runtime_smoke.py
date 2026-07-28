@@ -14,9 +14,16 @@ from typing import Literal
 
 import httpx
 
-from ticket_agent.app import AppConfig, StartupConfigError, load_app_config
+from ticket_agent.app import (
+    AppConfig,
+    RuntimeConfig,
+    StartupConfigError,
+    load_app_config,
+)
 from ticket_agent.adapters.local.sandbox import BubblewrapSandbox
 from ticket_agent.config.repo_contract import load_repo_contract
+from ticket_agent.goal.policy import load_risk_policy
+from ticket_agent.goal.signing import SigningError, load_signer
 from ticket_agent.jira.constants import (
     FIELD_AGENT_ASSIGNED_COMPONENT,
     FIELD_AGENT_CAPABILITIES_NEEDED,
@@ -101,6 +108,7 @@ async def collect_smoke_checks(
 
     checks.append(_repo_contracts_check(app_config.runtime.contract_dir))
     checks.append(_sandbox_check())
+    checks.append(_goal_authorization_check(app_config.runtime))
     checks.extend(_harness_readiness_checks(app_config.runtime.contract_dir))
     checks.append(_jira_field_map_check(app_config))
     checks.extend(_model_env_checks())
@@ -192,6 +200,42 @@ def _sandbox_check() -> SmokeCheck:
         "autonomy is capped at 'propose'. On Ubuntu 24.04 this is usually "
         "kernel.apparmor_restrict_unprivileged_userns=1 -- add an AppArmor "
         "profile granting 'userns' to /usr/bin/bwrap.",
+    )
+
+
+def _goal_authorization_check(config: RuntimeConfig) -> SmokeCheck:
+    """Whether a Slack request could be authorized into a goal contract.
+
+    Reported as `warn` rather than `fail` because the pipeline still runs
+    without it -- it just cannot record what was authorized, so nothing can
+    later verify a merge against it.
+    """
+
+    missing: list[str] = []
+    if not getattr(config, "goal_allowlist_users", ()):
+        missing.append("AGENT_SYSTEM_GOAL_ALLOWLIST_USERS is empty (nobody may authorize)")
+    if getattr(config, "signing_key_path", None) is None:
+        missing.append("AGENT_SYSTEM_SIGNING_KEY_PATH is unset (contracts cannot be signed)")
+    else:
+        try:
+            load_signer(config.signing_key_path, data_dir=Path(config.data_dir))
+        except SigningError as exc:
+            return SmokeCheck("goal_authorization", "fail", str(exc))
+
+    try:
+        policy = load_risk_policy(config.risk_policy_path)
+    except Exception as exc:  # noqa: BLE001 - smoke boundary
+        return SmokeCheck("goal_authorization", "fail", f"risk policy: {exc}")
+    if not policy.repositories:
+        missing.append("risk policy names no repositories (permits nothing)")
+
+    if missing:
+        return SmokeCheck("goal_authorization", "warn", "; ".join(missing))
+    return SmokeCheck(
+        "goal_authorization",
+        "pass",
+        f"policy v{policy.version} digest {policy.policy_digest[:12]}, "
+        f"{len(config.goal_allowlist_users)} allowlisted user(s)",
     )
 
 
