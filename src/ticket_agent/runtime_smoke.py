@@ -15,6 +15,7 @@ from typing import Literal
 import httpx
 
 from ticket_agent.app import AppConfig, StartupConfigError, load_app_config
+from ticket_agent.adapters.local.sandbox import BubblewrapSandbox
 from ticket_agent.config.repo_contract import load_repo_contract
 from ticket_agent.jira.constants import (
     FIELD_AGENT_ASSIGNED_COMPONENT,
@@ -99,6 +100,8 @@ async def collect_smoke_checks(
         return checks
 
     checks.append(_repo_contracts_check(app_config.runtime.contract_dir))
+    checks.append(_sandbox_check())
+    checks.extend(_harness_readiness_checks(app_config.runtime.contract_dir))
     checks.append(_jira_field_map_check(app_config))
     checks.extend(_model_env_checks())
     if skip_network:
@@ -169,6 +172,49 @@ def _repo_contracts_check(contract_dir: Path) -> SmokeCheck:
         "pass",
         f"loaded {len(contract_paths)} contract(s)",
     )
+
+
+def _sandbox_check() -> SmokeCheck:
+    """Whether repository commands can be isolated on this host.
+
+    Attempts a real unshare rather than checking that bwrap exists. Ubuntu
+    24.04 sets kernel.apparmor_restrict_unprivileged_userns=1, under which a
+    perfectly healthy bwrap still cannot create a user namespace -- so a
+    presence check reports such a host as sandbox-ready when it is not.
+    """
+
+    if BubblewrapSandbox.available():
+        return SmokeCheck("sandbox", "pass", "bwrap can create a user namespace")
+    return SmokeCheck(
+        "sandbox",
+        "warn",
+        "no working sandbox; unattended repository commands are forbidden and "
+        "autonomy is capped at 'propose'. On Ubuntu 24.04 this is usually "
+        "kernel.apparmor_restrict_unprivileged_userns=1 -- add an AppArmor "
+        "profile granting 'userns' to /usr/bin/bwrap.",
+    )
+
+
+def _harness_readiness_checks(contract_dir: Path) -> list[SmokeCheck]:
+    """Report each repository's readiness, which caps its autonomy."""
+
+    if not contract_dir.exists():
+        return []
+    results: list[SmokeCheck] = []
+    for path in sorted(contract_dir.glob("*.yaml")):
+        try:
+            contract = load_repo_contract(path)
+            root = Path(contract.repo.root).expanduser()
+            readiness, reasons = contract.readiness(root)
+        except Exception as exc:  # noqa: BLE001 - smoke boundary
+            results.append(
+                SmokeCheck(f"harness_readiness[{path.stem}]", "fail", str(exc))
+            )
+            continue
+        status = {"full": "pass", "partial": "warn", "unready": "warn"}[readiness]
+        detail = readiness if not reasons else f"{readiness}: " + "; ".join(reasons)
+        results.append(SmokeCheck(f"harness_readiness[{path.stem}]", status, detail))
+    return results
 
 
 def _jira_field_map_check(app_config: AppConfig) -> SmokeCheck:

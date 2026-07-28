@@ -4,6 +4,9 @@ import sys
 
 import pytest
 
+import subprocess
+import time
+
 from ticket_agent.adapters.local.shell_adapter import LocalShellAdapter
 from ticket_agent.domain.errors import CommandNotAllowedError, PathBoundaryError
 
@@ -112,3 +115,46 @@ def test_shell_adapter_timeout_returns_timed_out_result(tmp_path):
     assert result.timed_out
     assert result.returncode == 124
     assert "timed out" in result.stderr
+
+
+def test_timeout_reaps_the_whole_process_tree(tmp_path):
+    """Regression: subprocess.run(timeout=) kills only the direct child.
+
+    `npm` and `pytest` spawn trees, so a gate that times out used to leave
+    grandchildren running -- holding the worktree and burning CPU with nothing
+    left to reap them. The fix is start_new_session plus killpg on the group.
+    """
+
+    marker = "918273"
+    command = ("/bin/sh", "-c", f"/bin/sleep {marker} & sleep 60")
+    adapter = LocalShellAdapter(tmp_path, [command])
+
+    def survivors() -> list[str]:
+        found = subprocess.run(
+            ["pgrep", "-f", f"^/bin/sleep {marker}$"],
+            capture_output=True,
+            text=True,
+        )
+        return found.stdout.split()
+
+    try:
+        result = adapter.run(command, timeout_seconds=2)
+        time.sleep(1.0)
+
+        assert result.timed_out is True
+        assert result.returncode == 124
+        assert survivors() == []
+    finally:
+        subprocess.run(
+            ["pkill", "-f", f"^/bin/sleep {marker}$"], capture_output=True
+        )
+
+
+def test_failure_to_start_is_reported_not_raised(tmp_path):
+    command = ("/nonexistent/binary", "--flag")
+    adapter = LocalShellAdapter(tmp_path, [command])
+
+    result = adapter.run(command)
+
+    assert result.returncode == 127
+    assert "failed to start" in result.stderr

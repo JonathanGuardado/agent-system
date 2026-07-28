@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
+from ticket_agent.config.trust_root import (
+    TrustRootClosure,
+    TrustRootEntry,
+    parse_trust_root,
+    resolve_closure,
+)
 from ticket_agent.domain.errors import RepoContractError
 
 _LOGGER = logging.getLogger(__name__)
@@ -52,11 +59,32 @@ class CommandSpec:
 
 @dataclass(frozen=True)
 class RepoCommands:
-    """Execution commands allowed by the repository contract."""
+    """Execution commands allowed by the repository contract.
+
+    ``typecheck`` and ``build`` are separate gates, not one "build" step: a
+    type error and a bundling failure demand different fixes, and collapsing
+    them loses the more precise diagnostic. Both default to ``None`` and are
+    declared last so the six test modules that build this by keyword keep
+    working unchanged.
+    """
 
     test: CommandSpec
     lint: CommandSpec | None
     install: CommandSpec | None
+    typecheck: CommandSpec | None = None
+    build: CommandSpec | None = None
+
+    def gate_commands(self) -> dict[str, CommandSpec]:
+        """Declared gate commands, keyed by gate name."""
+
+        declared = {
+            "test": self.test,
+            "lint": self.lint,
+            "typecheck": self.typecheck,
+            "build": self.build,
+            "install": self.install,
+        }
+        return {name: spec for name, spec in declared.items() if spec is not None}
 
 
 @dataclass(frozen=True)
@@ -66,6 +94,19 @@ class ExecutionPolicy:
     dependency_install_allowed: bool
     config_paths_allowed: tuple[str, ...]
     protected_paths: tuple[str, ...]
+
+
+GateRequirement = Literal["required", "optional"]
+
+#: Gate requirements when no ``gates:`` block is declared. ``test`` is
+#: required because a repository that cannot state what "working" means
+#: cannot be verified at all.
+DEFAULT_GATES: Mapping[str, GateRequirement] = {
+    "test": "required",
+    "lint": "optional",
+    "typecheck": "optional",
+    "build": "optional",
+}
 
 
 @dataclass(frozen=True)
@@ -78,6 +119,77 @@ class RepoContract:
     policy: ExecutionPolicy
     source_dirs: tuple[str, ...]
     test_dirs: tuple[str, ...]
+    gates: Mapping[str, GateRequirement] = field(default_factory=lambda: DEFAULT_GATES)
+    trust_root: tuple[TrustRootEntry, ...] = ()
+
+    @property
+    def required_gates(self) -> tuple[str, ...]:
+        return tuple(
+            name for name, req in self.gates.items() if req == "required"
+        )
+
+    @property
+    def optional_gates(self) -> tuple[str, ...]:
+        return tuple(
+            name for name, req in self.gates.items() if req == "optional"
+        )
+
+    def trust_root_closure(self, repo_root: Path | None = None) -> TrustRootClosure:
+        """Resolve ``derived`` trust-root entries against the gate commands."""
+
+        return resolve_closure(
+            self.trust_root,
+            commands={
+                name: spec.command
+                for name, spec in self.commands.gate_commands().items()
+            },
+            repo_root=repo_root,
+        )
+
+    def readiness(self, repo_root: Path | None = None) -> tuple[str, tuple[str, ...]]:
+        """Harness readiness and the reasons holding it back.
+
+        Readiness is a ceiling on autonomy, not a warning: a repository that
+        cannot describe how it is verified must not be driven unattended.
+        """
+
+        reasons: list[str] = []
+
+        if repo_root is not None and not Path(repo_root).exists():
+            reasons.append(f"repository root does not exist: {repo_root}")
+
+        if not self.required_gates:
+            reasons.append("no required gates declared")
+
+        for gate in self.required_gates:
+            if self.commands.gate_commands().get(gate) is None:
+                reasons.append(f"gate {gate!r} is required but no command is declared")
+
+        for gate, spec in self.commands.gate_commands().items():
+            if _is_vacuous_command(spec.command):
+                reasons.append(
+                    f"gate {gate!r} can succeed without running anything"
+                )
+
+        closure = self.trust_root_closure(repo_root)
+        reasons.extend(f"trust root unresolved -- {item}" for item in closure.unresolved)
+
+        if not closure.entries:
+            reasons.append("no trust root declared")
+
+        if not reasons:
+            return "full", ()
+        # An unresolved trust root or a vacuous gate is a hole in the
+        # evidence, not an absence of tooling: cap harder than a missing
+        # optional gate would.
+        blocking = any(
+            "unresolved" in reason
+            or "without running anything" in reason
+            or "does not exist" in reason
+            or "no required gates" in reason
+            for reason in reasons
+        )
+        return ("unready" if blocking else "partial"), tuple(reasons)
 
     def test_command(self, suite: str = "default") -> CommandSpec:
         """Return the default test command for current local adapter compatibility."""
@@ -121,6 +233,8 @@ def load_repo_contract(path: str | Path) -> RepoContract:
         policy=policy,
         source_dirs=source_dirs,
         test_dirs=test_dirs,
+        gates=_parse_gates(raw.get("gates"), commands),
+        trust_root=parse_trust_root(raw.get("trust_root")),
     )
 
 
@@ -147,6 +261,62 @@ def _parse_language(raw: Any) -> LanguageInfo:
     )
 
 
+def _is_vacuous_command(argv: Sequence[str]) -> bool:
+    """Whether a command can report success without verifying anything.
+
+    Two shapes matter in practice. A bare ``echo`` is a placeholder that
+    always exits 0. And a shell guard whose else-branch merely echoes --
+    ``if [ -f package.json ]; then npm test; else echo 'no package.json'; fi``
+    -- exits 0 on a repository with no application at all, which is exactly
+    the state a greenfield goal starts in.
+    """
+
+    if not argv:
+        return True
+    if Path(argv[0]).name == "echo":
+        return True
+    joined = " ".join(argv)
+    if "else" in joined and "exit 1" not in joined and "echo" in joined:
+        return True
+    if "--if-present" in joined:
+        return True
+    return False
+
+
+def _parse_gates(raw: Any, commands: RepoCommands) -> Mapping[str, GateRequirement]:
+    if raw is None:
+        return DEFAULT_GATES
+    if not isinstance(raw, dict):
+        raise RepoContractError("gates must be a mapping")
+
+    gates: dict[str, GateRequirement] = {}
+    for name, requirement in raw.items():
+        if name == "install":
+            raise RepoContractError(
+                "gates.install is not declarable; installation is governed by "
+                "policy.dependency_install_allowed"
+            )
+        if name not in DEFAULT_GATES:
+            raise RepoContractError(f"unknown gate: {name!r}")
+        if requirement not in ("required", "optional"):
+            raise RepoContractError(
+                f"gates.{name} must be 'required' or 'optional'"
+            )
+        gates[name] = requirement
+
+    if gates.get("test") == "optional":
+        raise RepoContractError(
+            "gates.test cannot be optional; a contract that need not run its "
+            "tests cannot authorize anything"
+        )
+    for name, requirement in gates.items():
+        if requirement == "required" and commands.gate_commands().get(name) is None:
+            raise RepoContractError(
+                f"gates.{name} is required but commands.{name} is not declared"
+            )
+    return {**DEFAULT_GATES, **gates}
+
+
 def _parse_commands(raw: Any) -> RepoCommands:
     if not isinstance(raw, dict):
         raise RepoContractError("commands must be a mapping")
@@ -156,6 +326,10 @@ def _parse_commands(raw: Any) -> RepoCommands:
         test=_parse_command_spec(raw.get("test"), "commands.test"),
         lint=_parse_optional_command_spec(raw.get("lint"), "commands.lint"),
         install=_parse_optional_command_spec(raw.get("install"), "commands.install"),
+        typecheck=_parse_optional_command_spec(
+            raw.get("typecheck"), "commands.typecheck"
+        ),
+        build=_parse_optional_command_spec(raw.get("build"), "commands.build"),
     )
 
 

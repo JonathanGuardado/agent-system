@@ -8,18 +8,56 @@ language:
   package_manager: npm
 
 commands:
+  # Structured argv only. A `bash -lc` wrapper can compute its own target at
+  # runtime, which makes the trust root unresolvable -- and the guards these
+  # replaced exited 0 when package.json was absent, so every gate passed
+  # vacuously on a repository with no application in it.
   install:
-    command: ["bash", "-lc", "if [ -f package.json ]; then npm install --no-audit --no-fund; else echo 'no package.json yet'; fi"]
+    command: ["npm", "ci", "--no-audit", "--no-fund", "--ignore-scripts"]
     timeout_seconds: 300
     working_directory: "."
   test:
-    command: ["bash", "-lc", "if [ -f package.json ]; then CI=true npm test -- --run; else echo 'no package.json yet'; fi"]
+    command: ["npm", "run", "test"]
     timeout_seconds: 180
     working_directory: "."
   lint:
-    command: ["bash", "-lc", "if [ -f package.json ]; then npm run lint --if-present; else echo 'no package.json yet'; fi"]
+    command: ["npm", "run", "lint"]
     timeout_seconds: 180
     working_directory: "."
+  typecheck:
+    command: ["npx", "--no-install", "tsc", "--noEmit"]
+    timeout_seconds: 180
+    working_directory: "."
+  build:
+    command: ["npm", "run", "build"]
+    timeout_seconds: 300
+    working_directory: "."
+
+gates:
+  test: required
+  typecheck: required
+  lint: optional
+  build: optional
+
+trust_root:
+  # Only the keys that decide what verification runs -- the rest of
+  # package.json is ordinary application data.
+  - kind: json_pointer
+    path: package.json
+    pointers: ["/scripts", "/devDependencies"]
+  - kind: file
+    path: package-lock.json
+  - kind: file
+    path: tsconfig.json
+  - kind: file
+    path: vitest.config.ts
+  - kind: tree
+    path: .github/
+  - kind: file
+    path: CODEOWNERS
+  # Whatever the trusted commands actually resolve to, computed at load.
+  - kind: derived
+    source: verification_commands
 
 policy:
   dependency_install_allowed: true

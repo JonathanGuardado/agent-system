@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import signal
 import subprocess
 from typing import Sequence
 
+from ticket_agent.adapters.local.sandbox import (
+    NullSandbox,
+    Sandbox,
+    SandboxPolicy,
+)
 from ticket_agent.domain.errors import CommandNotAllowedError, PathBoundaryError
 from ticket_agent.ports.tools import CommandResult
+
+#: Seconds to wait for a signalled process group before escalating.
+_KILL_GRACE_SECONDS = 5
 
 
 _DENYLISTED_COMMAND_NAMES = frozenset(
@@ -42,12 +51,18 @@ class LocalShellAdapter:
         allowed_commands: Sequence[Sequence[str]],
         *,
         default_timeout_seconds: int = 300,
+        sandbox: Sandbox | None = None,
+        policy: SandboxPolicy | None = None,
     ) -> None:
         self._root = Path(worktree_root).resolve(strict=True)
         self._allowed_commands = tuple(
             _normalize_command(command) for command in allowed_commands
         )
         self._default_timeout_seconds = default_timeout_seconds
+        # The allowlist and denylist stay as defense in depth. They are
+        # command filtering, not a boundary -- the sandbox is the boundary.
+        self._sandbox = sandbox or NullSandbox()
+        self._policy = policy or SandboxPolicy()
 
         if default_timeout_seconds <= 0:
             raise ValueError("default_timeout_seconds must be positive")
@@ -74,22 +89,63 @@ class LocalShellAdapter:
         if timeout <= 0:
             raise ValueError("timeout_seconds must be positive")
 
+        launch = self._sandbox.wrap(
+            normalized, cwd=resolved_cwd, policy=self._policy
+        )
+        return self._run_process(
+            launch,
+            reported_command=normalized,
+            cwd=resolved_cwd,
+            timeout=timeout,
+        )
+
+    def _run_process(
+        self,
+        launch: Sequence[str],
+        *,
+        reported_command: tuple[str, ...],
+        cwd: Path,
+        timeout: int,
+    ) -> CommandResult:
+        """Run a command in its own process group and reap the whole tree.
+
+        ``subprocess.run(timeout=...)`` kills only the direct child. ``npm``
+        and ``pytest`` spawn trees, so a timeout there orphans grandchildren
+        that keep running, holding the worktree and burning CPU. Starting a
+        new session and signalling the process *group* is what actually
+        reclaims them.
+
+        Note this is deliberately not ``preexec_fn``: ``start_new_session``
+        is implemented as a ``setsid`` call in CPython's C fork path and is
+        safe with threads, whereas an arbitrary Python callable there is not.
+        """
+
         try:
-            completed = subprocess.run(
-                normalized,
-                cwd=resolved_cwd,
-                check=False,
-                capture_output=True,
+            process = subprocess.Popen(  # noqa: S603 - argv is allowlisted above
+                list(launch),
+                cwd=cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout,
                 env=_isolated_environment(),
+                start_new_session=True,
             )
-        except subprocess.TimeoutExpired as exc:
-            stdout = _coerce_output(exc.stdout)
-            stderr = _coerce_output(exc.stderr)
+        except OSError as exc:
+            return CommandResult(
+                command=reported_command,
+                returncode=127,
+                stdout="",
+                stderr=f"failed to start command: {exc}",
+                timed_out=False,
+            )
+
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            stdout, stderr = self._terminate_group(process)
             message = f"command timed out after {timeout} seconds"
             return CommandResult(
-                command=normalized,
+                command=reported_command,
                 returncode=124,
                 stdout=stdout,
                 stderr=f"{stderr}\n{message}".strip(),
@@ -97,12 +153,33 @@ class LocalShellAdapter:
             )
 
         return CommandResult(
-            command=normalized,
-            returncode=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
+            command=reported_command,
+            returncode=process.returncode,
+            stdout=stdout or "",
+            stderr=stderr or "",
             timed_out=False,
         )
+
+    def _terminate_group(self, process: subprocess.Popen) -> tuple[str, str]:
+        """SIGTERM the group, then SIGKILL anything still alive."""
+
+        for signal_number in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(os.getpgid(process.pid), signal_number)
+            except (ProcessLookupError, PermissionError):
+                break
+            try:
+                stdout, stderr = process.communicate(timeout=_KILL_GRACE_SECONDS)
+                return _coerce_output(stdout), _coerce_output(stderr)
+            except subprocess.TimeoutExpired:
+                continue
+
+        process.kill()
+        try:
+            stdout, stderr = process.communicate(timeout=_KILL_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            return "", ""
+        return _coerce_output(stdout), _coerce_output(stderr)
 
     def _is_allowed(self, command: tuple[str, ...]) -> bool:
         return any(command[: len(prefix)] == prefix for prefix in self._allowed_commands)

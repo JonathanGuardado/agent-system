@@ -36,3 +36,24 @@ source_dirs:
 
 test_dirs:
   - tests/
+
+gates:
+  test: required
+  lint: optional
+
+# typecheck and build are intentionally absent: this is a Python package with
+# no build step and no type checker configured. Declaring an empty gate to
+# have a gate is worse than declaring none -- it would report `passed` for
+# work nobody did.
+
+trust_root:
+  - kind: tree
+    path: config/repos/
+  - kind: tree
+    path: config/policy/
+  - kind: tree
+    path: .github/
+  - kind: file
+    path: pyproject.toml
+  - kind: derived
+    source: verification_commands

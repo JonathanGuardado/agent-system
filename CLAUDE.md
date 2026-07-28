@@ -36,7 +36,7 @@ Current phase:
 Then the goal-pursuit milestones:
 
 - P12: 🔶 Goal contract + durable spine (schemas landed; contract/spine pending)
-- P13: ⬜ Harness manifest + trust root + sandbox
+- P13: 🔶 Harness manifest + trust root + sandbox (P13.1/P13.2 landed)
 - P14: ⬜ Evidence gates: isolated verification at a committed SHA
 - P15: ⬜ Independent review loop (checker ≠ maker across fallbacks)
 - P16: ⬜ Demo evidence
@@ -304,6 +304,67 @@ Three rules that are load-bearing rather than stylistic:
 
 P10 tests are in `tests/unit/test_observability.py` and
 `tests/unit/test_observability_hooks.py`.
+
+### P13 — Harness manifest, trust root, sandbox
+
+Goal: declare what may run, where it may write, and what holds verification
+authority — then isolate execution so untrusted repository code cannot reach
+past it.
+
+**Trust root is declared by capability, not by path glob.** A glob list is
+both over- and under-inclusive: `package.json` matters only because
+`scripts.test` is what `npm test` delegates to, and a *newly created* file can
+acquire authority without appearing on any list. Entries are `file`, `tree`,
+`json_pointer` (sub-file), and `derived` (whatever the trusted commands
+resolve to, computed at load).
+
+**Unresolvable commands lower readiness rather than being dropped.** A
+`bash -lc` program can compute its target at runtime, so its closure cannot be
+computed honestly. Readiness is a ceiling on autonomy — `unready` → `propose`,
+`partial` → `implement`, `full` → `autonomous` — so a hole in the trust root
+reduces what the system may do instead of being silently excluded from the
+digest.
+
+**Trusted commands must be structured argv.** `_parse_command` already
+rejected string commands; that rule now extends to every gate, which retired
+`lab.yaml`'s three `bash -lc` guards. Those guards exited 0 when
+`package.json` was absent — so on the greenfield state every new goal starts
+from, all three gates passed vacuously.
+
+Sandbox, in `adapters/local/sandbox.py`. Four decisions worth keeping:
+
+- **No `preexec_fn`.** It is not async-signal-safe and this process runs
+  asyncio TaskGroups plus `asyncio.to_thread`, where it can deadlock the
+  child. Limits are applied by `prlimit(1)` in the child's own argv, after
+  `exec`.
+- **`--clearenv` is required.** Measured, not assumed: `bwrap --unshare-all`
+  inherits the parent environment, leaking 14 credential-ish variables in a
+  polluted-env test.
+- **Worktree is `--ro-bind` with declared writable mounts.** Default deny; a
+  gate that can rewrite the source it tests is not a gate.
+- **`available()` attempts a real unshare.** Ubuntu 24.04 sets
+  `kernel.apparmor_restrict_unprivileged_userns=1`, under which a healthy
+  `bwrap` still fails; a presence check reports such a host as sandbox-ready
+  when it is not. The probe binds exactly what `wrap()` binds, because
+  `/lib64` is a symlink into `/usr` and a smaller bind set fails for an
+  unrelated reason.
+
+Setup on Ubuntu 24.04 requires `sudo apt install bubblewrap` plus an AppArmor
+profile granting `userns` to `/usr/bin/bwrap` (same shape as the shipped
+`keybase` profile). Without it the system still runs, capped at `propose`.
+
+**Residual risk:** when install scripts are not ignored they run with network
+inside the sandbox. The sandbox bounds the damage; it does not eliminate
+supply-chain execution. `lab.yaml` therefore uses `npm ci --ignore-scripts`.
+
+P13 checklist:
+
+- [x] sandbox with PID, memory, timeout, filesystem, and credential isolation
+- [x] process-group termination (fixes a live orphan bug: `subprocess.run`
+      killed only the direct child, so a timed-out `npm` left grandchildren)
+- [x] trust root with closure and honest unresolved reporting
+- [x] readiness ladder surfaced by `runtime_smoke`
+- [ ] context assembly / knowledge map (P13.3)
 
 ### P12 — Goal contract + durable spine
 

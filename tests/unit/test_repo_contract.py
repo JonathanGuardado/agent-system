@@ -184,16 +184,52 @@ def test_lab_contract_allows_root_i18n_config():
     assert "i18n.ts" in contract.policy.config_paths_allowed
 
 
-def test_lab_contract_runs_fresh_install_and_non_watch_tests():
+def test_lab_contract_uses_structured_argv_not_shell_scripts():
+    """Trusted commands must be resolvable, and must not pass vacuously.
+
+    These commands were previously `bash -lc 'if [ -f package.json ]; ...;
+    else echo "no package.json yet"; fi'`, which exited 0 on a repository with
+    no application in it -- so every gate passed on exactly the greenfield
+    state a new goal starts from. A shell program also cannot be followed to
+    the script it runs, which leaves the trust root unresolvable.
+    """
+
     repo_root = Path(__file__).resolve().parents[2]
 
     contract = load_repo_contract(repo_root / "config" / "repos" / "lab.yaml")
 
-    install_script = contract.commands.install.command[-1]
-    test_script = contract.commands.test.command[-1]
-    assert "npm install --no-audit --no-fund" in install_script
-    assert "node_modules" not in install_script
-    assert "CI=true npm test -- --run" in test_script
+    for name, spec in contract.commands.gate_commands().items():
+        program = Path(spec.command[0]).name
+        assert program not in {"sh", "bash", "zsh"}, (
+            f"gate {name} runs through a shell; its target cannot be resolved"
+        )
+        assert "--if-present" not in " ".join(spec.command), (
+            f"gate {name} would succeed when its script is absent"
+        )
+
+    assert contract.commands.install.command[:2] == ("npm", "ci")
+    assert "--ignore-scripts" in contract.commands.install.command
+    assert contract.commands.typecheck is not None
+    assert contract.commands.build is not None
+
+
+def test_lab_contract_declares_a_resolvable_trust_root():
+    repo_root = Path(__file__).resolve().parents[2]
+
+    contract = load_repo_contract(repo_root / "config" / "repos" / "lab.yaml")
+    closure = contract.trust_root_closure()
+
+    assert closure.unresolved == ()
+    # package.json is authoritative only through the keys that decide what
+    # verification runs, and the closure derives scripts.test from `npm run
+    # test` rather than requiring anyone to list it by hand.
+    assert any(
+        entry.kind == "json_pointer" and "/scripts/test" in entry.pointers
+        for entry in closure.entries
+    )
+    assert closure.covers("package.json")
+    assert closure.covers(".github/workflows/ci.yml")
+    assert not closure.covers("src/app.tsx")
 
 
 def test_applies_test_dirs_default(tmp_path):
