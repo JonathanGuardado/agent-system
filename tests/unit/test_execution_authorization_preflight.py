@@ -16,6 +16,7 @@ from ticket_agent.goal.execution_preflight import (
 from ticket_agent.goal.policy import RiskPolicy
 from ticket_agent.goal.semantic_check import SemanticVerdict
 from ticket_agent.goal.signing import Signer, generate_key
+from ticket_agent.goal.types import AutonomyDecision, AutonomyMode
 from ticket_agent.orchestrator.runner import TicketWorkItem
 
 GOAL_ID = "prop-0123456789ab"
@@ -48,6 +49,17 @@ class _Environment:
         return _Sandbox()
 
 
+class _AutonomyResolver:
+    def decide(self, contract, *, sandbox_available, **kwargs):
+        del sandbox_available, kwargs
+        return AutonomyDecision(
+            goal_id=contract.goal_id,
+            contract_version=contract.version,
+            effective_mode=AutonomyMode.IMPLEMENT,
+            ceilings=(),
+        )
+
+
 def test_verified_durable_authorization_allows_scoped_execution(tmp_path):
     signer = Signer(generate_key())
     store = SQLiteGoalContractStore(tmp_path / "contracts.sqlite3")
@@ -59,6 +71,7 @@ def test_verified_durable_authorization_allows_scoped_execution(tmp_path):
             environment,
             store,
             signer,
+            _AutonomyResolver(),
         )
 
         sandbox = preflight.check(item)
@@ -94,7 +107,9 @@ def test_missing_or_ambiguous_goal_identity_is_refused(tmp_path, item):
     store = SQLiteGoalContractStore(tmp_path / "contracts.sqlite3")
     try:
         store.save_outcome(_outcome(signer))
-        preflight = ExecutionAuthorizationPreflight(_Environment(), store, signer)
+        preflight = ExecutionAuthorizationPreflight(
+            _Environment(), store, signer, _AutonomyResolver()
+        )
 
         with pytest.raises(ExecutionAuthorizationError, match="goal identity"):
             preflight.check(item)
@@ -107,7 +122,9 @@ def test_semantically_denied_goal_is_refused_from_durable_record(tmp_path):
     store = SQLiteGoalContractStore(tmp_path / "contracts.sqlite3")
     try:
         store.save_outcome(_outcome(signer, semantic_agrees=False))
-        preflight = ExecutionAuthorizationPreflight(_Environment(), store, signer)
+        preflight = ExecutionAuthorizationPreflight(
+            _Environment(), store, signer, _AutonomyResolver()
+        )
 
         with pytest.raises(ExecutionAuthorizationError, match="required behavior"):
             preflight.check(_work_item())
@@ -127,7 +144,9 @@ def test_current_revocation_is_revalidated_and_refused(tmp_path):
             reason="operator stopped the goal",
             signer=signer,
         )
-        preflight = ExecutionAuthorizationPreflight(_Environment(), store, signer)
+        preflight = ExecutionAuthorizationPreflight(
+            _Environment(), store, signer, _AutonomyResolver()
+        )
 
         with pytest.raises(ExecutionAuthorizationError, match="revoked"):
             preflight.check(_work_item())
@@ -143,7 +162,9 @@ def test_tampered_authorization_digest_is_refused(tmp_path):
         store._connection.execute(
             "UPDATE goal_contracts SET evidence_digest = 'tampered'"
         )
-        preflight = ExecutionAuthorizationPreflight(_Environment(), store, signer)
+        preflight = ExecutionAuthorizationPreflight(
+            _Environment(), store, signer, _AutonomyResolver()
+        )
 
         with pytest.raises(ExecutionAuthorizationError, match="digest"):
             preflight.check(_work_item())

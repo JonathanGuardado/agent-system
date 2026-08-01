@@ -24,7 +24,13 @@ from ticket_agent.goal.identity import (
     normalize_goal_id,
     validate_goal_labels,
 )
-from ticket_agent.goal.types import ActionRecord, LoopState, action_id, digest
+from ticket_agent.goal.types import (
+    ActionRecord,
+    AutonomyMode,
+    LoopState,
+    action_id,
+    digest,
+)
 
 
 class GoalSpine(Protocol):
@@ -119,6 +125,7 @@ class JiraWriter:
         proposal: Proposal,
         *,
         publish_ai_ready: bool = False,
+        autonomy_mode: object = AutonomyMode.AUTONOMOUS,
     ) -> JiraWriteResult:
         try:
             goal_id = normalize_goal_id(proposal.proposal_id)
@@ -134,6 +141,20 @@ class JiraWriter:
                 unsupported_reason=f"invalid goal identity: {exc}",
                 failed_items=tuple(
                     JiraWriteFailure(spec=spec, reason="invalid_goal_identity")
+                    for spec in proposal.tickets
+                ),
+            )
+
+        effective_autonomy = AutonomyMode.parse(autonomy_mode)
+        if effective_autonomy < AutonomyMode.PROPOSE:
+            return JiraWriteResult(
+                project_key=_optional_project_key(proposal),
+                unsupported_reason=(
+                    f"autonomy mode {effective_autonomy} does not permit "
+                    "proposal publication"
+                ),
+                failed_items=tuple(
+                    JiraWriteFailure(spec=spec, reason="autonomy_ceiling")
                     for spec in proposal.tickets
                 ),
             )

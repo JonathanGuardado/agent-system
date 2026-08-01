@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
 from ticket_agent.adapters.local.sandbox import Sandbox
+from ticket_agent.domain.execution import CommandExecutionPolicy
 from ticket_agent.domain.errors import AgentSystemError
+from ticket_agent.goal.autonomy import GoalAutonomyResolver
 from ticket_agent.goal.contract import SQLiteGoalContractStore
 from ticket_agent.goal.identity import (
     GoalIdentityError,
@@ -11,7 +17,7 @@ from ticket_agent.goal.identity import (
     normalize_goal_id,
 )
 from ticket_agent.goal.signing import NullSigner, Signer
-from ticket_agent.goal.types import AutonomyMode
+from ticket_agent.goal.types import AutonomyDecision, AutonomyMode
 from ticket_agent.orchestrator.execution_environment import (
     ExecutionEnvironmentPreflight,
 )
@@ -19,6 +25,28 @@ from ticket_agent.orchestrator.execution_environment import (
 
 class ExecutionAuthorizationError(AgentSystemError):
     """Raised when durable goal authority does not permit execution."""
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizedExecutionContext:
+    """Verified sandbox plus the freshly persisted autonomy decision."""
+
+    sandbox: Sandbox
+    autonomy_decision: AutonomyDecision
+
+    @property
+    def profile(self) -> str:
+        return self.sandbox.profile
+
+    def wrap(
+        self,
+        argv: Sequence[str],
+        *,
+        root: Path,
+        cwd: Path,
+        policy: CommandExecutionPolicy,
+    ) -> tuple[str, ...]:
+        return self.sandbox.wrap(argv, root=root, cwd=cwd, policy=policy)
 
 
 class ExecutionAuthorizationPreflight:
@@ -29,12 +57,14 @@ class ExecutionAuthorizationPreflight:
         environment: ExecutionEnvironmentPreflight,
         authorization_store: SQLiteGoalContractStore,
         signer: Signer | NullSigner,
+        autonomy_resolver: GoalAutonomyResolver,
     ) -> None:
         self._environment = environment
         self._authorization_store = authorization_store
         self._signer = signer
+        self._autonomy_resolver = autonomy_resolver
 
-    def check(self, subject: object | None = None) -> Sandbox:
+    def check(self, subject: object | None = None) -> AuthorizedExecutionContext:
         sandbox = self._environment.check(subject)
         if subject is None:
             raise ExecutionAuthorizationError(
@@ -72,14 +102,20 @@ class ExecutionAuthorizationPreflight:
             raise ExecutionAuthorizationError(
                 f"repository {repository!r} is outside goal {goal_id} scope"
             )
-        if effective.record.contract.autonomy_ceiling < AutonomyMode.IMPLEMENT:
+        autonomy = self._autonomy_resolver.decide(
+            effective.record.contract,
+            sandbox_available=True,
+        )
+        if autonomy.effective_mode < AutonomyMode.IMPLEMENT:
             raise ExecutionAuthorizationError(
-                f"goal {goal_id} autonomy ceiling does not permit implementation"
+                f"goal {goal_id} effective autonomy {autonomy.effective_mode} "
+                "does not permit implementation"
             )
-        return sandbox
+        return AuthorizedExecutionContext(sandbox, autonomy)
 
 
 __all__ = [
     "ExecutionAuthorizationError",
     "ExecutionAuthorizationPreflight",
+    "AuthorizedExecutionContext",
 ]

@@ -30,6 +30,7 @@ from ticket_agent.feedback.github import (
 )
 from ticket_agent.github import GitHubCredentials
 from ticket_agent.goal.authorizer import ProposalGoalAuthorizer
+from ticket_agent.goal.autonomy import AutonomyActionGuard, GoalAutonomyResolver
 from ticket_agent.goal.contract import (
     Allowlist,
     GoalContractCompiler,
@@ -188,6 +189,7 @@ class RuntimeConfig:
     goal_allowlist_users: tuple[str, ...] = ()
     goal_allowlist_channels: tuple[str, ...] = ()
     execution_approval_policy: str = "auto"
+    autonomy_mode: str = "observe"
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,10 +396,20 @@ def build_runtime(
     environment_preflight = (
         execution_environment_preflight or ExecutionEnvironmentPreflight()
     )
+    autonomy_resolver = GoalAutonomyResolver(
+        goal_spine,
+        configured_mode=runtime_config.autonomy_mode,
+        contract_dir=runtime_config.contract_dir,
+        repo_defaults=repo_defaults,
+        # Only the test node has a production executor whose failure blocks
+        # progress today. Config declarations cannot manufacture coverage.
+        enforced_gate_names=("test",),
+    )
     execution_preflight = ExecutionAuthorizationPreflight(
         environment_preflight,
         goal_contract_store,
         goal_signer,
+        autonomy_resolver,
     )
     shell_factory = RuntimeShellFactory(environment_preflight)
 
@@ -451,6 +463,7 @@ def build_runtime(
         escalation=escalation or JiraEscalationService(execution_service),
         transcripts=transcripts,
         telemetry=telemetry,
+        autonomy_guard=AutonomyActionGuard(goal_spine),
     )
     graph = build_persistent_ticket_graph(node_runner, checkpointer=checkpointer)
 
@@ -572,6 +585,7 @@ def build_runtime(
             signer=goal_signer,
             semantic_checker=semantic_checker,
         ),
+        autonomy_resolver=autonomy_resolver,
     )
     dry_run_finalizer = _DryRunExecutionFinalizer(execution_service, slack)
     execution_approval_handler = ExecutionApprovalCommandHandler(
@@ -957,6 +971,11 @@ def load_app_config(
             "AGENT_SYSTEM_EXECUTION_APPROVAL_POLICY",
         )
         or "auto",
+        autonomy_mode=_env_value(
+            merged_env,
+            "AGENT_SYSTEM_AUTONOMY_MODE",
+        )
+        or "observe",
     )
     _validate_runtime_config(runtime_config)
 

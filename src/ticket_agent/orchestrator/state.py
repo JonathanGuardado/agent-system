@@ -63,6 +63,8 @@ class TicketState(BaseModel):
     #: Goal this ticket serves. The durable spine is keyed on it; the ticket
     #: graph only carries it so evidence and transcripts can be correlated.
     goal_id: str | None = None
+    autonomy_mode: str | None = None
+    autonomy_decision_digest: str | None = None
     #: The commit actually verified. Set by the COMMIT node, and the thing an
     #: attestation binds -- never re-derived from the worktree afterwards.
     candidate_sha: str | None = None

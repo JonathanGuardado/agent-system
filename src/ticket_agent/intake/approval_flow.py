@@ -16,6 +16,7 @@ from ticket_agent.domain.intake import (
 )
 from ticket_agent.goal.authorizer import GoalAuthorizer
 from ticket_agent.goal.contract import AuthorizationOutcome
+from ticket_agent.goal.types import AutonomyDecision, AutonomyMode, GoalContract
 from ticket_agent.intake.intent_resolver import IntakeIntentResolver
 from ticket_agent.intake.jira_writer import JiraWriteResult, JiraWriter
 from ticket_agent.intake.proposal_generator import (
@@ -37,6 +38,17 @@ class SlackPoster(Protocol):
         user_id: str,
         text: str,
     ) -> None: ...
+
+
+class GoalAutonomyResolver(Protocol):
+    def decide(
+        self,
+        contract: GoalContract,
+        *,
+        sandbox_available: bool,
+        per_command_approval: bool = False,
+        halted: bool = False,
+    ) -> AutonomyDecision: ...
 
 
 class ApprovalOutcome(str, Enum):
@@ -80,6 +92,7 @@ class ApprovalFlow:
         repo_defaults: Mapping[str, Mapping[str, str]] | None = None,
         emit: Callable[[str, dict[str, object]], None] | None = None,
         goal_authorizer: GoalAuthorizer | None = None,
+        autonomy_resolver: GoalAutonomyResolver | None = None,
     ) -> None:
         self._resolver = resolver
         self._generator = generator
@@ -89,6 +102,7 @@ class ApprovalFlow:
         self._repo_defaults: Mapping[str, Mapping[str, str]] = repo_defaults or {}
         self._emit = emit
         self._goal_authorizer = goal_authorizer
+        self._autonomy_resolver = autonomy_resolver
 
     async def handle_new_request(
         self,
@@ -198,11 +212,20 @@ class ApprovalFlow:
             return ApprovalResult(outcome=ApprovalOutcome.NO_ACTIVE_PROPOSAL)
 
         authorization = await self._authorize_goal(proposal)
+        autonomy = self._resolve_autonomy(proposal, authorization)
+        autonomy_mode = (
+            autonomy.effective_mode
+            if autonomy is not None
+            else AutonomyMode.AUTONOMOUS
+        )
         result = await self._jira_writer.write(
             proposal,
             publish_ai_ready=(
-                authorization is not None and authorization.authorized
+                authorization is not None
+                and authorization.authorized
+                and autonomy_mode >= AutonomyMode.IMPLEMENT
             ),
+            autonomy_mode=autonomy_mode,
         )
         if not result.created_ticket_keys and not result.created_epic_key:
             self._store.mark_status(
@@ -231,6 +254,17 @@ class ApprovalFlow:
 
         self._store.mark_status(proposal.proposal_id, ProposalStatus.CONFIRMED)
         self._emit_goal_contract(proposal, authorization)
+        if autonomy is not None:
+            self._emit_event(
+                "goal.autonomy_decided",
+                {
+                    "proposal_id": proposal.proposal_id,
+                    "goal_id": autonomy.goal_id,
+                    "effective_mode": str(autonomy.effective_mode),
+                    "binding_sources": list(autonomy.binding_sources),
+                    "decision_digest": autonomy.decision_digest,
+                },
+            )
         message = _format_confirmation_message(result)
         await self._post(
             channel,
@@ -295,6 +329,32 @@ class ApprovalFlow:
                 "reasons": list(outcome.escalation_reasons()),
             },
         )
+
+    def _resolve_autonomy(
+        self,
+        proposal: Proposal,
+        authorization: AuthorizationOutcome | None,
+    ) -> AutonomyDecision | None:
+        if authorization is None or self._autonomy_resolver is None:
+            return None
+        try:
+            # Intake remains available without probing the host sandbox. The
+            # shared execution preflight recomputes with actual availability.
+            return self._autonomy_resolver.decide(
+                authorization.contract,
+                sandbox_available=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - resolution fails closed
+            self._emit_event(
+                "goal.autonomy_failed",
+                {"proposal_id": proposal.proposal_id, "error": str(exc)},
+            )
+            return AutonomyDecision(
+                goal_id=proposal.proposal_id,
+                contract_version=authorization.contract.version,
+                effective_mode=AutonomyMode.OBSERVE,
+                ceilings=(),
+            )
 
     async def _cancel(
         self,

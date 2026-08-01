@@ -745,8 +745,9 @@ P12.2a checklist:
       goal-spine transaction
 - [x] deterministic `jira_write:add_ai_ready` journal entry with label-presence
       recovery after an ambiguous write
-- [ ] durable authorization, shared execution preflight, autonomy ceilings,
-      and remaining operation coverage (P12.2b–e)
+- [x] durable authorization, shared execution preflight, and autonomy ceilings
+      (P12.2b–d)
+- [ ] remaining per-operation journal coverage and crash matrix (P12.2e)
 
 **P12.2b — durable authorization and revocation.** Store the authorization
 decision, semantic verdict, and every denial reason; denied rows are retained
@@ -794,7 +795,7 @@ P12.2b+c checklist:
       restart resume consume the shared guard before execution mutation
 - [x] approval resume loads current Jira identity and returns through the
       lock-owning runner with heartbeat instead of invoking LangGraph directly
-- [ ] persisted `AutonomyDecision` and named action ceilings (P12.2d)
+- [x] persisted `AutonomyDecision` and named action ceilings (P12.2d)
 - [ ] remaining per-operation journal coverage and crash matrix (P12.2e)
 
 **P12.2d — autonomy decisions and ceilings.** Each goal persists an
@@ -814,6 +815,17 @@ claim enforcement without that executor. Today only `test` has a wired
 executor; therefore the derived ceiling cannot exceed `implement` until P14
 wires every required gate. This honest cap is preferable to narrowing the
 contract to match incomplete execution coverage.
+
+P12.2d checklist:
+
+- [x] parse the environment ceiling fail closed and persist the effective mode,
+      every named input ceiling, binding sources, and executor-derived gate set
+- [x] recompute autonomy in the shared execution preflight and propagate the
+      decision digest and effective mode into ticket state
+- [x] enforce planning/proposal, edit/verification, PR creation, and later
+      autonomous-action boundaries against the latest durable decision
+- [x] prove unknown configuration becomes `observe` and missing production
+      gate executors lower the result independently of configured mode
 
 **P12.2e — complete journal coverage.** Add a real `record_iteration`
 producer, then cover every production effect with the following concrete

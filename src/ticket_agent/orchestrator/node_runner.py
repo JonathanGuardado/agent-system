@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from ticket_agent.observability.telemetry import (
     NullTelemetryRecorder,
@@ -32,6 +32,16 @@ if TYPE_CHECKING:
 TicketStateUpdate = dict[str, Any]
 
 
+class ActionGuard(Protocol):
+    def check(self, goal_id: str | None, operation: str) -> object: ...
+
+
+class _AllowAllActionGuard:
+    def check(self, goal_id: str | None, operation: str) -> object:
+        del goal_id, operation
+        return None
+
+
 class TicketNodeRunner:
     """Run graph nodes by delegating work to injected services."""
 
@@ -47,6 +57,7 @@ class TicketNodeRunner:
         escalation: EscalationService,
         transcripts: TranscriptRecorder | None = None,
         telemetry: TelemetryRecorder | None = None,
+        autonomy_guard: ActionGuard | None = None,
     ) -> None:
         self._planner = planner
         self._approval = approval
@@ -57,6 +68,7 @@ class TicketNodeRunner:
         self._escalation = escalation
         self._transcripts = transcripts or NullTranscriptRecorder()
         self._telemetry = telemetry or NullTelemetryRecorder()
+        self._autonomy_guard = autonomy_guard or _AllowAllActionGuard()
 
     def _mark_node(
         self,
@@ -142,6 +154,7 @@ class TicketNodeRunner:
         )
 
     async def plan(self, state: TicketState) -> TicketStateUpdate:
+        self._autonomy_guard.check(state.goal_id, "plan")
         decomposition = await self._planner.plan(state)
         return self._mark_node(
             state,
@@ -154,6 +167,7 @@ class TicketNodeRunner:
         self,
         state: TicketState,
     ) -> TicketStateUpdate:
+        self._autonomy_guard.check(state.goal_id, "request_execution_approval")
         decision = _normalize_approval_decision(
             await self._approval.request_approval(state)
         )
@@ -172,6 +186,7 @@ class TicketNodeRunner:
 
     async def implement(self, state: TicketState) -> TicketStateUpdate:
         try:
+            self._autonomy_guard.check(state.goal_id, "implement")
             implementation_update = await self._implementation.implement(state)
         except Exception as exc:
             error = _error_message(exc)
@@ -197,6 +212,7 @@ class TicketNodeRunner:
 
     async def run_tests(self, state: TicketState) -> TicketStateUpdate:
         try:
+            self._autonomy_guard.check(state.goal_id, "run_tests")
             test_result = await self._tests.run_tests(state)
         except Exception as exc:
             error = _error_message(exc)
@@ -211,6 +227,7 @@ class TicketNodeRunner:
 
     async def review(self, state: TicketState) -> TicketStateUpdate:
         try:
+            self._autonomy_guard.check(state.goal_id, "review")
             verification_result = await self._review.review(state)
         except Exception as exc:
             error = _error_message(exc)
@@ -240,6 +257,7 @@ class TicketNodeRunner:
 
     async def open_pull_request(self, state: TicketState) -> TicketStateUpdate:
         try:
+            self._autonomy_guard.check(state.goal_id, "open_pull_request")
             pull_request_url = await self._pull_request.open_pull_request(state)
         except Exception as exc:
             error = _error_message(exc)

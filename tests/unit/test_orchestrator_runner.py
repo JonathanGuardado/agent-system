@@ -107,6 +107,26 @@ def test_environment_preflight_refuses_before_lock_acquisition():
     assert graph.invocations == 0
 
 
+def test_effective_autonomy_is_propagated_into_initial_ticket_state():
+    graph = _Graph({"workflow_status": "completed"})
+    lock_manager = _LockManager(lock=_Lock("AGENT-123", lock_id="lock-123"))
+    runner = _runner(
+        graph,
+        lock_manager,
+        execution_preflight=_AutonomyPreflight(),
+    )
+
+    state = asyncio.run(
+        runner.run_ticket(_work_item(goal_id="prop-000000000001"))
+    )
+
+    assert graph.last_state is not None
+    assert graph.last_state.autonomy_mode == "implement"
+    assert graph.last_state.autonomy_decision_digest == "decision-digest"
+    assert state.autonomy_mode == "implement"
+    assert state.autonomy_decision_digest == "decision-digest"
+
+
 def test_runner_clears_stale_checkpoint_after_lock_is_acquired():
     graph = _Graph({"workflow_status": "completed"})
     lock_manager = _LockManager(lock=_Lock("AGENT-123", lock_id="lock-123"))
@@ -744,3 +764,16 @@ class _RecordingPreflight:
     def check(self, subject=None):
         self.subjects.append(subject)
         return object()
+
+
+class _AutonomyDecision:
+    effective_mode = "implement"
+    decision_digest = "decision-digest"
+
+
+class _AutonomyPreflight:
+    autonomy_decision = _AutonomyDecision()
+
+    def check(self, subject=None):
+        del subject
+        return self

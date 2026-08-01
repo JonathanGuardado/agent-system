@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -614,6 +615,7 @@ def test_load_app_config_reads_env_file_and_runtime_options(tmp_path):
                 "AGENT_SYSTEM_REPO_CONFIG_PATH=config/test-repos",
                 "AGENT_SYSTEM_EXECUTION_MODE=dry_run",
                 "AGENT_SYSTEM_EXECUTION_APPROVAL_POLICY=slack",
+                "AGENT_SYSTEM_AUTONOMY_MODE=deliver",
                 "AGENT_SYSTEM_GITHUB_FEEDBACK_ENABLED=true",
                 "AGENT_SYSTEM_GITHUB_FEEDBACK_POLL_INTERVAL_SECONDS=12",
                 "AGENT_SYSTEM_GITHUB_FEEDBACK_IGNORE_SELF_COMMENTS=true",
@@ -637,6 +639,7 @@ def test_load_app_config_reads_env_file_and_runtime_options(tmp_path):
     assert config.runtime.jira_in_review_status == "Done"
     assert config.runtime.execution_mode == "dry_run"
     assert config.runtime.execution_approval_policy == "slack"
+    assert config.runtime.autonomy_mode == "deliver"
     assert config.runtime.github_feedback_enabled is True
     assert config.runtime.github_feedback_poll_interval_seconds == 12
     assert config.runtime.github_feedback_ignore_self_comments is True
@@ -989,13 +992,29 @@ def _authorized_config(config: RuntimeConfig, tmp_path) -> RuntimeConfig:
             "version: 1\nrepositories: ['agent-system']\n",
             encoding="utf-8",
         )
+    repository_root = Path(__file__).resolve().parents[2]
+    repo_defaults = {
+        project: {
+            **defaults,
+            "repo_path": (
+                str(repository_root)
+                if defaults.get("repository") == "agent-system"
+                and defaults.get("repo_path") == FAKE_AGENT_SYSTEM_REPO_PATH
+                else defaults.get("repo_path", "")
+            ),
+        }
+        for project, defaults in (config.repo_defaults or {}).items()
+    }
     return replace(
         config,
         data_dir=tmp_path / "data",
+        contract_dir=repository_root / "config" / "repos",
+        repo_defaults=repo_defaults or config.repo_defaults,
         signing_key_path=key_path,
         risk_policy_path=policy_path,
         goal_allowlist_users=("U1",),
         goal_allowlist_channels=("C-INTAKE",),
+        autonomy_mode="autonomous",
     )
 
 
@@ -1022,6 +1041,8 @@ def _seed_authorization(runtime, config: RuntimeConfig, goal_id: str) -> None:
         )
     )
     runtime.goal_contract_store.save_outcome(outcome)
+    work_item = asyncio.run(runtime.work_item_loader.load("AGENT-123"))
+    runtime.execution_preflight.check(work_item)
 
 
 class _FakeSlack:

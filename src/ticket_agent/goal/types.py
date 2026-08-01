@@ -65,6 +65,40 @@ class AutonomyMode(IntEnum):
         return self.name.lower()
 
 
+@dataclass(frozen=True, slots=True)
+class AutonomyCeiling:
+    """One named input to monotone autonomy resolution."""
+
+    source: str
+    mode: AutonomyMode
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class AutonomyDecision:
+    """Persisted effective mode and every input ceiling for one goal."""
+
+    goal_id: str
+    contract_version: int
+    effective_mode: AutonomyMode
+    ceilings: tuple[AutonomyCeiling, ...]
+    required_gates: tuple[str, ...] = ()
+    enforced_gate_names: tuple[str, ...] = ()
+    decided_at: datetime | None = None
+
+    @property
+    def binding_sources(self) -> tuple[str, ...]:
+        return tuple(
+            ceiling.source
+            for ceiling in self.ceilings
+            if ceiling.mode == self.effective_mode
+        )
+
+    @property
+    def decision_digest(self) -> str:
+        return digest(self)
+
+
 EnforcementLevel = Literal["off", "shadow", "enforce"]
 
 RiskClass = Literal["low", "standard", "elevated", "human_only"]
@@ -598,6 +632,8 @@ __all__ = [
     "ActionRecord",
     "ActionState",
     "AuthorizationContext",
+    "AutonomyCeiling",
+    "AutonomyDecision",
     "AutonomyMode",
     "Budgets",
     "CandidateAuthorization",

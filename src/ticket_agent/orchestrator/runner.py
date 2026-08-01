@@ -156,8 +156,9 @@ class OrchestratorRunner:
     async def run_ticket(self, work_item: TicketWorkItem) -> TicketState:
         """Run one ticket through the graph when its lock can be acquired."""
 
+        preflight_result = None
         if self._execution_preflight is not None:
-            self._execution_preflight.check(work_item)
+            preflight_result = self._execution_preflight.check(work_item)
 
         lock = self._lock_manager.acquire(work_item.ticket_key)
         resumed = False
@@ -200,7 +201,15 @@ class OrchestratorRunner:
                     graph_traceback = exc.__traceback__
                     await self._emit_claim_failed(work_item, lock, exc)
                     raise
-            state = self._build_initial_state(work_item, lock)
+            state = self._build_initial_state(
+                work_item,
+                lock,
+                autonomy_decision=getattr(
+                    preflight_result,
+                    "autonomy_decision",
+                    None,
+                ),
+            )
             await self._emit(
                 EVENT_TICKET_STARTED,
                 ticket_key=state.ticket_key,
@@ -259,8 +268,9 @@ class OrchestratorRunner:
     ) -> TicketState:
         """Resume an interrupted graph under a newly acquired/adopted lock."""
 
+        preflight_result = None
         if self._execution_preflight is not None:
-            self._execution_preflight.check(work_item)
+            preflight_result = self._execution_preflight.check(work_item)
 
         lock = self._lock_manager.acquire(work_item.ticket_key)
         if lock is None:
@@ -275,7 +285,15 @@ class OrchestratorRunner:
             component_id=self._component_id,
             lock_id=_lock_id(lock),
         )
-        state = self._build_initial_state(work_item, lock)
+        state = self._build_initial_state(
+            work_item,
+            lock,
+            autonomy_decision=getattr(
+                preflight_result,
+                "autonomy_decision",
+                None,
+            ),
+        )
         graph_exception: Exception | None = None
         graph_traceback = None
         try:
@@ -320,6 +338,8 @@ class OrchestratorRunner:
         self,
         work_item: TicketWorkItem,
         lock: Lock,
+        *,
+        autonomy_decision: Any = None,
     ) -> TicketState:
         updates: dict[str, Any] = {}
         state_fields = TicketState.model_fields
@@ -333,6 +353,11 @@ class OrchestratorRunner:
             updates["branch_name"] = work_item.branch_name or _branch_name(
                 work_item.ticket_key,
                 lock,
+            )
+        if autonomy_decision is not None:
+            updates["autonomy_mode"] = str(autonomy_decision.effective_mode)
+            updates["autonomy_decision_digest"] = (
+                autonomy_decision.decision_digest
             )
 
         return TicketState(

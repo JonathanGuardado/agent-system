@@ -13,6 +13,9 @@ from ticket_agent.domain.errors import AgentSystemError
 from ticket_agent.goal.identity import normalize_goal_id
 from ticket_agent.goal.types import (
     ActionRecord,
+    AutonomyCeiling,
+    AutonomyDecision,
+    AutonomyMode,
     Budgets,
     EvidenceRef,
     Finding,
@@ -84,6 +87,19 @@ class SQLiteGoalSpine:
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS autonomy_decisions (
+        decision_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        goal_id TEXT NOT NULL,
+        contract_version INTEGER NOT NULL,
+        effective_mode TEXT NOT NULL,
+        decision_digest TEXT NOT NULL UNIQUE,
+        payload TEXT NOT NULL,
+        decided_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_autonomy_decisions_goal
+        ON autonomy_decisions (goal_id, contract_version, decision_id);
     """
 
     def __init__(
@@ -309,6 +325,59 @@ class SQLiteGoalSpine:
             float(row["actual_model_cost_usd"]),
         )
 
+    def save_autonomy_decision(
+        self,
+        decision: AutonomyDecision,
+    ) -> AutonomyDecision:
+        normalize_goal_id(decision.goal_id)
+        now = decision.decided_at or self._clock()
+        durable = replace(decision, decided_at=now)
+        with self._lock, write_transaction(self._connection):
+            existing = self._connection.execute(
+                "SELECT payload FROM autonomy_decisions WHERE decision_digest = ?",
+                (durable.decision_digest,),
+            ).fetchone()
+            if existing is not None:
+                return _autonomy_decision_from_payload(json.loads(existing["payload"]))
+            self._connection.execute(
+                "INSERT INTO autonomy_decisions (goal_id, contract_version, "
+                "effective_mode, decision_digest, payload, decided_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    durable.goal_id,
+                    durable.contract_version,
+                    str(durable.effective_mode),
+                    durable.decision_digest,
+                    canonical_json(durable),
+                    now.isoformat(),
+                ),
+            )
+        return durable
+
+    def latest_autonomy_decision(
+        self,
+        goal_id: str,
+        *,
+        contract_version: int | None = None,
+    ) -> AutonomyDecision | None:
+        goal_id = normalize_goal_id(goal_id)
+        with self._lock:
+            if contract_version is None:
+                row = self._connection.execute(
+                    "SELECT payload FROM autonomy_decisions WHERE goal_id = ? "
+                    "ORDER BY decision_id DESC LIMIT 1",
+                    (goal_id,),
+                ).fetchone()
+            else:
+                row = self._connection.execute(
+                    "SELECT payload FROM autonomy_decisions WHERE goal_id = ? "
+                    "AND contract_version = ? ORDER BY decision_id DESC LIMIT 1",
+                    (goal_id, contract_version),
+                ).fetchone()
+        if row is None:
+            return None
+        return _autonomy_decision_from_payload(json.loads(row["payload"]))
+
     def _write_loop_state(self, state: LoopState, now: datetime) -> None:
         payload = canonical_json(state)
         self._connection.execute(
@@ -448,6 +517,25 @@ def _loop_state_from_payload(payload: dict[str, Any]) -> LoopState:
             else None
         ),
         terminal_status=payload.get("terminal_status"),
+    )
+
+
+def _autonomy_decision_from_payload(payload: dict[str, Any]) -> AutonomyDecision:
+    return AutonomyDecision(
+        goal_id=payload["goal_id"],
+        contract_version=int(payload["contract_version"]),
+        effective_mode=AutonomyMode(int(payload["effective_mode"])),
+        ceilings=tuple(
+            AutonomyCeiling(
+                source=item["source"],
+                mode=AutonomyMode(int(item["mode"])),
+                detail=item.get("detail", ""),
+            )
+            for item in payload.get("ceilings", ())
+        ),
+        required_gates=tuple(payload.get("required_gates", ())),
+        enforced_gate_names=tuple(payload.get("enforced_gate_names", ())),
+        decided_at=_parse_datetime(payload.get("decided_at")),
     )
 
 

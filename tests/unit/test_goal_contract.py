@@ -881,7 +881,14 @@ class _JiraWriterStub:
     def __init__(self, result):
         self._result = result
 
-    async def write(self, proposal, *, publish_ai_ready=False):
+    async def write(
+        self,
+        proposal,
+        *,
+        publish_ai_ready=False,
+        autonomy_mode=None,
+    ):
+        del autonomy_mode
         self.publish_ai_ready = publish_ai_ready
         return self._result
 
