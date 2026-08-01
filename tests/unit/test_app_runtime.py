@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -16,6 +17,10 @@ from ticket_agent.app import (
     run_runtime,
 )
 from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
+from ticket_agent.goal.contract import Allowlist, GoalContractCompiler
+from ticket_agent.goal.policy import load_risk_policy
+from ticket_agent.goal.semantic_check import SemanticVerdict
+from ticket_agent.goal.signing import generate_key, load_signer
 from ticket_agent.intake.slack_listener import SlackEvent
 from ticket_agent.jira.constants import FIELD_AGENT_ASSIGNED_COMPONENT
 from ticket_agent.jira.constants import (
@@ -36,25 +41,42 @@ from tests.constants import FAKE_AGENT_SYSTEM_REPO_PATH
 
 
 def test_build_runtime_wires_execution_approval_commands_into_listener(tmp_path):
+    config = _authorized_config(
+        RuntimeConfig(
+            data_dir=tmp_path,
+            intake_channel="C-INTAKE",
+            execution_approval_channel="C-INTAKE",
+            execution_approval_policy="slack",
+            repo_defaults={
+                "AGENT": {
+                    "repository": "agent-system",
+                    "repo_path": FAKE_AGENT_SYSTEM_REPO_PATH,
+                }
+            },
+        ),
+        tmp_path,
+    )
+    goal_id = "prop-000000000123"
     slack = _FakeSlack()
     jira_client = FakeJiraClient(
         JiraTicket(
             key="AGENT-123",
             summary="Exercise runtime composition",
             status=STATUS_TODO,
-            labels=[LABEL_AI_READY],
+            labels=[LABEL_AI_READY, f"ai-goal-{goal_id}"],
+            fields={
+                FIELD_REPOSITORY: "agent-system",
+                FIELD_REPO_PATH: FAKE_AGENT_SYSTEM_REPO_PATH,
+            },
         )
     )
     implementation = _Implementation()
     runtime = build_runtime(
         jira_client=jira_client,
         slack=slack,
-        config=RuntimeConfig(
-            data_dir=tmp_path,
-            intake_channel="C-INTAKE",
-            execution_approval_channel="C-INTAKE",
-            execution_approval_policy="slack",
-        ),
+        config=config,
+        semantic_checker=_AgreeingSemanticChecker(),
+        execution_environment_preflight=_AllowingEnvironmentPreflight(),
         planner=_Planner(),
         implementation=implementation,
         tests=_Tests(),
@@ -64,11 +86,14 @@ def test_build_runtime_wires_execution_approval_commands_into_listener(tmp_path)
     )
 
     try:
+        _seed_authorization(runtime, config, goal_id)
         result = asyncio.run(
             runtime.graph.ainvoke(
                 TicketState(
                     ticket_key="AGENT-123",
                     summary="Exercise runtime composition",
+                    repository="agent-system",
+                    goal_id=goal_id,
                     slack_channel="C-INTAKE",
                     slack_thread_ts="execution-thread",
                 ),
@@ -113,11 +138,13 @@ def test_build_runtime_wires_question_answering_without_creating_proposal(tmp_pa
     runtime = build_runtime(
         jira_client=jira_client,
         slack=slack,
-        config=RuntimeConfig(
+        config=_authorized_config(RuntimeConfig(
             data_dir=tmp_path,
             intake_channel="C-INTAKE",
             execution_approval_channel="C-INTAKE",
-        ),
+        ), tmp_path),
+        semantic_checker=_AgreeingSemanticChecker(),
+        execution_environment_preflight=_AllowingEnvironmentPreflight(),
         planner=_Planner(),
         implementation=_Implementation(),
         tests=_Tests(),
@@ -161,7 +188,7 @@ def test_fake_slack_to_jira_to_execution_pr_path(tmp_path):
     runtime = build_runtime(
         jira_client=jira_client,
         slack=slack,
-        config=RuntimeConfig(
+        config=_authorized_config(RuntimeConfig(
             data_dir=tmp_path,
             intake_channel="C-INTAKE",
             execution_approval_channel="C-INTAKE",
@@ -173,7 +200,9 @@ def test_fake_slack_to_jira_to_execution_pr_path(tmp_path):
             },
             poll_interval_seconds=0.01,
             max_backoff_seconds=0.01,
-        ),
+        ), tmp_path),
+        semantic_checker=_AgreeingSemanticChecker(),
+        execution_environment_preflight=_AllowingEnvironmentPreflight(),
         planner=_Planner(),
         implementation=implementation,
         tests=_Tests(),
@@ -235,7 +264,7 @@ def test_runtime_dry_run_execution_approval_stops_before_implementation(tmp_path
     runtime = build_runtime(
         jira_client=jira_client,
         slack=slack,
-        config=RuntimeConfig(
+        config=_authorized_config(RuntimeConfig(
             data_dir=tmp_path,
             intake_channel="C-INTAKE",
             execution_approval_channel="C-INTAKE",
@@ -248,7 +277,9 @@ def test_runtime_dry_run_execution_approval_stops_before_implementation(tmp_path
             poll_interval_seconds=0.01,
             max_backoff_seconds=0.01,
             execution_mode="dry_run",
-        ),
+        ), tmp_path),
+        semantic_checker=_AgreeingSemanticChecker(),
+        execution_environment_preflight=_AllowingEnvironmentPreflight(),
         planner=_Planner(),
         implementation=implementation,
         tests=_Tests(),
@@ -322,7 +353,7 @@ def test_runtime_dry_run_reject_releases_and_marks_failed(tmp_path):
     runtime = build_runtime(
         jira_client=jira_client,
         slack=slack,
-        config=RuntimeConfig(
+        config=_authorized_config(RuntimeConfig(
             data_dir=tmp_path,
             intake_channel="C-INTAKE",
             execution_approval_channel="C-INTAKE",
@@ -335,7 +366,9 @@ def test_runtime_dry_run_reject_releases_and_marks_failed(tmp_path):
             poll_interval_seconds=0.01,
             max_backoff_seconds=0.01,
             execution_mode="dry_run",
-        ),
+        ), tmp_path),
+        semantic_checker=_AgreeingSemanticChecker(),
+        execution_environment_preflight=_AllowingEnvironmentPreflight(),
         planner=_Planner(),
         implementation=_Implementation(),
         tests=_Tests(),
@@ -751,16 +784,36 @@ def test_recover_after_restart_preserves_active_lock_and_enqueues_ticket(tmp_pat
     lock and resumes from the LangGraph checkpoint, leaving Jira untouched.
     """
 
+    goal_id = "prop-000000000124"
+    config = _authorized_config(
+        RuntimeConfig(
+            data_dir=tmp_path,
+            intake_channel="C-INTAKE",
+            execution_approval_channel="C-INTAKE",
+            repo_defaults={
+                "AGENT": {
+                    "repository": "agent-system",
+                    "repo_path": FAKE_AGENT_SYSTEM_REPO_PATH,
+                }
+            },
+            poll_interval_seconds=0.01,
+            max_backoff_seconds=0.01,
+            reconcile_interval_seconds=0.01,
+        ),
+        tmp_path,
+    )
     events: list[tuple[str, dict[str, Any]]] = []
     jira_client = FakeJiraClient(
         JiraTicket(
             key="AGENT-123",
             summary="Resume after restart",
             status=STATUS_IN_PROGRESS,
-            labels=[LABEL_AI_READY, LABEL_AI_CLAIMED],
+            labels=[LABEL_AI_READY, LABEL_AI_CLAIMED, f"ai-goal-{goal_id}"],
             fields={
                 FIELD_AGENT_ASSIGNED_COMPONENT: "agent-system",
                 FIELD_AGENT_RETRY_COUNT: 0,
+                FIELD_REPOSITORY: "agent-system",
+                FIELD_REPO_PATH: FAKE_AGENT_SYSTEM_REPO_PATH,
             },
         )
     )
@@ -771,14 +824,9 @@ def test_recover_after_restart_preserves_active_lock_and_enqueues_ticket(tmp_pat
     runtime = build_runtime(
         jira_client=jira_client,
         slack=_FakeSlack(),
-        config=RuntimeConfig(
-            data_dir=tmp_path,
-            intake_channel="C-INTAKE",
-            execution_approval_channel="C-INTAKE",
-            poll_interval_seconds=0.01,
-            max_backoff_seconds=0.01,
-            reconcile_interval_seconds=0.01,
-        ),
+        config=config,
+        semantic_checker=_AgreeingSemanticChecker(),
+        execution_environment_preflight=_AllowingEnvironmentPreflight(),
         planner=_Planner(),
         implementation=_Implementation(),
         tests=_Tests(),
@@ -789,6 +837,7 @@ def test_recover_after_restart_preserves_active_lock_and_enqueues_ticket(tmp_pat
     )
 
     try:
+        _seed_authorization(runtime, config, goal_id)
         original_lock = runtime.lock_manager.acquire("AGENT-123")
         assert original_lock is not None
 
@@ -827,6 +876,8 @@ def test_restart_preflight_blocks_checkpoint_resume_without_blocking_runtime(tmp
             fields={
                 FIELD_AGENT_ASSIGNED_COMPONENT: "agent-system",
                 FIELD_AGENT_RETRY_COUNT: 0,
+                FIELD_REPOSITORY: "agent-system",
+                FIELD_REPO_PATH: FAKE_AGENT_SYSTEM_REPO_PATH,
             },
         )
     )
@@ -911,6 +962,68 @@ def test_main_uses_injected_services_without_live_network(tmp_path):
     assert any(name == "app.closed" for name, _ in events)
 
 
+class _AgreeingSemanticChecker:
+    async def check(self, contract, *, exclude_providers=()):
+        del contract, exclude_providers
+        return SemanticVerdict(True, True, True)
+
+
+class _EnforcingSandbox:
+    profile = "bwrap"
+
+
+class _AllowingEnvironmentPreflight:
+    def check(self, subject=None):
+        del subject
+        return _EnforcingSandbox()
+
+
+def _authorized_config(config: RuntimeConfig, tmp_path) -> RuntimeConfig:
+    key_path = tmp_path / "goal-signing.key"
+    if not key_path.exists():
+        key_path.write_bytes(generate_key())
+        key_path.chmod(0o600)
+    policy_path = tmp_path / "goal-risk.yaml"
+    if not policy_path.exists():
+        policy_path.write_text(
+            "version: 1\nrepositories: ['agent-system']\n",
+            encoding="utf-8",
+        )
+    return replace(
+        config,
+        data_dir=tmp_path / "data",
+        signing_key_path=key_path,
+        risk_policy_path=policy_path,
+        goal_allowlist_users=("U1",),
+        goal_allowlist_channels=("C-INTAKE",),
+    )
+
+
+def _seed_authorization(runtime, config: RuntimeConfig, goal_id: str) -> None:
+    compiler = GoalContractCompiler(
+        policy=load_risk_policy(config.risk_policy_path),
+        allowlist=Allowlist(
+            users=frozenset(config.goal_allowlist_users),
+            channels=frozenset(config.goal_allowlist_channels),
+        ),
+        signer=load_signer(config.signing_key_path),
+        semantic_checker=_AgreeingSemanticChecker(),
+    )
+    outcome = asyncio.run(
+        compiler.compile(
+            goal_id=goal_id,
+            original_request="Exercise runtime composition",
+            objective="Exercise runtime composition",
+            acceptance_criteria=("Runtime resumes safely",),
+            user_id="U1",
+            channel="C-INTAKE",
+            thread_ts="execution-thread",
+            repositories=("agent-system",),
+        )
+    )
+    runtime.goal_contract_store.save_outcome(outcome)
+
+
 class _FakeSlack:
     def __init__(self) -> None:
         self.messages: list[tuple[str | None, str, str, str]] = []
@@ -960,7 +1073,8 @@ class _Escalation:
 
 
 class _FailingPreflight:
-    def check(self):
+    def check(self, subject=None):
+        del subject
         raise SandboxUnavailableError("sandbox unavailable")
 
 

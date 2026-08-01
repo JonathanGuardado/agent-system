@@ -103,7 +103,7 @@ class JiraExecutionCoordinator:
 
         if self._execution_preflight is not None:
             try:
-                self._execution_preflight.check()
+                self._execution_preflight.check(work_item)
             except Exception as exc:
                 # Refusal itself must not transition Jira. The sandbox guard
                 # runs before the runner can acquire a lock or claim work.

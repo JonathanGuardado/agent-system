@@ -17,6 +17,7 @@ from ticket_agent.jira.constants import (
     FIELD_SLACK_THREAD_TS,
 )
 from ticket_agent.jira.models import JiraTicket, JiraWorkItemLoadError
+from ticket_agent.goal.identity import GoalIdentityError, goal_id_from_labels
 from ticket_agent.orchestrator.runner import TicketWorkItem
 
 
@@ -38,12 +39,20 @@ class JiraWorkItemLoader:
         repo_defaults = _repo_defaults_for_ticket(ticket, self._repo_defaults)
         repository = _repo_value(ticket, FIELD_REPOSITORY, repo_defaults)
         repo_path = _repo_value(ticket, FIELD_REPO_PATH, repo_defaults)
+        try:
+            goal_id = goal_id_from_labels(ticket.labels)
+        except GoalIdentityError:
+            # Loading is read-only. Preserve the raw labels and let the shared
+            # execution preflight make the fail-closed refusal before mutation.
+            goal_id = None
 
         return TicketWorkItem(
             ticket_key=ticket.key,
             summary=ticket.summary,
             description=_description_with_comments(ticket),
             repository=repository,
+            goal_id=goal_id,
+            labels=tuple(ticket.labels),
             repo_path=repo_path,
             branch_name=None,
             pull_request_base_branch=_pull_request_base_branch(ticket.description),

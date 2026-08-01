@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -541,6 +542,156 @@ def test_store_tracks_the_latest_version(tmp_path, signer):
         store.close()
 
 
+def test_durable_authorization_round_trips_and_verifies(tmp_path, signer):
+    outcome = asyncio.run(_compile(signer))
+    store = SQLiteGoalContractStore(tmp_path / "contracts.sqlite3")
+    try:
+        store.save_outcome(outcome)
+
+        stored = store.load_authorization("prop-000000000001")
+        effective = store.effective_authorization(
+            "prop-000000000001",
+            signer,
+        )
+
+        assert stored is not None
+        assert stored.contract == outcome.contract
+        assert stored.decision == "authorized"
+        assert stored.semantic.agrees is True
+        assert stored.evidence_digest
+        assert effective.authorized is True
+        assert effective.reasons == ()
+    finally:
+        store.close()
+
+
+def test_denied_semantic_decision_remains_auditable(tmp_path, signer):
+    outcome = asyncio.run(_compile(signer, checker=_Objecting()))
+    store = SQLiteGoalContractStore(tmp_path / "contracts.sqlite3")
+    try:
+        store.save_outcome(outcome)
+
+        stored = store.load_authorization("prop-000000000001", 1)
+        effective = store.effective_authorization(
+            "prop-000000000001",
+            signer,
+        )
+
+        assert stored is not None
+        assert stored.decision == "denied"
+        assert stored.semantic.agrees is False
+        assert any("Spanish copy" in reason for reason in stored.denial_reasons)
+        assert effective.authorized is False
+        assert any("Spanish copy" in reason for reason in effective.reasons)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "UPDATE goal_contracts SET decision = 'denied'",
+        "UPDATE goal_contracts SET contract_digest = 'tampered'",
+        "UPDATE goal_contracts SET evidence_digest = 'tampered'",
+        "UPDATE goal_contracts SET evidence_signature = '1:hmac-sha256:bad'",
+        "UPDATE goal_contracts SET semantic_payload = "
+        "replace(semantic_payload, 'true', 'false')",
+    ),
+)
+def test_tampered_durable_authorization_fails_closed(tmp_path, signer, mutation):
+    outcome = asyncio.run(_compile(signer))
+    store = SQLiteGoalContractStore(tmp_path / "contracts.sqlite3")
+    try:
+        store.save_outcome(outcome)
+        store._connection.execute(mutation)
+
+        effective = store.effective_authorization(
+            "prop-000000000001",
+            signer,
+        )
+
+        assert effective.authorized is False
+        assert effective.reasons
+    finally:
+        store.close()
+
+
+def test_revocation_is_append_only_and_removes_effective_authority(
+    tmp_path,
+    signer,
+):
+    outcome = asyncio.run(_compile(signer))
+    store = SQLiteGoalContractStore(
+        tmp_path / "contracts.sqlite3",
+        clock=lambda: datetime(2027, 7, 29, tzinfo=timezone.utc),
+    )
+    try:
+        store.save_outcome(outcome)
+        original_payload = store.stored_payload("prop-000000000001", 1)
+
+        revoked = store.append_revocation(
+            "prop-000000000001",
+            1,
+            revoked_by="operator@example.test",
+            reason="scope withdrawn",
+            signer=signer,
+        )
+        effective = store.effective_authorization(
+            "prop-000000000001",
+            signer,
+        )
+
+        assert revoked.reason == "scope withdrawn"
+        assert len(store.revocations_for("prop-000000000001", 1)) == 1
+        assert store.stored_payload("prop-000000000001", 1) == original_payload
+        assert effective.authorized is False
+        assert effective.revoked_at == revoked.revoked_at
+        assert effective.reasons == ("authorization revoked: scope withdrawn",)
+    finally:
+        store.close()
+
+
+def test_latest_valid_revocation_explains_effective_decision(tmp_path, signer):
+    outcome = asyncio.run(_compile(signer))
+    revocation_times = iter(
+        (
+            datetime(2027, 7, 29, tzinfo=timezone.utc),
+            datetime(2027, 7, 30, tzinfo=timezone.utc),
+        )
+    )
+    store = SQLiteGoalContractStore(
+        tmp_path / "contracts.sqlite3",
+        clock=lambda: next(revocation_times),
+    )
+    try:
+        store.save_outcome(outcome)
+        store.append_revocation(
+            "prop-000000000001",
+            1,
+            revoked_by="operator@example.test",
+            reason="initial stop",
+            signer=signer,
+        )
+        latest = store.append_revocation(
+            "prop-000000000001",
+            1,
+            revoked_by="operator@example.test",
+            reason="confirmed stop",
+            signer=signer,
+        )
+
+        effective = store.effective_authorization(
+            "prop-000000000001",
+            signer,
+        )
+
+        assert len(store.revocations_for("prop-000000000001", 1)) == 2
+        assert effective.revoked_at == latest.revoked_at
+        assert effective.reasons == ("authorization revoked: confirmed stop",)
+    finally:
+        store.close()
+
+
 # -- intake wiring ---------------------------------------------------------
 
 
@@ -594,11 +745,12 @@ def test_approval_records_a_signed_contract(tmp_path, signer):
     )
 
     events: list[tuple[str, dict]] = []
+    writer = _JiraWriterStub(result)
     flow = ApprovalFlow(
         resolver=object(),
         generator=object(),
         store=_ProposalStoreStub(),
-        jira_writer=_JiraWriterStub(result),
+        jira_writer=writer,
         slack=_SlackStub(),
         emit=lambda name, payload: events.append((name, payload)),
         goal_authorizer=authorizer,
@@ -611,8 +763,84 @@ def test_approval_records_a_signed_contract(tmp_path, signer):
     assert recorded[0]["goal_id"] == "prop-000000000001"
     assert recorded[0]["authorized"] is True
     assert recorded[0]["signed"] is True
+    assert writer.publish_ai_ready is True
     assert store.verify_stored("prop-000000000001", 1, signer)
     store.close()
+
+
+def test_missing_authorizer_never_publishes_ai_ready():
+    from ticket_agent.intake.approval_flow import ApprovalFlow
+
+    writer = _JiraWriterStub(_successful_write_result())
+    flow = ApprovalFlow(
+        resolver=object(),
+        generator=object(),
+        store=_ProposalStoreStub(),
+        jira_writer=writer,
+        slack=_SlackStub(),
+    )
+
+    asyncio.run(flow._approve(_approval_proposal(), "C1"))
+
+    assert writer.publish_ai_ready is False
+
+
+def test_signed_semantic_disagreement_is_stored_but_not_published(
+    tmp_path,
+    signer,
+):
+    from ticket_agent.goal.authorizer import ProposalGoalAuthorizer
+    from ticket_agent.intake.approval_flow import ApprovalFlow
+
+    store = SQLiteGoalContractStore(tmp_path / "contracts.sqlite3")
+    writer = _JiraWriterStub(_successful_write_result())
+    flow = ApprovalFlow(
+        resolver=object(),
+        generator=object(),
+        store=_ProposalStoreStub(),
+        jira_writer=writer,
+        slack=_SlackStub(),
+        goal_authorizer=ProposalGoalAuthorizer(
+            _compiler(signer, checker=_Objecting()),
+            store,
+        ),
+    )
+    try:
+        asyncio.run(flow._approve(_approval_proposal(), "C1"))
+
+        stored = store.load_authorization("prop-000000000001", 1)
+        assert writer.publish_ai_ready is False
+        assert stored is not None
+        assert stored.decision == "denied"
+        assert any("Spanish copy" in reason for reason in stored.denial_reasons)
+    finally:
+        store.close()
+
+
+def test_unsigned_decision_is_stored_but_not_published(tmp_path):
+    from ticket_agent.goal.authorizer import ProposalGoalAuthorizer
+    from ticket_agent.intake.approval_flow import ApprovalFlow
+
+    store = SQLiteGoalContractStore(tmp_path / "contracts.sqlite3")
+    writer = _JiraWriterStub(_successful_write_result())
+    flow = ApprovalFlow(
+        resolver=object(),
+        generator=object(),
+        store=_ProposalStoreStub(),
+        jira_writer=writer,
+        slack=_SlackStub(),
+        goal_authorizer=ProposalGoalAuthorizer(_compiler(NullSigner()), store),
+    )
+    try:
+        asyncio.run(flow._approve(_approval_proposal(), "C1"))
+
+        stored = store.load_authorization("prop-000000000001", 1)
+        assert writer.publish_ai_ready is False
+        assert stored is not None
+        assert stored.decision == "denied"
+        assert stored.contract_signature is None
+    finally:
+        store.close()
 
 
 def test_authorizer_uses_the_verbatim_request_not_the_summary(signer):
@@ -653,13 +881,55 @@ class _JiraWriterStub:
     def __init__(self, result):
         self._result = result
 
-    async def write(self, proposal):
+    async def write(self, proposal, *, publish_ai_ready=False):
+        self.publish_ai_ready = publish_ai_ready
         return self._result
 
 
 class _SlackStub:
     async def post_thread_reply(self, channel, thread_ts, user_id, text):
         return None
+
+
+def _approval_proposal():
+    from ticket_agent.domain.intake import (
+        IntakeMode,
+        Proposal,
+        ProposalStatus,
+        TicketSpec,
+    )
+
+    now = datetime(2026, 7, 28, tzinfo=timezone.utc)
+    return Proposal(
+        proposal_id="prop-000000000001",
+        slack_user_id="U1",
+        slack_channel="C1",
+        slack_thread_ts="1.0",
+        mode=IntakeMode.NEW_FEATURE,
+        project_key="LAB",
+        title="Landing page",
+        summary="Ship a Spanish landing page",
+        original_request="Build a landing page in Spanish",
+        tickets=[
+            TicketSpec(
+                summary="Page",
+                repository="ofertas-sv",
+                acceptance_criteria=["Page renders", "Copy is in Spanish"],
+            )
+        ],
+        status=ProposalStatus.AWAITING_CONFIRMATION,
+        created_at=now,
+        expires_at=now,
+    )
+
+
+def _successful_write_result():
+    from ticket_agent.intake.jira_writer import JiraWriteResult
+
+    return JiraWriteResult(
+        project_key="LAB",
+        created_ticket_keys=("LAB-31",),
+    )
 
 
 # -- startup reporting -----------------------------------------------------

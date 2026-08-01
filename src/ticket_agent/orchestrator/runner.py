@@ -10,6 +10,8 @@ from logging import Logger
 import re
 from typing import Any, Protocol
 
+from langgraph.types import Command
+
 from ticket_agent.domain.errors import TicketLockError
 from ticket_agent.domain.execution import TicketLock
 from ticket_agent.observability.telemetry import (
@@ -46,6 +48,8 @@ class TicketWorkItem:
     summary: str
     description: str
     repository: str
+    goal_id: str | None = None
+    labels: tuple[str, ...] = ()
     repo_path: str | None = None
     worktree_path: str | None = None
     branch_name: str | None = None
@@ -153,7 +157,7 @@ class OrchestratorRunner:
         """Run one ticket through the graph when its lock can be acquired."""
 
         if self._execution_preflight is not None:
-            self._execution_preflight.check()
+            self._execution_preflight.check(work_item)
 
         lock = self._lock_manager.acquire(work_item.ticket_key)
         resumed = False
@@ -248,6 +252,70 @@ class OrchestratorRunner:
             else:
                 await self._emit_lock_event(EVENT_LOCK_RELEASED, work_item, lock)
 
+    async def resume_ticket(
+        self,
+        work_item: TicketWorkItem,
+        decision: str,
+    ) -> TicketState:
+        """Resume an interrupted graph under a newly acquired/adopted lock."""
+
+        if self._execution_preflight is not None:
+            self._execution_preflight.check(work_item)
+
+        lock = self._lock_manager.acquire(work_item.ticket_key)
+        if lock is None:
+            lock = self._lock_manager.adopt(work_item.ticket_key)
+        if lock is None:
+            raise TicketAlreadyLockedError(work_item.ticket_key)
+
+        await self._emit_lock_event(EVENT_LOCK_ACQUIRED, work_item, lock)
+        await self._emit(
+            EVENT_TICKET_RESUMED,
+            ticket_key=work_item.ticket_key,
+            component_id=self._component_id,
+            lock_id=_lock_id(lock),
+        )
+        state = self._build_initial_state(work_item, lock)
+        graph_exception: Exception | None = None
+        graph_traceback = None
+        try:
+            result = await self._run_graph_input_with_heartbeat(
+                work_item,
+                Command(resume={"decision": decision}),
+                lock,
+            )
+            final_state = _coerce_graph_result(state, result)
+            await self._emit(
+                EVENT_TICKET_COMPLETED,
+                ticket_key=final_state.ticket_key,
+                component_id=self._component_id,
+                workflow_status=final_state.workflow_status,
+                lock_id=final_state.lock_id,
+            )
+            return final_state
+        except Exception as exc:
+            graph_exception = exc
+            graph_traceback = exc.__traceback__
+            failed_state = _mark_failed(state, exc)
+            await self._emit(
+                EVENT_TICKET_FAILED,
+                ticket_key=failed_state.ticket_key,
+                component_id=self._component_id,
+                error=failed_state.error,
+                lock_id=failed_state.lock_id,
+            )
+            return failed_state
+        finally:
+            try:
+                self._lock_manager.release(lock)
+            except Exception as release_exc:
+                await self._emit_lock_release_failed(work_item, lock, release_exc)
+                if graph_exception is not None:
+                    raise graph_exception.with_traceback(graph_traceback) from None
+                raise
+            else:
+                await self._emit_lock_event(EVENT_LOCK_RELEASED, work_item, lock)
+
     def _build_initial_state(
         self,
         work_item: TicketWorkItem,
@@ -272,6 +340,7 @@ class OrchestratorRunner:
             summary=work_item.summary,
             description=work_item.description,
             repository=work_item.repository,
+            goal_id=work_item.goal_id,
             repo_path=work_item.repo_path,
             worktree_path=work_item.worktree_path,
             pull_request_base_branch=work_item.pull_request_base_branch,
@@ -310,13 +379,25 @@ class OrchestratorRunner:
         *,
         resumed: bool = False,
     ) -> Any:
+        graph_input: TicketState | None = state
+        if resumed and self._has_resumable_checkpoint(work_item.ticket_key):
+            graph_input = None
+        return await self._run_graph_input_with_heartbeat(
+            work_item,
+            graph_input,
+            lock,
+        )
+
+    async def _run_graph_input_with_heartbeat(
+        self,
+        work_item: TicketWorkItem,
+        graph_input: Any,
+        lock: Lock,
+    ) -> Any:
         heartbeat_task = asyncio.create_task(
             self._heartbeat_until_cancelled(work_item, lock),
             name=f"ticket-heartbeat:{work_item.ticket_key}",
         )
-        graph_input: TicketState | None = state
-        if resumed and self._has_resumable_checkpoint(work_item.ticket_key):
-            graph_input = None
         graph_task = asyncio.create_task(
             self._graph.ainvoke(
                 graph_input,

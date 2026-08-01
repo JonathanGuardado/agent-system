@@ -4,6 +4,8 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
+from langgraph.types import Command
+
 from ticket_agent.domain.intake import (
     IntakeMode,
     IntakeResolution,
@@ -35,6 +37,7 @@ from ticket_agent.orchestrator.execution_approval import (
 from ticket_agent.orchestrator.graph import build_ticket_graph
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.state import TicketState
+from ticket_agent.orchestrator.runner import TicketWorkItem
 
 
 class _FakeSlack:
@@ -529,7 +532,6 @@ def test_listener_routes_intake_and_execution_approvals_without_collision(tmp_pa
         assert approved.write_result.created_ticket_keys == ("AGENT-1",)
         assert scenario.jira_client.ticket("AGENT-1").labels == [
             "ai-goal-prop-0000000000ab",
-            "ai-ready",
         ]
     finally:
         scenario.close()
@@ -712,7 +714,8 @@ class _ListenerExecutionScenario:
         self.graph = build_ticket_graph(runner, checkpointer=self.checkpointer)
         handler = ExecutionApprovalCommandHandler(
             store=self.execution_store,
-            graph=self.graph,
+            runner=_ExecutionResumeRunner(self.graph),
+            loader=_ExecutionWorkItemLoader(),
             slack=self.slack,
         )
         self.listener = SlackIntakeListener(
@@ -742,6 +745,27 @@ class _ListenerExecutionScenario:
 class _ExecutionPlanner:
     async def plan(self, state: TicketState) -> dict[str, Any]:
         return {"summary": "Review the execution plan before implementation."}
+
+
+class _ExecutionWorkItemLoader:
+    async def load(self, ticket_key: str) -> TicketWorkItem:
+        return TicketWorkItem(
+            ticket_key=ticket_key,
+            summary="Approval routing",
+            description="",
+            repository="agent-system",
+        )
+
+
+class _ExecutionResumeRunner:
+    def __init__(self, graph) -> None:
+        self.graph = graph
+
+    async def resume_ticket(self, work_item: TicketWorkItem, decision: str):
+        return await self.graph.ainvoke(
+            Command(resume={"decision": decision}),
+            config={"configurable": {"thread_id": work_item.ticket_key}},
+        )
 
 
 class _ExecutionImplementation:

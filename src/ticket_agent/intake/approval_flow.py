@@ -15,6 +15,7 @@ from ticket_agent.domain.intake import (
     TicketSpec,
 )
 from ticket_agent.goal.authorizer import GoalAuthorizer
+from ticket_agent.goal.contract import AuthorizationOutcome
 from ticket_agent.intake.intent_resolver import IntakeIntentResolver
 from ticket_agent.intake.jira_writer import JiraWriteResult, JiraWriter
 from ticket_agent.intake.proposal_generator import (
@@ -196,7 +197,13 @@ class ApprovalFlow:
             )
             return ApprovalResult(outcome=ApprovalOutcome.NO_ACTIVE_PROPOSAL)
 
-        result = await self._jira_writer.write(proposal)
+        authorization = await self._authorize_goal(proposal)
+        result = await self._jira_writer.write(
+            proposal,
+            publish_ai_ready=(
+                authorization is not None and authorization.authorized
+            ),
+        )
         if not result.created_ticket_keys and not result.created_epic_key:
             self._store.mark_status(
                 proposal.proposal_id, ProposalStatus.AWAITING_CONFIRMATION
@@ -223,7 +230,7 @@ class ApprovalFlow:
             )
 
         self._store.mark_status(proposal.proposal_id, ProposalStatus.CONFIRMED)
-        await self._record_goal_contract(proposal, result)
+        self._emit_goal_contract(proposal, authorization)
         message = _format_confirmation_message(result)
         await self._post(
             channel,
@@ -246,29 +253,35 @@ class ApprovalFlow:
             posted_message=message,
         )
 
-    async def _record_goal_contract(
+    async def _authorize_goal(
         self,
         proposal: Proposal,
-        result: JiraWriteResult,
-    ) -> None:
-        """Compile and store what this approval authorized.
-
-        Records only. Nothing gates on the outcome yet -- the autonomy ladder
-        that consumes it lands with the durable spine. The event is emitted
-        either way so an unauthorized-but-approved goal is visible rather than
-        silent.
-        """
+    ) -> AuthorizationOutcome | None:
+        """Persist authority before Jira can publish executable work."""
 
         if self._goal_authorizer is None:
-            return
+            self._emit_event(
+                "goal.contract_failed",
+                {
+                    "proposal_id": proposal.proposal_id,
+                    "error": "goal authorizer is not configured",
+                },
+            )
+            return None
         try:
-            outcome = await self._goal_authorizer.authorize(proposal, result)
+            return await self._goal_authorizer.authorize(proposal)
         except Exception as exc:  # noqa: BLE001 - never break intake
             self._emit_event(
                 "goal.contract_failed",
                 {"proposal_id": proposal.proposal_id, "error": str(exc)},
             )
-            return
+            return None
+
+    def _emit_goal_contract(
+        self,
+        proposal: Proposal,
+        outcome: AuthorizationOutcome | None,
+    ) -> None:
         if outcome is None:
             return
         self._emit_event(

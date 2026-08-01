@@ -624,9 +624,9 @@ P12 checklist:
 - [x] schema vocabulary with canonical-JSON digests
 - [x] `TicketState` `extra="forbid"` (see below) + `committing`/`verifying`
 - [x] `GoalContract` compilation, signing, and intake authorization
-- [ ] `goal_id` on `TicketWorkItem`, populated from the Jira epic and threaded
-      into `TicketState`
-- [ ] execution refuses to start when the goal has no authorized contract and
+- [x] `goal_id` on `TicketWorkItem`, populated from the canonical Jira goal
+      label and threaded into `TicketState`
+- [x] execution refuses to start when the goal has no authorized contract and
       autonomous execution was requested
 - [ ] `resolve_autonomy` consulted on the execution path, not only at intake
 - [ ] durable spine: loop state in SQLite, Jira written *from* it
@@ -779,6 +779,23 @@ Resume reacquires or explicitly adopts the execution lock, then revalidates
 authorization, revocation, autonomy, and sandbox readiness; it no longer calls
 `graph.ainvoke` as an unguarded shortcut. Action-boundary checks remain as
 defense in depth.
+
+P12.2b+c checklist:
+
+- [x] persist signed authorization evidence, decision, semantic verdict, and
+      denial reasons; retain denied and legacy rows as non-authorizing audit
+- [x] publish `ai-ready` only after affirmative evidence is durably stored
+- [x] append separately signed operator revocations without altering the
+      authorization row; calculate the latest effective decision fail closed
+- [x] shared preflight verifies identity, contract/evidence digests and
+      signatures, current revocation, repository scope, autonomy floor, and
+      sandbox readiness
+- [x] Jira, feedback, approval resume, runner, local implementation, and
+      restart resume consume the shared guard before execution mutation
+- [x] approval resume loads current Jira identity and returns through the
+      lock-owning runner with heartbeat instead of invoking LangGraph directly
+- [ ] persisted `AutonomyDecision` and named action ceilings (P12.2d)
+- [ ] remaining per-operation journal coverage and crash matrix (P12.2e)
 
 **P12.2d — autonomy decisions and ceilings.** Each goal persists an
 `AutonomyDecision` containing effective mode and every binding ceiling, with a

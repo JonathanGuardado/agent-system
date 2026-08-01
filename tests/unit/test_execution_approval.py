@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
+from langgraph.types import Command
 
 from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
 from ticket_agent.locking.checkpointer import SQLiteCheckpointer
@@ -17,6 +18,7 @@ from ticket_agent.orchestrator.execution_approval import (
 from ticket_agent.orchestrator.graph import build_ticket_graph
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.state import TicketState
+from ticket_agent.orchestrator.runner import TicketWorkItem
 
 
 def test_execution_approval_posts_to_slack_and_pauses_before_implement(tmp_path):
@@ -115,7 +117,6 @@ def test_multiline_approval_commands_are_handled_as_batch(tmp_path):
     )
     handler = ExecutionApprovalCommandHandler(
         store=store,
-        graph=_NeverCalledGraph(),
         slack=slack,
         dry_run=True,
     )
@@ -150,16 +151,31 @@ def test_multiline_approval_command_matcher_rejects_mixed_text():
 
 def test_execution_approval_preflight_refuses_before_graph_resume(tmp_path):
     store = SQLiteExecutionApprovalStore(tmp_path / "approvals.sqlite3")
-    graph = _NeverCalledGraph()
+    store.create_pending(
+        ticket_key="AGENT-123",
+        slack_channel="C-EXEC",
+        slack_thread_ts="thr-1",
+        plan_summary="Blocked plan",
+    )
+    runner = _NeverCalledResumeRunner()
     handler = ExecutionApprovalCommandHandler(
         store=store,
-        graph=graph,
+        runner=runner,
+        loader=_StaticLoader(),
         execution_preflight=_FailingPreflight(),
     )
 
     try:
         with pytest.raises(SandboxUnavailableError, match="sandbox unavailable"):
-            asyncio.run(handler._resume("AGENT-123", "approve"))
+            asyncio.run(
+                handler.handle_message(
+                    text="approve AGENT-123",
+                    channel="C-EXEC",
+                    thread_ts="thr-1",
+                    user_id="U1",
+                )
+            )
+        assert store.get("AGENT-123").status == "pending"
     finally:
         store.close()
     assert is_execution_approval_command(
@@ -354,7 +370,8 @@ class _Scenario:
         self.graph = build_ticket_graph(runner, checkpointer=self.checkpointer)
         self.handler = ExecutionApprovalCommandHandler(
             store=self.store,
-            graph=self.graph,
+            runner=_GraphResumeRunner(self.graph),
+            loader=_StaticLoader(),
             slack=self.slack,
         )
 
@@ -389,14 +406,36 @@ class _FakeSlack:
 
 
 class _FailingPreflight:
-    def check(self):
+    def check(self, subject=None):
+        del subject
         raise SandboxUnavailableError("sandbox unavailable")
 
 
-class _NeverCalledGraph:
-    async def ainvoke(self, graph_input: Any, config: dict[str, Any]) -> Any:
-        del graph_input, config
-        raise AssertionError("dry-run approval should not resume the graph")
+class _StaticLoader:
+    async def load(self, ticket_key: str) -> TicketWorkItem:
+        return TicketWorkItem(
+            ticket_key=ticket_key,
+            summary="Execution approval",
+            description="",
+            repository="agent-system",
+        )
+
+
+class _GraphResumeRunner:
+    def __init__(self, graph) -> None:
+        self.graph = graph
+
+    async def resume_ticket(self, work_item: TicketWorkItem, decision: str):
+        return await self.graph.ainvoke(
+            Command(resume={"decision": decision}),
+            config={"configurable": {"thread_id": work_item.ticket_key}},
+        )
+
+
+class _NeverCalledResumeRunner:
+    async def resume_ticket(self, work_item: TicketWorkItem, decision: str):
+        del work_item, decision
+        raise AssertionError("preflight refusal must not resume the graph")
 
 
 class _Planner:

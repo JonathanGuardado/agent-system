@@ -114,7 +114,12 @@ class JiraWriter:
         self._goal_spine = goal_spine
         self._component_id = component_id
 
-    async def write(self, proposal: Proposal) -> JiraWriteResult:
+    async def write(
+        self,
+        proposal: Proposal,
+        *,
+        publish_ai_ready: bool = False,
+    ) -> JiraWriteResult:
         try:
             goal_id = normalize_goal_id(proposal.proposal_id)
             canonical_goal_label = goal_label(goal_id)
@@ -177,7 +182,10 @@ class JiraWriter:
                 proposal,
                 context,
                 parent_key=parent_key,
-                execution_ready=_ticket_starts_execution_ready(proposal, index),
+                execution_ready=(
+                    publish_ai_ready
+                    and _ticket_starts_execution_ready(proposal, index)
+                ),
                 delivery=delivery,
                 step_index=index,
                 goal_id=goal_id,

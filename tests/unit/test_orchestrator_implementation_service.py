@@ -544,7 +544,8 @@ class _FakeFileAdapter:
 
 
 class _FailingPreflight:
-    def check(self):
+    def check(self, subject=None):
+        del subject
         raise SandboxUnavailableError("sandbox unavailable")
 
 

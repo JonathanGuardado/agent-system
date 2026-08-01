@@ -8,7 +8,6 @@ proposal looks like.
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Protocol
 
 from ticket_agent.domain.intake import Proposal
@@ -20,12 +19,9 @@ from ticket_agent.goal.contract import (
 from ticket_agent.goal.types import Budgets
 from ticket_agent.goal.identity import normalize_goal_id
 
-_LOGGER = logging.getLogger(__name__)
-
-
 class GoalAuthorizer(Protocol):
     async def authorize(
-        self, proposal: Proposal, write_result: Any
+        self, proposal: Proposal, write_result: Any = None
     ) -> AuthorizationOutcome | None: ...
 
 
@@ -35,7 +31,7 @@ class NullGoalAuthorizer:
     __slots__ = ()
 
     async def authorize(
-        self, proposal: Proposal, write_result: Any
+        self, proposal: Proposal, write_result: Any = None
     ) -> AuthorizationOutcome | None:
         return None
 
@@ -55,7 +51,7 @@ class ProposalGoalAuthorizer:
         self._default_budgets = default_budgets or Budgets()
 
     async def authorize(
-        self, proposal: Proposal, write_result: Any
+        self, proposal: Proposal, write_result: Any = None
     ) -> AuthorizationOutcome | None:
         goal_id = _goal_id(proposal, write_result)
 
@@ -73,10 +69,7 @@ class ProposalGoalAuthorizer:
         )
 
         if self._store is not None:
-            try:
-                self._store.save(outcome.contract, outcome.signature)
-            except Exception as exc:  # noqa: BLE001 - storage must not break intake
-                _LOGGER.warning("could not store goal contract %s: %s", goal_id, exc)
+            self._store.save_outcome(outcome)
 
         return outcome
 

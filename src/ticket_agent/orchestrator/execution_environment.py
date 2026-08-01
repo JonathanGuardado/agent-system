@@ -15,7 +15,7 @@ from ticket_agent.adapters.local.sandbox import (
 class ExecutionPreflight(Protocol):
     """Guard shared by every production execution entry point."""
 
-    def check(self) -> Sandbox:
+    def check(self, subject: object | None = None) -> Sandbox:
         """Return the enforcing sandbox or refuse before execution mutation."""
 
 
@@ -30,7 +30,8 @@ class ExecutionEnvironmentPreflight:
             lambda: build_sandbox(required=True)
         )
 
-    def check(self) -> Sandbox:
+    def check(self, subject: object | None = None) -> Sandbox:
+        del subject
         sandbox = self._sandbox_factory()
         # A configured policy string is not evidence. Consult the wrapper
         # object that will actually build the launch argv.
@@ -42,4 +43,7 @@ class ExecutionEnvironmentPreflight:
         return sandbox
 
 
-__all__ = ["ExecutionEnvironmentPreflight", "ExecutionPreflight"]
+__all__ = [
+    "ExecutionEnvironmentPreflight",
+    "ExecutionPreflight",
+]

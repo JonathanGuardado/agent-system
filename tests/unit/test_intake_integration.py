@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from ticket_agent.detection.detector import DetectionComponent
 from ticket_agent.detection.jira_search import JiraDetectionSearchClient
@@ -39,6 +40,20 @@ class _FakeSlack:
         self.messages.append((channel, thread_ts, user_id, text))
 
 
+class _AffirmativeAuthorizer:
+    async def authorize(self, proposal, write_result=None):
+        del write_result
+        return SimpleNamespace(
+            authorized=True,
+            contract=SimpleNamespace(
+                goal_id=proposal.proposal_id,
+                risk_class="low",
+            ),
+            signature=object(),
+            escalation_reasons=lambda: (),
+        )
+
+
 def test_slack_message_to_ai_ready_jira_ticket(tmp_path):
     store = ProposalStore(tmp_path / "proposals.db")
     slack = _FakeSlack()
@@ -51,6 +66,7 @@ def test_slack_message_to_ai_ready_jira_ticket(tmp_path):
         ),
         store=store,
         jira_writer=JiraWriter(jira_client),
+        goal_authorizer=_AffirmativeAuthorizer(),
         slack=slack,
         repo_defaults={
             "AGENT": {
@@ -137,6 +153,7 @@ def test_plain_text_approval_creates_epic_and_child_tasks(tmp_path):
         ),
         store=store,
         jira_writer=JiraWriter(jira_client),
+        goal_authorizer=_AffirmativeAuthorizer(),
         slack=slack,
         repo_defaults={
             "AGENT": {

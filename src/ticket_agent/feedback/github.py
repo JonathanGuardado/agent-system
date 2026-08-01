@@ -446,9 +446,9 @@ class FeedbackExecutionCoordinator:
         self._execution_preflight = execution_preflight
 
     async def run_feedback(self, item: FeedbackItem) -> TicketState:
-        if self._execution_preflight is not None:
-            self._execution_preflight.check()
         base = await self._loader.load(item.ticket_key)
+        if self._execution_preflight is not None:
+            self._execution_preflight.check(base)
         short_id = item.fingerprint[:8]
         worktree = self._worktree_factory.create_worktree_for_branch(
             item.repo_path,

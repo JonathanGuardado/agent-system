@@ -73,7 +73,7 @@ def test_write_creates_ai_ready_ticket_with_required_fields():
     client = FakeJiraClient([])
     writer = JiraWriter(client)
 
-    result = asyncio.run(writer.write(_proposal()))
+    result = asyncio.run(writer.write(_proposal(), publish_ai_ready=True))
 
     assert result.success is True
     assert result.partial is False
@@ -108,7 +108,7 @@ def test_write_creates_epic_for_multi_ticket_proposal():
     client = FakeJiraClient([])
     writer = JiraWriter(client)
 
-    result = asyncio.run(writer.write(proposal))
+    result = asyncio.run(writer.write(proposal, publish_ai_ready=True))
 
     assert result.created_epic_key == "AGENT-1"
     assert result.created_ticket_keys == ("AGENT-2", "AGENT-3", "AGENT-4")
@@ -168,7 +168,7 @@ def test_new_project_multi_ticket_starts_only_first_ticket_execution_ready():
     client = FakeJiraClient([])
     writer = JiraWriter(client)
 
-    result = asyncio.run(writer.write(proposal))
+    result = asyncio.run(writer.write(proposal, publish_ai_ready=True))
 
     assert result.created_epic_key == "AGENT-1"
     assert result.created_ticket_keys == ("AGENT-2", "AGENT-3", "AGENT-4")
@@ -352,10 +352,21 @@ def test_write_adds_ai_ready_label_when_spec_lacks_it():
     client = FakeJiraClient([])
     writer = JiraWriter(client)
 
-    asyncio.run(writer.write(proposal))
+    asyncio.run(writer.write(proposal, publish_ai_ready=True))
 
     ticket = client.tickets["AGENT-1"]
     assert LABEL_AI_READY in ticket.labels
+
+
+def test_write_does_not_publish_ai_ready_without_affirmative_flag():
+    client = FakeJiraClient([])
+
+    result = asyncio.run(JiraWriter(client).write(_proposal()))
+
+    ticket = client.ticket("AGENT-1")
+    assert result.execution_ready_ticket_keys == ()
+    assert LABEL_AI_READY not in ticket.labels
+    assert goal_label("prop-000000000001") in ticket.labels
 
 
 @pytest.mark.parametrize(
@@ -422,7 +433,7 @@ def test_write_retries_without_optional_fields_when_jira_screen_rejects_them():
     )
     writer = JiraWriter(client)
 
-    result = asyncio.run(writer.write(_proposal()))
+    result = asyncio.run(writer.write(_proposal(), publish_ai_ready=True))
 
     assert result.success is True
     assert result.created_ticket_keys == ("AGENT-1",)

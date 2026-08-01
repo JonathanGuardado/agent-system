@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 from ticket_agent.config.repo_contract import load_repo_contract
-from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
 from ticket_agent.detection.detector import DetectionComponent
 from ticket_agent.detection.jira_search import JiraDetectionSearchClient
 from ticket_agent.detection.ownership import OwnershipChecker
@@ -36,9 +35,10 @@ from ticket_agent.goal.contract import (
     GoalContractCompiler,
     SQLiteGoalContractStore,
 )
+from ticket_agent.goal.execution_preflight import ExecutionAuthorizationPreflight
 from ticket_agent.goal.policy import load_risk_policy
-from ticket_agent.goal.semantic_check import ModelSemanticChecker
-from ticket_agent.goal.signing import SigningError, load_signer
+from ticket_agent.goal.semantic_check import ModelSemanticChecker, SemanticChecker
+from ticket_agent.goal.signing import NullSigner, Signer, SigningError, load_signer
 from ticket_agent.goal.spine import SQLiteGoalSpine
 from ticket_agent.intake.approval_flow import ApprovalFlow, SlackPoster
 from ticket_agent.intake.intent_resolver import IntakeIntentResolver
@@ -81,6 +81,7 @@ from ticket_agent.orchestrator.execution_approval import (
 )
 from ticket_agent.orchestrator.execution_environment import (
     ExecutionEnvironmentPreflight,
+    ExecutionPreflight,
 )
 from ticket_agent.orchestrator.execution_worker import ExecutionWorker
 from ticket_agent.orchestrator.git_services import (
@@ -239,8 +240,10 @@ class AgentSystemRuntime:
     config: RuntimeConfig
     database_paths: Mapping[str, Path]
     goal_spine: SQLiteGoalSpine
+    goal_contract_store: SQLiteGoalContractStore
+    work_item_loader: JiraWorkItemLoader
     emit: EventEmitter | None = None
-    execution_preflight: ExecutionEnvironmentPreflight | None = None
+    execution_preflight: ExecutionPreflight | None = None
 
     async def run_execution_services(self) -> None:
         """Run detection, worker, and reconciler loops until cancelled."""
@@ -277,10 +280,12 @@ class AgentSystemRuntime:
             limit=self.config.reconcile_batch_size,
         )
         if active_locks and self.execution_preflight is not None:
-            try:
-                self.execution_preflight.check()
-            except SandboxUnavailableError as exc:
-                for lock in active_locks:
+            authorized_locks = []
+            for lock in active_locks:
+                try:
+                    work_item = await self.work_item_loader.load(lock.ticket_key)
+                    self.execution_preflight.check(work_item)
+                except Exception as exc:  # noqa: BLE001 - refusal is fail closed
                     await _emit(
                         self.emit,
                         "runtime.resume_blocked",
@@ -291,7 +296,9 @@ class AgentSystemRuntime:
                             "reason": str(exc),
                         },
                     )
-                return 0
+                    continue
+                authorized_locks.append(lock)
+            active_locks = authorized_locks
         for lock in active_locks:
             await self.queue.put(lock.ticket_key)
             await _emit(
@@ -324,6 +331,7 @@ class AgentSystemRuntime:
         self.proposal_store.close()
         self.lock_manager.close()
         self.goal_spine.close()
+        self.goal_contract_store.close()
         if self.feedback_store is not None:
             self.feedback_store.close()
         if self.delivery_store is not None:
@@ -336,6 +344,8 @@ def build_runtime(
     slack: SlackPoster,
     config: RuntimeConfig | None = None,
     model_router: ModelRouterProtocol | None = None,
+    semantic_checker: SemanticChecker | None = None,
+    execution_environment_preflight: ExecutionEnvironmentPreflight | None = None,
     planner: PlannerService | None = None,
     implementation: ImplementationService | None = None,
     tests: TestService | None = None,
@@ -373,11 +383,23 @@ def build_runtime(
         emit=emit,
     )
     goal_spine = SQLiteGoalSpine(database_paths["goal_spine"])
+    goal_contract_store = SQLiteGoalContractStore(database_paths["goal_contracts"])
+    try:
+        goal_signer = load_signer(runtime_config.signing_key_path, data_dir=data_dir)
+    except SigningError as exc:
+        raise StartupConfigError(f"signing key is unusable: {exc}") from exc
 
     transcripts = _build_transcript_recorder(runtime_config, data_dir, repo_defaults)
     telemetry = _build_telemetry_recorder(runtime_config, database_paths)
-    execution_preflight = ExecutionEnvironmentPreflight()
-    shell_factory = RuntimeShellFactory(execution_preflight)
+    environment_preflight = (
+        execution_environment_preflight or ExecutionEnvironmentPreflight()
+    )
+    execution_preflight = ExecutionAuthorizationPreflight(
+        environment_preflight,
+        goal_contract_store,
+        goal_signer,
+    )
+    shell_factory = RuntimeShellFactory(environment_preflight)
 
     router = model_router
     if planner is None or implementation is None or review is None:
@@ -458,11 +480,12 @@ def build_runtime(
         max_backoff_seconds=runtime_config.max_backoff_seconds,
         emit=emit,
     )
+    work_item_loader = JiraWorkItemLoader(
+        jira_client,
+        repo_defaults=repo_defaults,
+    )
     jira_coordinator = JiraExecutionCoordinator(
-        JiraWorkItemLoader(
-            jira_client,
-            repo_defaults=repo_defaults,
-        ),
+        work_item_loader,
         execution_service,
         runner,
         emit=emit,
@@ -517,10 +540,7 @@ def build_runtime(
         feedback_worker = FeedbackWorker(
             feedback_queue,
             FeedbackExecutionCoordinator(
-                loader=JiraWorkItemLoader(
-                    jira_client,
-                    repo_defaults=repo_defaults,
-                ),
+                loader=work_item_loader,
                 runner=runner,
                 worktree_cleaner=worktree_cleaner,
                 execution_preflight=execution_preflight,
@@ -546,13 +566,18 @@ def build_runtime(
         repo_defaults=repo_defaults,
         emit=emit,
         goal_authorizer=_build_goal_authorizer(
-            runtime_config, data_dir, database_paths, router
+            runtime_config,
+            router,
+            store=goal_contract_store,
+            signer=goal_signer,
+            semantic_checker=semantic_checker,
         ),
     )
     dry_run_finalizer = _DryRunExecutionFinalizer(execution_service, slack)
     execution_approval_handler = ExecutionApprovalCommandHandler(
         store=approval_store,
-        graph=graph,
+        runner=runner,
+        loader=work_item_loader,
         slack=slack,
         on_resumed=jira_coordinator.finalize_resumed_state,
         dry_run=runtime_config.execution_mode == "dry_run",
@@ -594,6 +619,8 @@ def build_runtime(
         config=runtime_config,
         database_paths=database_paths,
         goal_spine=goal_spine,
+        goal_contract_store=goal_contract_store,
+        work_item_loader=work_item_loader,
         emit=emit,
         execution_preflight=execution_preflight,
     )
@@ -1154,24 +1181,17 @@ def _transcript_dir(data_dir: Path) -> Path:
 
 def _build_goal_authorizer(
     config: RuntimeConfig,
-    data_dir: Path,
-    database_paths: Mapping[str, Path],
     router: Any,
-) -> ProposalGoalAuthorizer | None:
-    """Build the goal-contract authorizer, or None when unconfigured.
+    *,
+    store: SQLiteGoalContractStore,
+    signer: Signer | NullSigner,
+    semantic_checker: SemanticChecker | None = None,
+) -> ProposalGoalAuthorizer:
+    """Build a fail-closed authorizer that durably records denied outcomes."""
 
-    Returns None rather than a permissive stand-in: a system that cannot sign
-    or has nobody allowlisted should record nothing, not record something that
-    looks authorized.
-    """
-
-    if not config.goal_allowlist_users:
-        return None
-    try:
-        signer = load_signer(config.signing_key_path, data_dir=data_dir)
-    except SigningError as exc:
-        raise StartupConfigError(f"signing key is unusable: {exc}") from exc
-
+    checker = semantic_checker
+    if checker is None and router is not None:
+        checker = ModelSemanticChecker(router)
     compiler = GoalContractCompiler(
         policy=load_risk_policy(config.risk_policy_path),
         allowlist=Allowlist(
@@ -1179,13 +1199,11 @@ def _build_goal_authorizer(
             channels=frozenset(config.goal_allowlist_channels),
         ),
         signer=signer,
-        semantic_checker=(
-            ModelSemanticChecker(router) if router is not None else None
-        ),
+        semantic_checker=checker,
     )
     return ProposalGoalAuthorizer(
         compiler,
-        SQLiteGoalContractStore(database_paths["goal_contracts"]),
+        store,
     )
 
 

@@ -191,6 +191,45 @@ def test_runner_resumes_from_checkpoint_when_adopting_existing_lock():
     }
 
 
+def test_approval_resume_reacquires_lock_and_uses_runner_heartbeat_path():
+    graph = _ResumeGraph()
+    lock_manager = _LockManager(lock=_Lock("AGENT-123", lock_id="resume-lock"))
+    preflight = _RecordingPreflight()
+    claims: list[str] = []
+    runner = _runner(
+        graph,
+        lock_manager,
+        claim_ticket=lambda ticket_key: claims.append(ticket_key),
+        execution_preflight=preflight,
+    )
+    work_item = _work_item(goal_id="prop-000000000001")
+
+    state = asyncio.run(runner.resume_ticket(work_item, "approved"))
+
+    assert state.workflow_status == "completed"
+    assert preflight.subjects == [work_item]
+    assert lock_manager.acquires == ["AGENT-123"]
+    assert lock_manager.releases == [lock_manager.lock]
+    assert claims == []
+    assert graph.last_input.resume == {"decision": "approved"}
+
+
+def test_approval_resume_revalidates_before_lock_acquisition():
+    graph = _ResumeGraph()
+    lock_manager = _LockManager(lock=_Lock("AGENT-123", lock_id="resume-lock"))
+    runner = _runner(
+        graph,
+        lock_manager,
+        execution_preflight=_FailingPreflight(),
+    )
+
+    with pytest.raises(SandboxUnavailableError, match="sandbox unavailable"):
+        asyncio.run(runner.resume_ticket(_work_item(), "approved"))
+
+    assert lock_manager.acquires == []
+    assert graph.invocations == 0
+
+
 def test_runner_resume_without_saved_checkpoint_falls_back_to_state_input():
     """Adopted lock without a saved checkpoint must still drive the graph.
 
@@ -637,6 +676,24 @@ class _BlockingGraph:
         return state.model_copy(update={"workflow_status": "completed"})
 
 
+class _ResumeGraph:
+    def __init__(self) -> None:
+        self.invocations = 0
+        self.last_input = None
+
+    async def ainvoke(self, graph_input, config=None) -> TicketState:
+        del config
+        self.invocations += 1
+        self.last_input = graph_input
+        return TicketState(
+            ticket_key="AGENT-123",
+            summary="Resumed",
+            repository="agent-system",
+            goal_id="prop-000000000001",
+            workflow_status="completed",
+        )
+
+
 class _EventRecorder:
     def __init__(self) -> None:
         self.events: list[tuple[str, dict[str, Any]]] = []
@@ -674,6 +731,16 @@ class _FailingPreflight:
     def __init__(self) -> None:
         self.calls = 0
 
-    def check(self):
+    def check(self, subject=None):
+        del subject
         self.calls += 1
         raise SandboxUnavailableError("sandbox unavailable")
+
+
+class _RecordingPreflight:
+    def __init__(self) -> None:
+        self.subjects = []
+
+    def check(self, subject=None):
+        self.subjects.append(subject)
+        return object()

@@ -13,13 +13,14 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Literal, Protocol
 
-from langgraph.types import Command, interrupt
+from langgraph.types import interrupt
 
 from ticket_agent.sqlite_support import connect as _connect
 from ticket_agent.sqlite_support import write_transaction as _write_transaction
 from ticket_agent.orchestrator.services import ApprovalDecision
 from ticket_agent.orchestrator.state import TicketState
 from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
+from ticket_agent.orchestrator.runner import TicketWorkItem
 
 
 ApprovalStatus = Literal["pending", "approved", "rejected", "expired"]
@@ -55,13 +56,18 @@ class ExecutionApprovalCommandResult:
     graph_result: Any
 
 
-class ResumableGraph(Protocol):
-    def ainvoke(
+class ApprovalWorkItemLoader(Protocol):
+    async def load(self, ticket_key: str) -> TicketWorkItem:
+        """Load current identity and repository context before resume."""
+
+
+class ApprovalResumeRunner(Protocol):
+    async def resume_ticket(
         self,
-        graph_input: Any,
-        config: Mapping[str, Any],
-    ) -> Awaitable[Any]:
-        """Resume a checkpointed graph thread."""
+        work_item: TicketWorkItem,
+        decision: str,
+    ) -> Any:
+        """Resume through the lock-owning orchestrator runner."""
 
 
 class SlackPoster(Protocol):
@@ -406,7 +412,8 @@ class ExecutionApprovalCommandHandler:
         self,
         *,
         store: SQLiteExecutionApprovalStore,
-        graph: ResumableGraph,
+        runner: ApprovalResumeRunner | None = None,
+        loader: ApprovalWorkItemLoader | None = None,
         slack: SlackPoster | None = None,
         poster_user_id: str = "execution-approval",
         on_resumed: ResumeCallback | None = None,
@@ -415,7 +422,8 @@ class ExecutionApprovalCommandHandler:
         execution_preflight: ExecutionPreflight | None = None,
     ) -> None:
         self._store = store
-        self._graph = graph
+        self._runner = runner
+        self._loader = loader
         self._slack = slack
         self._poster_user_id = poster_user_id
         self._on_resumed = on_resumed
@@ -463,6 +471,12 @@ class ExecutionApprovalCommandHandler:
         channel: str | None,
         thread_ts: str | None,
     ) -> ExecutionApprovalCommandResult | None:
+        work_item = None
+        if not self._dry_run:
+            pending = self._store.get(ticket_key)
+            if pending is None or pending.status != "pending":
+                return None
+            work_item = await self._prepare_resume(ticket_key)
         approval = (
             self._store.mark_approved(ticket_key)
             if action == "approve"
@@ -475,7 +489,11 @@ class ExecutionApprovalCommandHandler:
             graph_result = _dry_run_result(approval, action)
             await self._after_dry_run_decision(approval, action)
         else:
-            graph_result = await self._resume(ticket_key, action)
+            graph_result = await self._resume(
+                ticket_key,
+                action,
+                work_item=work_item,
+            )
             await self._after_resume(ticket_key, graph_result)
         await self._post_ack(
             approval,
@@ -494,10 +512,18 @@ class ExecutionApprovalCommandHandler:
         self,
         ticket_key: str,
     ) -> ExecutionApprovalCommandResult | None:
+        pending = self._store.get(ticket_key)
+        if pending is None or pending.status != "pending":
+            return None
+        work_item = await self._prepare_resume(ticket_key)
         approval = self._store.mark_expired(ticket_key)
         if approval is None:
             return None
-        graph_result = await self._resume(ticket_key, "expire")
+        graph_result = await self._resume(
+            ticket_key,
+            "expire",
+            work_item=work_item,
+        )
         await self._after_resume(ticket_key, graph_result)
         return ExecutionApprovalCommandResult(
             action="expire",
@@ -506,14 +532,28 @@ class ExecutionApprovalCommandHandler:
             graph_result=graph_result,
         )
 
-    async def _resume(self, ticket_key: str, action: str) -> Any:
+    async def _prepare_resume(self, ticket_key: str) -> TicketWorkItem:
+        if self._runner is None or self._loader is None:
+            raise RuntimeError(
+                "checkpoint resume requires a work-item loader and lock-owning runner"
+            )
+        work_item = await self._loader.load(ticket_key)
         if self._execution_preflight is not None:
-            self._execution_preflight.check()
+            self._execution_preflight.check(work_item)
+        return work_item
+
+    async def _resume(
+        self,
+        ticket_key: str,
+        action: str,
+        *,
+        work_item: TicketWorkItem | None = None,
+    ) -> Any:
+        work_item = work_item or await self._prepare_resume(ticket_key)
+        if self._runner is None:
+            raise RuntimeError("checkpoint resume requires a lock-owning runner")
         decision = "approved" if action == "approve" else action
-        return await self._graph.ainvoke(
-            Command(resume={"decision": decision}),
-            config={"configurable": {"thread_id": ticket_key}},
-        )
+        return await self._runner.resume_ticket(work_item, decision)
 
     async def _after_resume(self, ticket_key: str, graph_result: Any) -> None:
         if self._on_resumed is None:

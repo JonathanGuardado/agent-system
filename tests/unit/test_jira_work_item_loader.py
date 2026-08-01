@@ -38,6 +38,7 @@ def test_load_converts_jira_ticket_to_work_item():
         summary="Implement Jira execution",
         description="Wire execution state to Jira.",
         repository="agent-system",
+        labels=("ai-ready",),
         repo_path="/repos/agent-system",
         slack_channel="C-EXEC",
         slack_thread_ts="thread-1",
@@ -58,6 +59,23 @@ def test_load_uses_work_item_max_attempts_default_when_field_is_absent():
     work_item = asyncio.run(loader.load("AGENT-123"))
 
     assert work_item.max_attempts == 3
+
+
+def test_load_preserves_missing_identity_for_execution_preflight_refusal():
+    ticket = _ticket(
+        fields={
+            FIELD_REPOSITORY: "agent-system",
+            FIELD_REPO_PATH: "/repos/agent-system",
+        },
+        labels=["ai-ready"],
+    )
+
+    work_item = asyncio.run(
+        JiraWorkItemLoader(_FakeJiraClient(ticket)).load("AGENT-123")
+    )
+
+    assert work_item.goal_id is None
+    assert work_item.labels == ("ai-ready",)
 
 
 def test_load_appends_jira_comments_to_work_item_description():

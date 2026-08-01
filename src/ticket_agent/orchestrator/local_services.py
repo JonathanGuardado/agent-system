@@ -186,7 +186,7 @@ class LocalImplementationService:
 
         try:
             if self._execution_preflight is not None:
-                self._execution_preflight.check()
+                self._execution_preflight.check(state)
             worktree = _worktree_info(
                 state,
                 repo_path,
