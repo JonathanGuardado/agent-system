@@ -16,23 +16,37 @@ At a high level, the system flows through these stages:
 ```txt
 Slack request
   -> model-assisted proposal
-  -> intake approval
+  -> human intake approval
   -> Jira epic/tasks
   -> ai-ready detection
-  -> SQLite ticket lock
-  -> LangGraph workflow
-  -> execution approval
-  -> implementation tools
-  -> tests
+  -> SQLite ticket lock/checkpoint
+  -> LangGraph planning
+  -> execution approval (automatic or Slack, depending on policy)
+  -> implementation
+  -> worktree tests
+  -> summary-based model review
+  -> commit/push
   -> pull request
-  -> Jira and Slack update
+  -> Jira and Slack reporting
 ```
 
-Slack is the human-facing interface. Jira is the execution source of truth.
-SQLite provides local coordination for locks and future workflow checkpoints.
-LangGraph is intended to orchestrate the execution workflow, while the actual
-coding, file, shell, test, and git operations stay in explicit Python
-components.
+> **This is a bounded, human-supervised ticket-processing system. Unattended
+> autonomous delivery is not ready.** The system never merges pull requests
+> automatically: the runtime opens PRs and does not merge them, and any review
+> or merge is performed by a human as required by current policy. See the
+> [Roadmap](#roadmap) for what is missing and in what order it lands.
+
+Slack is the human-facing interface, and **Jira is the execution source of
+truth today** — detection reads from Jira and the orchestrator works from Jira
+tickets. (After P12 the authorized `GoalContract` becomes the scope authority
+and Jira becomes a projection; that migration has not happened.) SQLite
+provides local coordination for locks and workflow checkpoints. LangGraph
+orchestrates the execution workflow, while the actual coding, file, shell,
+test, and git operations stay in explicit Python components.
+
+**Target repositories are external inputs** to the runtime, each described by a
+`config/repos/*.yaml` contract; the application changes produced inside them
+are the runtime's outputs.
 
 ## Slack Usage
 
@@ -261,7 +275,7 @@ Local prerequisites that are not environment variables:
 3. Run unit tests:
 
    ```bash
-   PATH="$PWD/.venv/bin:$PATH" pytest tests/unit/ -q
+   PATH="$PWD/.venv/bin:$PATH" python -m pytest tests/unit/ -q
    ```
 
 4. Run smoke without network calls:
@@ -290,46 +304,70 @@ Local prerequisites that are not environment variables:
 
 ## Roadmap
 
-The MVP pipeline (P0–P5) is complete: Slack intake, Jira tickets, detection,
-locking, the LangGraph workflow, implementation, tests, PR creation, and
-feedback polling all run end to end. The next phases close the gap between
-"the pipeline works" and "the system autonomously turns ideas into
-merge-quality PRs." Full implementation specs for each phase live in
-[CLAUDE.md](CLAUDE.md#roadmap-capability-phases-p6p11); work them in order,
-one phase per PR.
+**P0–P7 are complete: a bounded, human-reviewed ticket-processing pipeline.**
+Slack intake, Jira tickets, detection, locking, the LangGraph workflow,
+implementation, tests, PR creation, and feedback polling are implemented and
+unit-tested. External Slack/Jira/GitHub end-to-end verification remains manual.
 
-- **P6 — Implementation loop upgrade. (done)** The coding loop gained
-  `search` (regex over the worktree), `edit_file` (exact-string patching
-  instead of full-file rewrites), paginated `read_file`, a guard that blocks
-  blind rewrites of partially-read files, and a bounded `run_tests` action
-  that runs the repo-contract test command inside the loop.
-- **P7 — Acceptance criteria pipeline. (done)** Intake proposals now include
-  testable acceptance criteria (with one clarifying-question round in Slack
-  when a request is ambiguous), rendered into the Jira description under an
-  `Acceptance Criteria` heading. Plans return a `criteria_coverage` map, and
-  review returns a per-criterion verdict that routes to rejected when any
-  criterion is unmet. Multi-ticket proposals are ordered foundation-first so
-  the first ticket establishes the shared scaffold the rest build on.
-- **P8 — Bug-fix work profile.** Tickets typed/labeled as bugs get a
-  reproduce-first flow: write a failing regression test, confirm it fails,
-  fix, confirm green. Review requires the regression test.
-- **P9 — Diff-based review + lint gate.** Review reads the real git diff
-  from the worktree, and the repo contract's `lint` command runs after
-  tests, routing back to implementation on failure.
-- **P10 — Transcripts + funnel metrics.** Every run writes a redacted JSONL
-  transcript (model attempts, tool calls, node transitions), and a
-  `ticket_funnel` table tracks claimed → implemented → tests passed → PR
-  opened → merged, with a report script.
-- **P11 — Config ownership.** This repo's `config/` becomes the single
-  source of truth for selector configuration; `ai-model-selector`'s bundled
-  configs are marked example-only.
+Everything after that exists to make the pipeline trustworthy enough to run
+*unattended*, which **it is not today**.
+
+📖 **The canonical, detailed roadmap** — per-phase specifications, current
+wiring status, checklists, exit criteria, and known limitations — is
+[`docs/autonomous-delivery-roadmap.md`](docs/autonomous-delivery-roadmap.md).
+The table below is a summary; the roadmap document is authoritative.
+
+Status marks: ✅ complete (implemented, wired, enforced, tested) · 🔶 partial
+(components exist, invariant not enforced) · ⬜ not started · ⏸️ deferred by
+dependency · ↪ absorbed into another phase.
+
+| Phase | | Summary |
+|---|---|---|
+| P0–P7 | ✅ | Bounded ticket-processing MVP: infrastructure, intake, detection, locking, adapters, router, implementation loop, acceptance criteria |
+| P8 | ⏸️ | Bug-fix work profile. Blocked until P15/P16 can tell whether a strategy helped |
+| P9 | ↪ | Real-diff review and the lint gate. Absorbed into P15 and P14; never scheduled separately |
+| P10 | 🔶 | Observability foundations exist; later producers and operational evidence are missing |
+| P11 | 🔶 | This repo owns selector config; resolution test and example-only notice remain |
+| P12 | 🔶 | Goal contracts exist but durable authority, revocation, spine, journal, and execution enforcement do not |
+| P13 | 🔶 | Trust root and sandbox exist, but production lacks pre-mutation enforcement and per-command attestation |
+| P14 | ⬜ | Verify an immutable committed SHA in an isolated checkout |
+| P15 | ⬜ | Independent review of the complete real diff, maker ≠ checker across fallbacks |
+| P16 | ⬜ | Repeatable evaluation corpus and demonstration evidence |
+| P17 | ⬜ | Durable delivery: outbox, attestation, trusted CI, promotion |
+| P18 | ⬜ | Bounded rework from promotion-PR change requests |
+
+**Phase numbers are stable identities, not execution order.** They are cited by
+commits and tests, so they are never renumbered — but dependencies dictate a
+different working order:
+
+> P11 → P13.3a → P12.2a → (P12.2b + P12.2c) → P12.2d → P12.2e
+> → P14 → P15 → P16 → P17 → P18, then revisit P8.
+
+P13.3a comes before P12 because sandbox refusal must protect every execution
+entry point before later authorization plumbing relies on it. P12.2b and
+P12.2c ship together so durable authorization publication and consumption
+cannot diverge. P12 comes before P14–P17 because those phases all record
+evidence against a goal that does not yet reach the graph. P18 follows P17
+because it acts on comments left on the promotion PR that P17 opens. Per-step
+rationale is in
+[the roadmap](docs/autonomous-delivery-roadmap.md#recommended-execution-order).
+
+Two things are worth knowing before trusting a status mark anywhere:
+
+- **A capability is not complete because its types exist.** The sandbox and the
+  goal contract are both fully implemented and neither is enforced.
+- **Opt-in is not operational proof.** Transcripts default to off; a feature
+  that *can* be enabled has demonstrated nothing.
 
 ## Tests
 
-Unit tests live under `tests/unit/`.
-
-If `pytest` is not available globally, use the repo virtual environment:
+Unit tests live under `tests/unit/`, and run through the repo virtual
+environment:
 
 ```bash
-PATH="$PWD/.venv/bin:$PATH" pytest tests/unit/
+PATH="$PWD/.venv/bin:$PATH" python -m pytest tests/unit/ -q
 ```
+
+Use `python -m pytest`, not the bare `pytest` console script — `python -m` puts
+the working directory on `sys.path`, which the test suite's imports require.
+The bare console script fails during collection.

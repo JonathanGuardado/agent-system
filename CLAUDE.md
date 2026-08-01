@@ -4,469 +4,150 @@
 
 This repo is an autonomous software development agent system.
 
-The system receives human requests from Slack, turns approved work into Jira
-tickets, detects `ai-ready` tickets, locks them, executes them through a
-LangGraph pipeline, opens a PR, and reports back to Slack.
+Today it receives human requests from Slack, turns approved work into Jira
+tickets, executes `ai-ready` tickets through a LangGraph pipeline, and opens a
+pull request that a human reviews and merges. The goal-pursuit architecture it
+is being built toward is described in
+[`docs/autonomous-delivery-roadmap.md`](docs/autonomous-delivery-roadmap.md);
+see "Roadmap and current status" below for the line between the two.
+
+**Target repositories are external inputs to this runtime.** A target is
+described by a `config/repos/*.yaml` contract; the application changes the
+system produces inside it are the runtime's *outputs*. Nothing in `src/` may be
+shaped around any particular target. `ofertas-sv` is one such target from an
+earlier iteration — see the configuration-debt notes in the roadmap for what
+currently names it and why that is a naming problem rather than an
+architectural one.
 
 ## Architecture in one line
 
-Slack → ai-model-selector → IntakeHandler → Jira source of truth →
+**Current:**
+
+Slack → ai-model-selector → IntakeHandler → Jira (execution source of truth) →
 DetectionComponent → SQLite lock → LangGraph StateGraph →
-ImplementationComponent → internal ModelRouter → tests → PR → Slack alert
+ImplementationComponent → internal ModelRouter → worktree tests →
+summary-based review → commit/push → PR → Slack alert
 
-## Current implementation focus
+**Target after P12–P18** (not current behavior):
 
-We are building the system incrementally.
+Slack → authorized signed `GoalContract` → durable goal spine → Jira projection
+→ implementation → candidate commit → isolated verification of that SHA →
+independent complete-diff review → attestation/outbox → trusted CI →
+human-reviewed promotion PR → bounded rework
 
-Current phase:
+## Roadmap and current status
 
-- P0: ✅ Infrastructure
-- P1: ✅ Slack intake + proposal approvals
-- P2: ✅ Detection + SQLite locking
-- P3: ✅ Local tool adapters
-- P4: ✅ Internal ModelRouter + provider clients
-- P5: ✅ MVP runtime wiring
-- P6: ✅ Implementation loop upgrade (search, edit, paginated reads, in-loop tests)
-- P7: ✅ Acceptance criteria pipeline (intake → plan → review)
-- P8: ⏸️ Bug-fix work profile (reproduce-first) — **deferred**, see below
-- P9: ⬜ Diff-based review + lint gate (becomes checker stages in P14/P15)
-- P10: 🔶 Run transcripts + funnel metrics (P10.1 landed; P10.2 partial)
-- P11: ⬜ Config single-source-of-truth cleanup
+**The canonical roadmap is
+[`docs/autonomous-delivery-roadmap.md`](docs/autonomous-delivery-roadmap.md).**
+It holds the detailed P6–P18 specifications, checklists, exit criteria, design
+rationale, and the current-versus-target architecture. This section is a
+summary; when the two differ, the roadmap document is correct.
 
-Then the goal-pursuit milestones:
+### What the runtime does today
 
-- P12: 🔶 Goal contract + durable spine (P12.0/P12.1 landed; spine pending)
-- P13: 🔶 Harness manifest + trust root + sandbox (P13.1/P13.2 landed)
-- P14: ⬜ Evidence gates: isolated verification at a committed SHA
-- P15: ⬜ Independent review loop (checker ≠ maker across fallbacks)
-- P16: ⬜ Demo evidence
-- P17: ⬜ Autonomous delivery: outbox, attestation, trusted CI, promotion PR
-
-**P8 is deferred, deliberately.** A work profile is a *strategy* inside the
-implementation loop. Strategies are only worth building once the loop can tell
-whether they worked — which needs transcripts (P10.1), evidence gates (P14),
-and an independent checker (P15). Building a reproduce-first profile before
-then means tuning a strategy against a verification gate that can pass
-vacuously. Revisit P8 once P15 has run on real tickets.
-
-One phase per PR; multiple PRs per phase is fine. When a phase lands, mark it
-✅ here and check its boxes in the roadmap section.
-
-MVP work now includes:
-- LangGraph StateGraph (graph.py) with full node sequence and routing
-- TicketState, service Protocols, TicketNodeRunner (DI surface)
-- LocalImplementationService (worktree prep), AdapterTestService
-- IterativeImplementationService with file-only JSON tool calls
-- ModelRouterProposalGenerator with deterministic fallback
-- JiraWriter support for multi-ticket Epic creation in existing projects
-- ModelRouterPlannerService, ModelRouterReviewService
-- GitService (commit/push) + GhPullRequestOpener
-- JiraEscalationService, JiraLabelApprovalService, AutoApprovalService
-- OrchestratorRunner (lock+heartbeat+claim+graph+release)
-- ExecutionWorker + JiraExecutionCoordinator
-- config/repos/agent-system.yaml repo contract
-- SQLiteCheckpointer wired into persistent graph compilation
-- OrchestratorRunner stale-checkpoint guard after fresh lock acquisition
-- Slack-driven execution-approval interrupt + SQLite approval persistence
-- app.py process entrypoint for Slack listener + Detection + ExecutionWorker
-- runtime smoke check for Slack/Jira/GitHub/config prerequisites
-
-Deferred after MVP:
-- brand-new Jira project creation
-- Slack Block Kit buttons
-- model-callable shell/git tools (a model-callable `run_tests` action is
-  planned in P6; it may only run the repo-contract test command through
-  TestAdapter)
-- MCP/OpenClaw/multi-host execution
-- auto-filing bug tickets from CI failures (revisit after P11)
-
-## Roadmap: capability phases P6–P11
-
-These phases close the gap between "the pipeline works" and "the system can
-autonomously turn ideas into merged-quality PRs." Each phase below is a
-self-contained spec: an implementing session should be able to complete a
-phase from this section plus the referenced files, without new design
-decisions. Every phase ships with unit tests under `tests/unit/` and updates
-the phase list at the top of this file.
-
-### P6 — Implementation loop upgrade (do this first)
-
-Goal: `IterativeImplementationService` in
-`src/ticket_agent/orchestrator/model_services.py` currently exposes only
-`read_file`, `list_dir`, `write_file`, `finish`. That caps success at small
-changes in small repos. Extend the JSON tool-call contract to:
+A bounded, human-reviewed ticket-processing pipeline — **not** unattended
+autonomous delivery:
 
 ```txt
-read_file:  {path, offset?, limit?}   # offset = 1-based start line, limit = line count
-list_dir:   {path}
-search:     {pattern, path?, max_results?}
-edit_file:  {path, old_string, new_string, replace_all?}
-write_file: {path, content}
-run_tests:  {}
-finish:     {summary, notes?}
+Slack request
+  → model-assisted proposal
+  → human intake approval
+  → Jira epic/tasks
+  → ai-ready detection
+  → SQLite ticket lock/checkpoint
+  → LangGraph planning
+  → execution approval (automatic or Slack, depending on policy)
+  → implementation
+  → worktree tests
+  → summary-based model review
+  → commit/push
+  → pull request
+  → Jira/Slack reporting
 ```
 
-Behavior rules:
+Five things are easy to assume and are **not** true today:
 
-- `read_file` without `offset`/`limit` keeps current behavior (truncated at
-  `tool_result_max_chars`). With `offset`/`limit` it returns only those
-  lines. The result must state whether the returned view is complete.
-- `search` is read-only regex search over worktree text files. It must only
-  visit paths the FileAdapter would allow, skip binary files, cap results
-  (default 50 matches), and return `path:line:matched-line` entries,
-  truncated to `tool_result_max_chars`.
-- `edit_file` performs exact-string replacement. Fail with error code
-  `edit_target_not_found` when `old_string` is absent, and
-  `edit_target_ambiguous` when it matches more than once without
-  `replace_all: true`. Successful edits append the path to `changed_files`.
-- Truncated-write guard: track, per path, within one loop run, whether the
-  model has ever seen a complete view of the file (untruncated read, or the
-  file did not previously exist). If not, reject `write_file` for that path
-  with error code `truncated_write_rejected` and instruct the model to use
-  `edit_file`. This prevents silent destruction of unseen file content.
-- `run_tests` executes the repo-contract test command through the existing
-  TestAdapter inside the worktree. Never auto-detect the command. Budget:
-  max 5 runs per implementation attempt; further calls fail with
-  `test_budget_exhausted`. Return the structured TestAdapter result
-  (pass/fail, truncated stdout/stderr summary, timeout flag).
-- Wiring: `LocalImplementationService` (orchestrator/local_services.py)
-  already prepares the worktree context; extend the context it hands to
-  `implement_context(...)` with a test runner so
-  `IterativeImplementationService` never constructs adapters itself.
-- Update the system prompt in `_implementation_loop_messages` to document
-  every action, the edit-over-rewrite preference, and the run-tests-before-
-  finish convention.
+- **Jira remains the execution source of truth.** Detection reads Jira; the
+  orchestrator works from Jira tickets.
+- **Goal-contract authorization does not gate execution.** Contracts may be
+  compiled, checked, signed, and stored when configured, but
+  `ApprovalFlow._record_goal_contract` records only — and runs after the Jira
+  write. `goal_id` never reaches active graph state, because `TicketWorkItem`
+  has no such field.
+- **Verification is not bound to the committed SHA.** Tests run in the
+  worktree; the commit happens later, inside `open_pull_request`.
+- **Review does not consume the real diff.** It reads the implementing model's
+  own summary and result.
+- **Production contract commands are not sandboxed.** `_build_contract_shell`
+  constructs `LocalShellAdapter` with no sandbox, so it falls back to
+  `NullSandbox()`.
 
-P6 checklist:
+**The system never merges pull requests automatically.** The runtime opens
+PRs; it does not merge them. Any review or merge is performed by a human, as
+required by current policy. This is a behavioral boundary enforced by the code,
+not a claim that every generated PR has been reviewed and merged in practice.
 
-- [x] `search` action with boundary, binary-skip, and cap tests
-- [x] `edit_file` action with not-found / ambiguous / replace_all tests
-- [x] paginated `read_file` with complete-view flag
-- [x] truncated-write guard with negative test
-- [x] `run_tests` action via TestAdapter with budget test
-- [x] prompt update in `_implementation_loop_messages`
-- [x] no shell/git actions exposed to the model (negative test)
+### Target architecture (after P12–P18)
 
-P6 landed. Notes for later phases: the model-callable `run_tests` action is
-wired through `ImplementationContext.test_runner`, built by
-`_make_contract_test_runner` in `orchestrator/local_services.py` (contract
-test command via `LocalTestAdapter` only). The per-run loop state lives in
-`_LoopContext` in `orchestrator/model_services.py`; `complete_view_paths`
-tracks which files may be safely rewritten. P6 tests are in
-`tests/unit/test_model_services_p6_actions.py`.
+Do not describe any of this as current behavior:
 
-### P7 — Acceptance criteria pipeline
+```txt
+Slack → authorized signed GoalContract → durable goal spine / action journal
+  → Jira projection → implementation → candidate commit
+  → isolated verification of that SHA → independent complete-diff review
+  → attestation / outbox → trusted CI / integration delivery
+  → human-reviewed promotion PR → bounded review-comment rework
+```
 
-Goal: make testable acceptance criteria flow from intake through planning to
-review, so review has something falsifiable to check.
+### Phase status
 
-- ProposalGenerator (`intake/proposal_generator.py`): each proposed ticket
-  gains `acceptance_criteria: list[str]` (1–7 short, testable statements).
-  Write them into the Jira description under an `Acceptance Criteria`
-  heading via JiraWriter.
-- Clarifying questions: when the intake model judges a request too ambiguous
-  to propose, it may return a clarifying-question payload instead of a
-  proposal. The Slack listener posts the question in the intake thread and
-  treats the human reply as a revision input (reuse the existing proposal
-  revision flow in `intake/approval_flow.py`). One clarifying round max,
-  then propose with stated assumptions.
-- Planning: `_planning_messages` includes the criteria; the plan payload
-  must include a `criteria_coverage` mapping of criterion → planned step.
-- Review: `_review_messages` includes the criteria; the review payload must
-  include a per-criterion verdict (`met: bool` plus one-line evidence). Any
-  unmet criterion routes to `rejected`.
+Legend: ✅ complete (implemented, wired, enforced, tested) · 🔶 partial
+(components exist, invariant not enforced) · ⬜ not started · ⏸️ deferred by
+dependency · ↪ absorbed into another phase.
 
-P7 checklist:
+| Phase | State | Reality |
+|---|---|---|
+| P0–P7 | ✅ | Bounded ticket-processing MVP: infrastructure, intake, detection, locking, adapters, router, implementation loop, acceptance criteria |
+| P8 | ⏸️ | Bug-fix work profile. Deferred until P15/P16 provide trustworthy feedback |
+| P9 | ↪ | Diff-based review + lint gate. Absorbed into P14/P15; never scheduled separately |
+| P10 | 🔶 | Observability foundations exist; later producers and operational evidence missing |
+| P11 | 🔶 | This repo owns selector config; resolution test and example-only notice remain |
+| P12 | 🔶 | Contracts exist; durable authority, revocation, spine, journal, propagation, and enforcement are missing |
+| P13 | 🔶 | Trust-root/sandbox implementation exists; pre-mutation production enforcement and attestation are missing |
+| P14 | ⬜ | Immutable-SHA verification |
+| P15 | ⬜ | Independent complete-diff review |
+| P16 | ⬜ | Repeatable evaluation and demonstration evidence |
+| P17 | ⬜ | Durable delivery, outbox, attestation, trusted CI, promotion |
+| P18 | ⬜ | Bounded rework from promotion-PR change requests |
 
-- [x] proposal schema + Jira description rendering
-- [x] clarifying-question round in Slack intake (single round)
-- [x] plan prompt + `criteria_coverage` validation
-- [x] review per-criterion verdicts drive accept/reject routing
+**A capability is never ✅ because its types exist.** The sandbox and the goal
+contract are both fully implemented and neither is enforced; both are 🔶.
 
-P7 landed. Notes for later phases: the acceptance-criteria format lives in
-`domain/acceptance.py` (`render_acceptance_criteria` / `parse_acceptance_criteria`
-are inverses). Criteria are the source of truth in the Jira description under
-the `Acceptance Criteria:` heading — there is no Jira custom field for them;
-the planner and reviewer re-parse them from `state.description`. The planner
-emits `criteria_coverage` and the reviewer emits `criteria_verdicts`; any
-verdict with `met` != true forces the review to `rejected`. A rejected review
-routes back to IMPLEMENT (rework) while `implementation_attempts` <
-`max_attempts`, with the rejection reasoning/issues injected into the retry
-prompt as `previous_review_rejection`; once attempts are exhausted it
-escalates. The single-round
-clarification stores a 0-ticket DRAFTING placeholder (see
-`_clarification_placeholder`) so the user's answer returns through `_revise`
-with clarification disabled. Foundation-first ordering is instructed in the
-proposal prompt; the first ticket establishes the shared scaffold/types/schema
-and later tickets receive sibling scopes as coordination context. P7 tests are
-in `tests/unit/test_p7_acceptance_criteria.py`.
+**P0–P7 are implemented and unit-tested, not operationally validated.**
+External Slack/Jira/GitHub end-to-end verification remains manual.
 
-### P8 — Bug-fix work profile
+### Recommended execution order
 
-Goal: bugs get a reproduce-first workflow instead of the generic feature
-flow.
+Phase numbers are **stable identities, not execution order** — they are cited
+by commits and tests, so they are never renumbered. Dependencies dictate:
 
-- Profile detection: Jira issue type `Bug` or label `bug` sets
-  `work_profile: "bug"` on `TicketState` (default `"feature"`).
-- Bug planning: the plan must include a reproduction section — expected
-  behavior, actual behavior, and where the regression test will live.
-- Bug implementation prompt: write the failing test first, call `run_tests`
-  to confirm it fails for the expected reason, then fix, then `run_tests`
-  green. The `finish` summary must name the regression test.
-- Review for bugs additionally checks that a regression test exists in
-  `changed_files`.
-- Out of scope for P8: auto-filing bugs from CI or PR feedback (deferred).
+```txt
+P11 → P13.3a → P12.2a → (P12.2b + P12.2c) → P12.2d → P12.2e
+    → P14 → P15 → P16 → P17 → P18 → revisit P8
+```
 
-P8 checklist:
+P11 (configuration ownership) first because everything downstream reads
+selector and policy config. P13.3a then makes sandbox refusal happen before
+locks, claims, worktrees, or resume. P12.2b and P12.2c are one safe release
+unit: durable authorization publication must ship with consumption at every
+entry point. P12 precedes P14–P17 because those all record evidence against a
+goal that does not yet reach the graph. Per-step rationale and operation-level
+recovery policy are in
+[the roadmap](docs/autonomous-delivery-roadmap.md#recommended-execution-order).
 
-- [ ] `work_profile` on TicketState + detection from Jira fields
-- [ ] bug-specific plan and implementation prompts
-- [ ] review requires regression test for bug profile
-- [ ] tests for profile routing and prompt selection
-
-### P9 — Diff-based review + lint gate
-
-Goal: review judges the real diff, and lint stops style/static regressions
-before a PR opens.
-
-- GitAdapter (`adapters/local/git_adapter.py`) gains read-only
-  `diff_stat()` and `diff_text(max_chars_per_file)` against the base branch
-  inside the worktree. No new write operations.
-- The review node input includes the real diff (per-file truncation, keep
-  the `changed_files` list) instead of only model-produced summaries.
-- Lint gate: after tests pass in the RUN_TESTS node, run the repo-contract
-  `lint` command when the contract defines one (it is currently dead
-  config). Lint failure routes exactly like test failure
-  (`retry → IMPLEMENT`). Reuse the AdapterTestService pattern; keep lint
-  output in state for the implementation retry prompt.
-
-P9 checklist:
-
-- [ ] GitAdapter diff methods with truncation tests
-- [ ] review prompt consumes real diff
-- [ ] lint execution from repo contract + routing test
-- [ ] contract without lint command skips the gate cleanly
-
-### P10 — Run transcripts + funnel metrics
-
-Goal: make runs debuggable and improvement measurable.
-
-- TranscriptRecorder: append-only JSONL per ticket run at
-  `.agent-system-data/transcripts/{TICKET-KEY}-{lock8}.jsonl`. Record node
-  enter/exit, every ModelRouter attempt (capability, provider, model,
-  tokens, latency, success/error), and every implementation tool call and
-  truncated result. All recorded content must pass through the existing
-  `redaction` module. Inject the recorder through the node runner and
-  router factory; default to a no-op recorder so tests stay silent.
-- Funnel metrics: SQLite table `ticket_funnel` (ticket_key, claimed_at,
-  implemented_at, tests_passed_at, pr_opened_at, merged_at, escalated_at,
-  escalation_reason). Written from orchestrator nodes and the merged-
-  delivery poller. Add `scripts/report_funnel.py` to print stage counts and
-  conversion rates.
-
-P10 checklist:
-
-- [x] TranscriptRecorder + redaction coverage test
-- [x] recorder wired into node runner, router, and implementation loop
-      (no-op default everywhere)
-- [x] `ticket_funnel` writes at each stage that exists today —
-      `claimed` from `OrchestratorRunner` (the funnel's denominator, recorded
-      where the lock is already held), and `planned`/`approved`/`implemented`/
-      `pr_opened`/`escalated` from `TicketNodeRunner._record_stage`.
-      `committed`/`verified`/`reviewed`/`demoed`/`merged` are declared but
-      stay zero until the COMMIT/VERIFY topology and the delivery poller land
-      — honest zeros for stages that do not exist yet, not broken wiring.
-- [x] `scripts/report_loops.py` (supersedes the planned `report_funnel.py`)
-
-A node running is **not** the same as its stage being reached: approval only
-counts when granted, and a PR only when a URL came back. Recording on node
-entry regardless would make every conversion rate read 100%.
-
-P10.1 landed. Notes for later phases: the sink is process-wide and routed by
-`ticket_key`, not a per-run object — services are built once in `app.py` and
-`ModelRouter.invoke` already receives `ticket_id`, so `invoke()`'s documented
-signature is unchanged. Transcripts are opt-in via
-`AGENT_SYSTEM_TRANSCRIPTS_ENABLED` (default false) and every hook takes a
-recorder defaulting to `NullTranscriptRecorder`.
-
-Three rules that are load-bearing rather than stylistic:
-
-- **Record through `safe_record`, never `recorder.record` directly.**
-  `TranscriptRecorder` is a Protocol, so the never-raises guarantee cannot
-  live only in `JsonlTranscriptRecorder`; any other implementation would
-  otherwise propagate into the pipeline it is meant to observe.
-- **Shapes and sizes, never content.** `_safe_tool_args` keeps
-  `path`/`pattern`/`offset`/`limit` and reduces `content`/`old_string`/
-  `new_string` to `<field>_chars`. A gate's output can be megabytes and a
-  file write can be a secret.
-- **`redaction.py` now filters credentials as well as paths**, and the router's
-  log path is redacted too — previously only prompts were.
-
-P10 tests are in `tests/unit/test_observability.py` and
-`tests/unit/test_observability_hooks.py`.
-
-### P13 — Harness manifest, trust root, sandbox
-
-Goal: declare what may run, where it may write, and what holds verification
-authority — then isolate execution so untrusted repository code cannot reach
-past it.
-
-**Trust root is declared by capability, not by path glob.** A glob list is
-both over- and under-inclusive: `package.json` matters only because
-`scripts.test` is what `npm test` delegates to, and a *newly created* file can
-acquire authority without appearing on any list. Entries are `file`, `tree`,
-`json_pointer` (sub-file), and `derived` (whatever the trusted commands
-resolve to, computed at load).
-
-**Unresolvable commands lower readiness rather than being dropped.** A
-`bash -lc` program can compute its target at runtime, so its closure cannot be
-computed honestly. Readiness is a ceiling on autonomy — `unready` → `propose`,
-`partial` → `implement`, `full` → `autonomous` — so a hole in the trust root
-reduces what the system may do instead of being silently excluded from the
-digest.
-
-**Trusted commands must be structured argv.** `_parse_command` already
-rejected string commands; that rule now extends to every gate, which retired
-`lab.yaml`'s three `bash -lc` guards. Those guards exited 0 when
-`package.json` was absent — so on the greenfield state every new goal starts
-from, all three gates passed vacuously.
-
-Sandbox, in `adapters/local/sandbox.py`. Four decisions worth keeping:
-
-- **No `preexec_fn`.** It is not async-signal-safe and this process runs
-  asyncio TaskGroups plus `asyncio.to_thread`, where it can deadlock the
-  child. Limits are applied by `prlimit(1)` in the child's own argv, after
-  `exec`.
-- **`--clearenv` is required.** Measured, not assumed: `bwrap --unshare-all`
-  inherits the parent environment, leaking 14 credential-ish variables in a
-  polluted-env test.
-- **Worktree is `--ro-bind` with declared writable mounts.** Default deny; a
-  gate that can rewrite the source it tests is not a gate.
-- **`available()` attempts a real unshare.** Ubuntu 24.04 sets
-  `kernel.apparmor_restrict_unprivileged_userns=1`, under which a healthy
-  `bwrap` still fails; a presence check reports such a host as sandbox-ready
-  when it is not. The probe binds exactly what `wrap()` binds, because
-  `/lib64` is a symlink into `/usr` and a smaller bind set fails for an
-  unrelated reason.
-
-Setup on Ubuntu 24.04 requires `sudo apt install bubblewrap` plus an AppArmor
-profile granting `userns` to `/usr/bin/bwrap` (same shape as the shipped
-`keybase` profile). Without it the system still runs, capped at `propose`.
-
-**Residual risk:** when install scripts are not ignored they run with network
-inside the sandbox. The sandbox bounds the damage; it does not eliminate
-supply-chain execution. `lab.yaml` therefore uses `npm ci --ignore-scripts`.
-
-P13 checklist:
-
-- [x] sandbox with PID, memory, timeout, filesystem, and credential isolation
-- [x] process-group termination (fixes a live orphan bug: `subprocess.run`
-      killed only the direct child, so a timed-out `npm` left grandchildren)
-- [x] trust root with closure and honest unresolved reporting
-- [x] readiness ladder surfaced by `runtime_smoke`
-- [ ] context assembly / knowledge map (P13.3)
-
-### P12 — Goal contract + durable spine
-
-Goal: pursue a *goal*, not a ticket queue. The schema layer landed first so
-later phases import types instead of forward-referencing them.
-
-Landed in `goal/types.py` and `orchestrator/gates.py`:
-
-- **Phases are not terminal statuses.** A `LoopState` always carries a
-  `GoalPhase`; it carries a `TerminalStatus` only when the phase is `closed`,
-  and the constructor rejects any other combination. `ready_for_promotion` is
-  a *phase* a run can still leave. Collapsing these into one enum is what lets
-  "the criteria look met" read as "done".
-- **`GateStatus` has five members, not four.** `not_runnable` (tried, could
-  not run), `skipped` (policy said no), and **`not_run`** (never reached,
-  routing short-circuited) are different facts. Every expected gate is seeded
-  to `not_run`, so a partial record can never masquerade as complete, and
-  `VerificationRecord.authorized` denies on any of them.
-- **Two authorizations, deliberately separate.** `CandidateAuthorization`
-  answers *may this SHA merge* and is scoped to one commit.
-  `GoalAchievement` answers *is the objective met* and is scoped to the
-  contract. Ticket 1 of 5 is routinely authorized while the goal is nowhere
-  near achieved — requiring achievement to merge would deadlock the sequence.
-- **`GoalAchievement.achieved` requires a confirmed promotion PR.** Evidence
-  that the criteria are met is not the same as having presented the work.
-- **Autonomy resolution is monotone and fail-closed.**
-  `resolve_autonomy(...)` takes a `min` across configured mode, risk class,
-  harness readiness, sandbox availability, gate enforcement, and halt state,
-  so no input can ever *raise* autonomy. An unrecognized mode yields
-  `observe`. A required gate below `enforce` caps at `implement` — a gate in
-  shadow authorizes nothing. No sandbox caps at `propose` unless each command
-  is human-approved.
-
-P12 checklist:
-
-- [x] schema vocabulary with canonical-JSON digests
-- [x] `TicketState` `extra="forbid"` (see below) + `committing`/`verifying`
-- [x] `GoalContract` compilation, signing, and intake authorization
-- [ ] durable spine + action journal with bounded duplicate spend
-
-P12.1 landed. Authorization is a conjunction of three **independent** judgements
-in `goal/`, and any one of them sends the request to a human:
-
-- **`policy.py` — who and what, by rule.** Risk is decided by versioned *data*
-  (`config/policy/risk.yaml`), hashed into `policy_digest` and carried on the
-  contract. No model assigns a risk class: a system that lets the agent grade
-  its own risk has no risk classification. `classify_request` (at intake) and
-  `classify_changes` (at authorization, PR 7) deliberately share one rule set,
-  because the interesting failure is when the two disagree.
-- **`semantic_check.py` — meaning, by a different model.** Rules answer "is
-  this in policy"; they cannot answer "is this what the person asked for". The
-  checker compares the compiled contract to the **verbatim request**, on a
-  provider disjoint from the compiler's, and can only *flag*, never widen. If
-  the router falls back onto the compiler's own provider it fails closed.
-- **`contract.py` — the allowlist.** Empty means empty. Treating "unconfigured"
-  as "everyone" is how an internal tool becomes an open one.
-
-Fail-closed throughout: an unclassifiable request, an unreachable checker, an
-unparseable response, and a missing signature are four different things, and
-none of them may read as approval.
-
-**Signing (`signing.py`) is tamper-evidence, not tamper-prevention.** It makes a
-forged or hand-edited row loud. On a single-host deployment the agent runs as
-the operator's user and can read the key, so a compromised agent can still mint
-valid signatures. Real prevention needs a separate signing principal — a
-deployment change, not a code change. Do not let the presence of an HMAC imply
-more than this.
-
-`Proposal` gained `original_request` because `_original_request_from_proposal`
-falls back to `proposal.summary`, which is *model-written*. Checking a compiled
-contract against a model's summary of the request is the blind-reviewer defect
-in a new costume.
-
-Env: `AGENT_SYSTEM_GOAL_ALLOWLIST_USERS`, `AGENT_SYSTEM_GOAL_ALLOWLIST_CHANNELS`,
-`AGENT_SYSTEM_SIGNING_KEY_PATH`, `AGENT_SYSTEM_RISK_POLICY_PATH`. All unset by
-default, which authorizes nothing; `runtime_smoke` reports the posture. Contracts
-are recorded on approval but **nothing gates on them yet** — the autonomy ladder
-that consumes them lands with the spine. Tests: `tests/unit/test_goal_contract.py`.
-
-**`TicketState` now sets `model_config = ConfigDict(extra="forbid")`.** Under
-pydantic's default `extra="ignore"`, a node returning an undeclared field had
-its update *silently dropped*: the graph advanced, the value was missing
-downstream, and the ticket escalated with no explanation. Adding a node field
-now requires declaring it in `state.py`, and adding a workflow status requires
-extending the `WorkflowStatus` Literal.
-
-### P11 — Config single source of truth
-
-Goal: stop `capabilities.yaml` / `models.yaml` / `task_profiles.yaml` from
-drifting between this repo and `ai-model-selector`.
-
-- This repo's `config/` is canonical. Verify
-  `router/selector_config.py` always loads selector config from explicit
-  paths in this repo — never from the `ai-model-selector` package's bundled
-  `config/`.
-- In the `ai-model-selector` repo, mark its `config/` as examples only
-  (README note). No selector code changes.
-
-P11 checklist:
-
-- [ ] selector config paths verified/enforced from this repo
-- [ ] ai-model-selector README marks bundled config as example-only
+One phase per PR; multiple PRs per phase is fine. When a phase lands, update
+the status table there and here — and only mark ✅ once it is wired into the
+production path, not merely implemented.
 
 ## Runtime model
 
@@ -618,14 +299,46 @@ config/
   - Never resume stale checkpoints.
   - Reconciler must clean Jira and expired locks before work resumes.
 
-- Jira is the execution source of truth.
-  - Detection reads from Jira.
-  - Orchestrator works from Jira tickets.
-  - Slack is only the human-facing interface.
+- **Scope authority — `GoalContract` vs Jira.**
 
-- Slack has two separate approval moments:
-  1. Intake approval: approve the proposal before Jira is written.
-  2. Execution approval: approve the LangGraph execution before code is changed.
+  **Current behavior:** Jira is the execution source of truth. Detection reads
+  Jira and the orchestrator works from Jira tickets. Goal contracts may be
+  compiled, semantically checked, signed, and stored when configured, but
+  **execution does not consult them** — `_record_goal_contract` records the
+  outcome and returns, and `goal_id` never reaches graph state.
+
+  **Target authority model after P12; not currently enforced:** the authorized
+  `GoalContract` becomes the scope authority and Jira becomes a projection and
+  work queue written *from* the plan.
+  - The contract records what the human authorized: objective, acceptance
+    criteria, non-goals, scope, budgets. Agents plan freely *underneath* it
+    and may never widen it.
+  - This is what closes a live bug: because Jira is currently used as memory
+    the system does not own, a human moving a ticket out of "To Do" stalls the
+    batch forever with no error.
+  - Slack is only the human-facing interface, before and after.
+
+  Do not describe this migration as done. Until P12 lands, a ticket executes
+  whether or not a contract authorized it.
+
+- **Approval moments.**
+
+  **Current behavior:** two moments. Intake approval — a human approves the
+  proposal before Jira is written. Then execution approval, which is
+  **automatic or Slack-driven depending on configuration**: the default
+  `AutoApprovalService` (`orchestrator/local_services.py:492`, wired at
+  `app.py:1295`) returns `True` unconditionally on the reasoning that the human
+  already approved the whole plan at intake; `JiraLabelApprovalService` and the
+  Slack-driven execution-approval interrupt are the alternatives.
+
+  **Target behavior after P12; not currently enforced:** at autonomy level
+  `autonomous`, **one** moment — an allowlisted user in an allowlisted channel
+  authorizes ordinary in-policy work at intake, and the only remaining human
+  action is reviewing the promotion PR. Re-approval would be required only for
+  elevated risk, ambiguity, scope expansion, a declared human-required
+  boundary, or a semantic-check disagreement. `resolve_autonomy` implements
+  this ladder correctly but **no execution path calls it**, so no autonomy
+  level currently changes how many approvals occur.
 
 ## Internal ModelRouter contract
 
@@ -962,7 +675,14 @@ Do not:
 - Add cost-aware routing in v1
 - Push to main
 - Force-push
-- Merge PRs automatically
+- Merge anything into `main`, ever, automatically. (P17 merges into
+  `integration/*` only, and only on genuine CI evidence. `main` is reached
+  solely through a promotion PR that a human reviews.)
+- Use `gh pr merge --auto`. Once armed, GitHub merges even after a halt.
+- Weaken or modify the evaluator, the verification trust root, or the
+  authorization policy during the same goal run in order to make that goal
+  pass
+- Run unattended repository commands without a working sandbox
 - Store secrets in this repo
 - Let tools operate outside the worktree
 - Let the LLM decide security policy
