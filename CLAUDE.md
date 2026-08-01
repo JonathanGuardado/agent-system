@@ -111,7 +111,7 @@ dependency · ↪ absorbed into another phase.
 | P8 | ⏸️ | Bug-fix work profile. Deferred until P15/P16 provide trustworthy feedback |
 | P9 | ↪ | Diff-based review + lint gate. Absorbed into P14/P15; never scheduled separately |
 | P10 | 🔶 | Observability foundations exist; later producers and operational evidence missing |
-| P11 | 🔶 | This repo owns selector config; resolution test and example-only notice remain |
+| P11 | ✅ | This repo owns selector config; resolution is pinned and the library copy is example-only |
 | P12 | 🔶 | Contracts exist; durable authority, revocation, spine, journal, propagation, and enforcement are missing |
 | P13 | 🔶 | Trust-root/sandbox implementation exists; pre-mutation production enforcement and attestation are missing |
 | P14 | ⬜ | Immutable-SHA verification |

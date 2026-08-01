@@ -209,7 +209,7 @@ commits, tests, and prior discussion, so they are never renumbered or reused.
 | P8 | ⏸️ | Bug-fix work profile. Deferred until P15/P16 provide trustworthy feedback |
 | P9 | ↪ | Diff-based review + lint gate. **Absorbed into P14/P15**; not scheduled separately |
 | P10 | 🔶 | Observability foundations exist; later producers and operational evidence are missing |
-| P11 | 🔶 | Selector configuration ownership partly established; duplicated config remains |
+| P11 | ✅ | Agent-system owns selector config; the library copy is documented example-only and resolution is pinned by test |
 | P12 | 🔶 | Contracts exist; durable spine, action journal, propagation, and enforcement are missing |
 | P13 | 🔶 | Trust-root/sandbox implementation exists, but production command execution does not use it |
 | P14 | ⬜ | Immutable-SHA verification |
@@ -520,7 +520,7 @@ drifting between this repo and `ai-model-selector`.
 - In the `ai-model-selector` repo, mark its `config/` as examples only
   (README note). No selector code changes.
 
-**Half of this is done, which is why P11 is 🔶 rather than ⬜.**
+**P11 is complete.**
 `selector_config.py:17-20` resolves `CONFIG_DIR` to this repo explicitly:
 
 ```python
@@ -531,20 +531,18 @@ and passes `CAPABILITIES_PATH` / `MODELS_PATH` / `TASK_PROFILES_PATH` into
 `load_capability_definitions` and `DeterministicSelector.from_yaml`. Nothing
 reads the package's bundled config. That is the load-bearing half.
 
-The remaining half is that **`~/repos/ai-model-selector/config/` still
-contains all three files** — `capabilities.yaml`, `models.yaml`, and
-`task_profiles.yaml` — with no note marking them examples. Two copies exist
-and can drift; the only thing preventing a wrong load today is one path
-expression. Canonical ownership is asserted in code but not documented, so a
-future reader editing the selector repo's copy would see no warning.
+`tests/unit/test_selector_config.py` pins all three resolved paths to this
+repository and proves none sits beneath the installed selector package. The
+`ai-model-selector` README labels its three bundled files as examples and
+directs applications to pass their own explicit paths.
 
 P11 checklist:
 
 - [x] selector config paths resolved from this repo, never from the package
-- [ ] a test pinning that resolution, so a refactor cannot silently
+- [x] a test pinning that resolution, so a refactor cannot silently
       re-point `CONFIG_DIR` at the installed package
-- [ ] `ai-model-selector` README marks its bundled config example-only
-- [ ] a documented statement of which repo owns each config file
+- [x] `ai-model-selector` README marks its bundled config example-only
+- [x] a documented statement of which repo owns each config file
 
 Exit criteria for P11:
 

@@ -327,7 +327,7 @@ dependency · ↪ absorbed into another phase.
 | P8 | ⏸️ | Bug-fix work profile. Blocked until P15/P16 can tell whether a strategy helped |
 | P9 | ↪ | Real-diff review and the lint gate. Absorbed into P15 and P14; never scheduled separately |
 | P10 | 🔶 | Observability foundations exist; later producers and operational evidence are missing |
-| P11 | 🔶 | This repo owns selector config; resolution test and example-only notice remain |
+| P11 | ✅ | This repo owns selector config; resolution is pinned and the library copy is example-only |
 | P12 | 🔶 | Goal contracts exist but durable authority, revocation, spine, journal, and execution enforcement do not |
 | P13 | 🔶 | Trust root and sandbox exist, but production lacks pre-mutation enforcement and per-command attestation |
 | P14 | ⬜ | Verify an immutable committed SHA in an isolated checkout |

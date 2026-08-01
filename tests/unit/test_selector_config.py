@@ -2,13 +2,31 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import ai_model_selector
 import pytest
 import yaml
 
 from ticket_agent.router.providers import PROVIDER_DEFAULTS
+from ticket_agent.router import selector_config
 from ticket_agent.router.selector_config import select_model_for_capability
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
+
+
+def test_selector_config_is_owned_by_agent_system_not_installed_package():
+    package_dir = Path(ai_model_selector.__file__).resolve().parent
+
+    assert selector_config.CONFIG_DIR.resolve() == CONFIG_DIR.resolve()
+    assert selector_config.CAPABILITIES_PATH == CONFIG_DIR / "capabilities.yaml"
+    assert selector_config.MODELS_PATH == CONFIG_DIR / "models.yaml"
+    assert selector_config.TASK_PROFILES_PATH == CONFIG_DIR / "task_profiles.yaml"
+    for path in (
+        selector_config.CAPABILITIES_PATH,
+        selector_config.MODELS_PATH,
+        selector_config.TASK_PROFILES_PATH,
+    ):
+        assert path.is_file()
+        assert not path.resolve().is_relative_to(package_dir)
 
 
 @pytest.mark.parametrize(
