@@ -254,6 +254,19 @@ def test_fake_slack_to_jira_to_execution_pr_path(tmp_path):
             "https://github.test/acme/repo/pull/1" in message
             for _channel, _thread, _user, message in slack.messages
         )
+        operations = {
+            action.operation
+            for action in runtime.goal_spine.actions_for_goal(
+                approved.proposal.proposal_id
+            )
+        }
+        assert {
+            "jira_write:create_issue",
+            "jira_write:add_ai_ready",
+            "jira_write:transition",
+            "jira_write:comment",
+            "slack_post",
+        }.issubset(operations)
     finally:
         runtime.close()
 

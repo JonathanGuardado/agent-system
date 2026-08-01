@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from inspect import isawaitable
 import json
@@ -16,7 +15,11 @@ import subprocess
 from typing import Any, Protocol
 
 from ticket_agent.adapters.local.git_adapter import GitAdapter
+from ticket_agent.domain.git import WorktreeInfo
 from ticket_agent.github import GH_ROLE_BOT, GitHubCredentials
+from ticket_agent.goal.identity import goal_id_from_labels
+from ticket_agent.goal.journal import GoalActionJournal, ProbeResult
+from ticket_agent.goal.types import LoopState
 from ticket_agent.jira.client import JiraClient
 from ticket_agent.jira.constants import (
     LABEL_AI_READY,
@@ -79,6 +82,7 @@ class DeliveryAdvance:
 
     sequence_label: str
     next_ticket_key: str | None
+    goal_id: str | None = None
 
 
 class FeedbackClient(Protocol):
@@ -230,8 +234,14 @@ class GitHubFeedbackPoller:
 class SequentialDeliveryAdvancer:
     """Release one queued Jira step after its predecessor PR is merged."""
 
-    def __init__(self, client: JiraClient) -> None:
+    def __init__(
+        self,
+        client: JiraClient,
+        *,
+        action_journal: GoalActionJournal | None = None,
+    ) -> None:
         self._client = client
+        self._action_journal = action_journal
 
     async def advance_after_merge(self, ticket_key: str) -> DeliveryAdvance | None:
         ticket = await self._client.get_ticket(ticket_key)
@@ -258,14 +268,79 @@ class SequentialDeliveryAdvancer:
         result = await self._client.search_issues(jql, fields=("labels", "status"))
         next_ticket_key = _first_ticket_key(result)
         if next_ticket_key is not None:
-            await self._client.add_labels(next_ticket_key, [LABEL_AI_READY])
-            await self._client.add_comment(
-                next_ticket_key,
-                f"Released after merged predecessor pull request for {ticket_key}.",
-            )
+            await self._release_next_ticket(next_ticket_key, ticket_key)
         return DeliveryAdvance(
             sequence_label=sequence_label,
             next_ticket_key=next_ticket_key,
+            goal_id=(
+                goal_id_from_labels(ticket.labels)
+                if self._action_journal is not None
+                else None
+            ),
+        )
+
+    async def _release_next_ticket(
+        self,
+        next_ticket_key: str,
+        predecessor_key: str,
+    ) -> None:
+        if self._action_journal is None:
+            await self._client.add_labels(next_ticket_key, [LABEL_AI_READY])
+            await self._client.add_comment(
+                next_ticket_key,
+                f"Released after merged predecessor pull request for {predecessor_key}.",
+            )
+            return
+
+        next_ticket = await self._client.get_ticket(next_ticket_key)
+        goal_id = goal_id_from_labels(next_ticket.labels)
+        state = LoopState(
+            goal_id=goal_id,
+            contract_version=1,
+            phase="delivering",
+        )
+
+        async def ready_probe() -> ProbeResult[None]:
+            current = await self._client.get_ticket(next_ticket_key)
+            found = LABEL_AI_READY in current.labels
+            return ProbeResult(
+                found=found,
+                result_identity=next_ticket_key if found else None,
+            )
+
+        await self._action_journal.execute(
+            state,
+            operation="jira_write:add_ai_ready",
+            natural_key=next_ticket_key,
+            request={"ticket_key": next_ticket_key, "label": LABEL_AI_READY},
+            effect=lambda: self._client.add_labels(
+                next_ticket_key,
+                [LABEL_AI_READY],
+            ),
+            probe=ready_probe,
+            result_identity=lambda ignored: next_ticket_key,
+        )
+
+        body = (
+            f"Released after merged predecessor pull request for {predecessor_key}."
+        )
+        body_digest = sha256(body.encode("utf-8")).hexdigest()
+
+        async def comment_probe() -> ProbeResult[None]:
+            found = await self._client.has_comment(next_ticket_key, body_digest)
+            return ProbeResult(
+                found=found,
+                result_identity=body_digest if found else None,
+            )
+
+        await self._action_journal.execute(
+            state,
+            operation="jira_write:comment",
+            natural_key=f"{next_ticket_key}:{body_digest}",
+            request={"ticket_key": next_ticket_key, "body_digest": body_digest},
+            effect=lambda: self._client.add_comment(next_ticket_key, body),
+            probe=comment_probe,
+            result_identity=lambda ignored: body_digest,
         )
 
 
@@ -283,6 +358,7 @@ class GitHubMergedDeliveryPoller:
         poll_interval_seconds: float = 60.0,
         emit: EventEmitter | None = None,
         clock: Callable[[float], Any] | None = None,
+        action_journal: GoalActionJournal | None = None,
     ) -> None:
         if poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds must be positive")
@@ -294,6 +370,7 @@ class GitHubMergedDeliveryPoller:
         self._poll_interval = float(poll_interval_seconds)
         self._emit_fn = emit
         self._clock = clock or asyncio.sleep
+        self._action_journal = action_journal
 
     async def poll_once(self) -> int:
         await self._emit(EVENT_DELIVERY_POLL_STARTED)
@@ -312,20 +389,7 @@ class GitHubMergedDeliveryPoller:
                         integration_branch=item.integration_branch,
                     )
                 elif advance is not None:
-                    url = self._promotion_opener.open_pull_request(
-                        worktree_path=Path(item.repo_path),
-                        branch_name=item.integration_branch,
-                        base_branch=self._promotion_base_branch,
-                        title=(
-                            f"Promote {item.integration_branch} "
-                            f"to {self._promotion_base_branch}"
-                        ),
-                        body=(
-                            f"Sequential delivery for {advance.sequence_label} "
-                            "is complete. Review the cumulative application "
-                            "changes before promotion."
-                        ),
-                    )
+                    url = await self._open_promotion(item, advance)
                     await self._emit(
                         EVENT_DELIVERY_PROMOTION_OPENED,
                         merged_ticket_key=item.ticket_key,
@@ -343,6 +407,68 @@ class GitHubMergedDeliveryPoller:
             processed=processed,
         )
         return processed
+
+    async def _open_promotion(
+        self,
+        item: MergedDeliveryItem,
+        advance: DeliveryAdvance,
+    ) -> str:
+        title = (
+            f"Promote {item.integration_branch} to {self._promotion_base_branch}"
+        )
+        body = (
+            f"Sequential delivery for {advance.sequence_label} is complete. "
+            "Review the cumulative application changes before promotion."
+        )
+
+        def effect() -> str:
+            return self._promotion_opener.open_pull_request(
+                worktree_path=Path(item.repo_path),
+                branch_name=item.integration_branch,
+                base_branch=self._promotion_base_branch,
+                title=title,
+                body=body,
+            )
+
+        if self._action_journal is None:
+            return effect()
+        if advance.goal_id is None:
+            raise ValueError("goal identity is required to journal promotion PR")
+
+        def probe() -> ProbeResult[str]:
+            url = self._promotion_opener.find_open_pull_request(
+                worktree_path=Path(item.repo_path),
+                branch_name=item.integration_branch,
+                base_branch=self._promotion_base_branch,
+            )
+            return ProbeResult(
+                found=url is not None,
+                value=url,
+                result_identity=url,
+            )
+
+        outcome = await self._action_journal.execute(
+            LoopState(
+                goal_id=advance.goal_id,
+                contract_version=1,
+                phase="ready_for_promotion",
+            ),
+            operation="pr_create",
+            natural_key=f"{item.repo_path}:{item.integration_branch}",
+            request={
+                "repository": item.repo_path,
+                "head": item.integration_branch,
+                "base": self._promotion_base_branch,
+                "title_digest": sha256(title.encode("utf-8")).hexdigest(),
+                "body_digest": sha256(body.encode("utf-8")).hexdigest(),
+            },
+            effect=effect,
+            probe=probe,
+            restore=lambda url: url,
+        )
+        if outcome.value is None:
+            raise ValueError("journaled promotion PR returned no URL")
+        return outcome.value
 
     async def run_forever(self) -> None:
         while True:
@@ -438,24 +564,91 @@ class FeedbackExecutionCoordinator:
         worktree_factory: FeedbackWorktreeFactory | None = None,
         worktree_cleaner: WorktreeCleanupService | None = None,
         execution_preflight: ExecutionPreflight | None = None,
+        action_journal: GoalActionJournal | None = None,
     ) -> None:
         self._loader = loader
         self._runner = runner
         self._worktree_factory = worktree_factory or GitAdapter()
         self._worktree_cleaner = worktree_cleaner or WorktreeCleanupService()
         self._execution_preflight = execution_preflight
+        self._action_journal = action_journal
 
     async def run_feedback(self, item: FeedbackItem) -> TicketState:
         base = await self._loader.load(item.ticket_key)
         if self._execution_preflight is not None:
             self._execution_preflight.check(base)
         short_id = item.fingerprint[:8]
-        worktree = self._worktree_factory.create_worktree_for_branch(
-            item.repo_path,
-            item.ticket_key,
-            item.branch_name,
-            short_id,
-        )
+        if self._action_journal is None:
+            worktree = self._worktree_factory.create_worktree_for_branch(
+                item.repo_path,
+                item.ticket_key,
+                item.branch_name,
+                short_id,
+            )
+        else:
+            if base.goal_id is None:
+                raise ValueError("goal_id is required to journal feedback worktree")
+            repo_path = Path(item.repo_path)
+            expected_path = repo_path / ".worktrees" / item.ticket_key / short_id
+
+            def effect() -> WorktreeInfo:
+                return self._worktree_factory.create_worktree_for_branch(
+                    item.repo_path,
+                    item.ticket_key,
+                    item.branch_name,
+                    short_id,
+                )
+
+            def probe() -> ProbeResult[WorktreeInfo]:
+                if not expected_path.exists():
+                    return ProbeResult(found=False)
+                value = WorktreeInfo(
+                    repo_path=repo_path,
+                    worktree_path=expected_path,
+                    branch_name=item.branch_name,
+                    ticket_key=item.ticket_key,
+                    lock_id=short_id,
+                )
+                return ProbeResult(
+                    found=True,
+                    value=value,
+                    result_identity=str(expected_path),
+                )
+
+            def restore(path: str) -> WorktreeInfo:
+                restored = Path(path)
+                if not restored.exists():
+                    raise ValueError(f"completed feedback worktree missing: {path}")
+                return WorktreeInfo(
+                    repo_path=repo_path,
+                    worktree_path=restored,
+                    branch_name=item.branch_name,
+                    ticket_key=item.ticket_key,
+                    lock_id=short_id,
+                )
+
+            outcome = await self._action_journal.execute(
+                LoopState(
+                    goal_id=base.goal_id,
+                    contract_version=1,
+                    phase="implementing",
+                ),
+                operation="worktree_create",
+                natural_key=f"{item.ticket_key}:{short_id}",
+                request={
+                    "repo_path": item.repo_path,
+                    "ticket_key": item.ticket_key,
+                    "branch": item.branch_name,
+                    "lock_id": short_id,
+                },
+                effect=effect,
+                probe=probe,
+                result_identity=lambda value: str(value.worktree_path),
+                restore=restore,
+            )
+            if outcome.value is None:
+                raise ValueError("journaled feedback worktree returned no path")
+            worktree = outcome.value
         work_item = replace(
             base,
             description=_description_with_feedback(base, item),
@@ -470,6 +663,7 @@ class FeedbackExecutionCoordinator:
                     ticket_key=item.ticket_key,
                     summary=base.summary,
                     repository=base.repository,
+                    goal_id=base.goal_id,
                     repo_path=item.repo_path,
                     worktree_path=str(worktree.worktree_path),
                 )

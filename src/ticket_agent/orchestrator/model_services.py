@@ -162,7 +162,11 @@ class ModelRouterPlannerService:
             capability="ticket.decompose",
             messages=_messages_for_model(_planning_messages(state), state),
             ticket_id=state.ticket_key,
-            metadata={"workflow_node": "plan"},
+            metadata={
+                "workflow_node": "plan",
+                "goal_id": state.goal_id,
+                "goal_iteration": state.implementation_attempts,
+            },
         )
         payload = _coerce_model_payload(response)
         plan = _required_string(
@@ -221,7 +225,11 @@ class ModelRouterImplementationService:
                 state,
             ),
             ticket_id=state.ticket_key,
-            metadata={"workflow_node": "implement"},
+            metadata={
+                "workflow_node": "implement",
+                "goal_id": state.goal_id,
+                "goal_iteration": state.implementation_attempts + 1,
+            },
         )
         payload = _coerce_model_payload(response)
         file_operations = _required_file_operations(payload)
@@ -419,6 +427,8 @@ class IterativeImplementationService:
                     metadata={
                         "workflow_node": "implement",
                         "implementation_turn": turn_index + 1,
+                        "goal_id": state.goal_id,
+                        "goal_iteration": turn_index + 1,
                     },
                 )
                 payload = _coerce_model_payload(response)
@@ -827,7 +837,11 @@ class ModelRouterReviewService:
             capability="code.verify",
             messages=_messages_for_model(_review_messages(state), state),
             ticket_id=state.ticket_key,
-            metadata={"workflow_node": "review"},
+            metadata={
+                "workflow_node": "review",
+                "goal_id": state.goal_id,
+                "goal_iteration": state.implementation_attempts,
+            },
         )
         payload = _coerce_model_payload(response)
         passed = _optional_bool(

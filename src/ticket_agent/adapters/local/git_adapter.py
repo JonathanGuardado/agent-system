@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import re
 import subprocess
+from pathlib import Path
 from typing import Mapping, Sequence
 
 from ticket_agent.domain.errors import (
@@ -147,6 +147,58 @@ class GitAdapter:
         if sha_result.returncode != 0:
             raise GitAdapterError(_failure_message(sha_result))
         return sha_result.stdout.strip()
+
+    def staged_tree_digest(self, worktree_path: str | Path) -> str:
+        """Stage the candidate and return Git's content-addressed tree id."""
+
+        worktree = Path(worktree_path).resolve(strict=True)
+        add_result = self._run_git(("add", "-A"), cwd=worktree)
+        if add_result.returncode != 0:
+            raise GitAdapterError(_failure_message(add_result))
+        _unstage_generated_paths(worktree, timeout_seconds=self._default_timeout_seconds)
+        tree_result = self._run_git(("write-tree",), cwd=worktree)
+        if tree_result.returncode != 0:
+            raise GitAdapterError(_failure_message(tree_result))
+        return tree_result.stdout.strip()
+
+    def current_head(self, worktree_path: str | Path) -> tuple[str, str]:
+        """Return ``(commit SHA, tree id)`` for the current branch head."""
+
+        worktree = Path(worktree_path).resolve(strict=True)
+        result = self._run_git(("show", "-s", "--format=%H%n%T", "HEAD"), cwd=worktree)
+        if result.returncode != 0:
+            raise GitAdapterError(_failure_message(result))
+        lines = result.stdout.strip().splitlines()
+        if len(lines) != 2 or not all(lines):
+            raise GitAdapterError("git show did not return a commit and tree id")
+        return lines[0], lines[1]
+
+    def remote_ref_sha(
+        self,
+        worktree_path: str | Path,
+        branch_name: str,
+    ) -> str | None:
+        """Probe the bot-visible origin ref without mutating it."""
+
+        worktree = Path(worktree_path).resolve(strict=True)
+        _validate_push_branch(branch_name)
+        bot_env = self._required_git_bot_env()
+        _ensure_origin_remote(
+            worktree,
+            timeout_seconds=self._default_timeout_seconds,
+            credentials=self._credentials,
+        )
+        result = self._run_git(
+            ("ls-remote", "--heads", "origin", f"refs/heads/{branch_name}"),
+            cwd=worktree,
+            env=bot_env,
+        )
+        if result.returncode != 0:
+            raise PushError(_failure_message(result))
+        output = result.stdout.strip()
+        if not output:
+            return None
+        return output.split(maxsplit=1)[0]
 
     def push(self, worktree_path: str | Path, branch_name: str) -> None:
         worktree = Path(worktree_path).resolve(strict=True)

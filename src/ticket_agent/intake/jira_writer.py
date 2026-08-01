@@ -2,10 +2,25 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
 from ticket_agent.domain.intake import Proposal, TicketSpec
+from ticket_agent.goal.identity import (
+    GoalIdentityError,
+    goal_label,
+    normalize_goal_id,
+    validate_goal_labels,
+)
+from ticket_agent.goal.journal import GoalActionJournal, ProbeResult
+from ticket_agent.goal.types import (
+    ActionRecord,
+    AutonomyMode,
+    LoopState,
+    action_id,
+    digest,
+)
 from ticket_agent.jira.client import JiraClient
 from ticket_agent.jira.constants import (
     FIELD_AGENT_CAPABILITIES_NEEDED,
@@ -18,22 +33,11 @@ from ticket_agent.jira.constants import (
     LABEL_AI_STEP_PREFIX,
 )
 from ticket_agent.jira.models import JiraTicket
-from ticket_agent.goal.identity import (
-    GoalIdentityError,
-    goal_label,
-    normalize_goal_id,
-    validate_goal_labels,
-)
-from ticket_agent.goal.types import (
-    ActionRecord,
-    AutonomyMode,
-    LoopState,
-    action_id,
-    digest,
-)
 
 
 class GoalSpine(Protocol):
+    def load_loop_state(self, goal_id: str) -> LoopState | None: ...
+
     def reserve_action(
         self,
         state: LoopState,
@@ -56,6 +60,16 @@ class GoalSpine(Protocol):
         result_identity: str | None = None,
         actual_model_cost_usd: float = 0.0,
         recovery_classification: str | None = None,
+    ) -> ActionRecord: ...
+
+    def mark_failed(
+        self,
+        action_id_value: str,
+        *,
+        error: str,
+        error_classification: str,
+        recovery_classification: str,
+        actual_model_cost_usd: float | None = None,
     ) -> ActionRecord: ...
 
 
@@ -119,6 +133,11 @@ class JiraWriter:
         self._client = client
         self._goal_spine = goal_spine
         self._component_id = component_id
+        self._journal = (
+            GoalActionJournal(goal_spine, lease_owner=component_id)
+            if goal_spine is not None
+            else None
+        )
 
     async def write(
         self,
@@ -185,6 +204,7 @@ class JiraWriter:
             parent_key = await self._create_epic(
                 proposal,
                 context,
+                goal_id=goal_id,
                 goal_label_value=canonical_goal_label,
             )
             if parent_key is None:
@@ -233,17 +253,21 @@ class JiraWriter:
         proposal: Proposal,
         context: _WriteContext,
         *,
+        goal_id: str,
         goal_label_value: str,
     ) -> str | None:
         summary = proposal.epic_summary or proposal.title
         description = proposal.epic_description or proposal.summary
         try:
-            epic = await self._client.create_issue(
-                context.project_key,
+            labels = [goal_label_value]
+            epic = await self._create_issue(
+                goal_id=goal_id,
+                step="epic",
+                project_key=context.project_key,
                 summary=summary,
                 description=description,
                 issue_type="Epic",
-                labels=[goal_label_value],
+                labels=labels,
                 fields={},
             )
         except Exception as exc:  # noqa: BLE001 - boundary call
@@ -281,6 +305,8 @@ class JiraWriter:
             ],
             execution_ready=False,
         )
+        if self._journal is not None:
+            labels.append(_journal_step_label(step_index))
         description = _description_with_delivery(spec.description, delivery, step_index)
         fields = (
             {}
@@ -289,8 +315,10 @@ class JiraWriter:
         )
 
         try:
-            ticket = await self._client.create_issue(
-                context.project_key,
+            ticket = await self._create_issue(
+                goal_id=goal_id,
+                step=str(step_index),
+                project_key=context.project_key,
                 summary=spec.summary,
                 description=description,
                 issue_type=spec.issue_type,
@@ -311,14 +339,17 @@ class JiraWriter:
             if fields and _is_optional_field_create_error(exc):
                 context.optional_fields_disabled = True
                 try:
-                    ticket = await self._client.create_issue(
-                        context.project_key,
+                    ticket = await self._create_issue(
+                        goal_id=goal_id,
+                        step=str(step_index),
+                        project_key=context.project_key,
                         summary=spec.summary,
                         description=description,
                         issue_type=spec.issue_type,
                         priority=spec.priority,
                         labels=labels,
                         fields={},
+                        request_fields=fields,
                         parent_key=parent_key,
                     )
                 except Exception as retry_exc:  # noqa: BLE001 - boundary call
@@ -399,6 +430,100 @@ class JiraWriter:
             recovery_classification=recovery,
         )
 
+    async def _create_issue(
+        self,
+        *,
+        goal_id: str,
+        step: str,
+        project_key: str,
+        summary: str,
+        description: str,
+        issue_type: str,
+        labels: list[str],
+        fields: dict[str, object],
+        request_fields: dict[str, object] | None = None,
+        priority: str | None = None,
+        parent_key: str | None = None,
+    ) -> JiraTicket:
+        if self._journal is None:
+            return await self._client.create_issue(
+                project_key,
+                summary=summary,
+                description=description,
+                issue_type=issue_type,
+                priority=priority,
+                labels=labels,
+                fields=fields,
+                parent_key=parent_key,
+            )
+
+        step_label = _journal_step_label(step)
+        if step_label not in labels:
+            labels = [*labels, step_label]
+
+        async def effect() -> JiraTicket:
+            return await self._client.create_issue(
+                project_key,
+                summary=summary,
+                description=description,
+                issue_type=issue_type,
+                priority=priority,
+                labels=labels,
+                fields=fields,
+                parent_key=parent_key,
+            )
+
+        async def probe() -> ProbeResult[JiraTicket]:
+            matches = await _issues_for_goal_step(
+                self._client,
+                project_key=project_key,
+                goal_label_value=goal_label(goal_id),
+                step_label=step_label,
+            )
+            if len(matches) > 1:
+                keys = ", ".join(ticket.key for ticket in matches)
+                raise RuntimeError(
+                    f"duplicate Jira issues detected for goal step {step}: {keys}"
+                )
+            if not matches:
+                return ProbeResult(found=False)
+            ticket = matches[0]
+            return ProbeResult(
+                found=True,
+                value=ticket,
+                result_identity=ticket.key,
+            )
+
+        outcome = await self._journal.execute(
+            LoopState(
+                goal_id=goal_id,
+                contract_version=1,
+                phase="discovering",
+            ),
+            operation="jira_write:create_issue",
+            natural_key=f"{goal_id}:{step}",
+            request={
+                "project_key": project_key,
+                "step": step,
+                "summary": summary,
+                "description": description,
+                "issue_type": issue_type,
+                "priority": priority,
+                "labels": labels,
+                "fields": fields if request_fields is None else request_fields,
+                "parent_key": parent_key,
+            },
+            effect=effect,
+            probe=probe,
+            result_identity=lambda ticket: ticket.key,
+            restore=self._client.get_ticket,
+        )
+        if outcome.value is None:
+            raise RuntimeError(
+                f"completed Jira create action for goal step {step} has no issue"
+            )
+        return outcome.value
+
 
 def _is_optional_field_create_error(exc: BaseException) -> bool:
     message = _error_message(exc).lower()
@@ -406,6 +531,44 @@ def _is_optional_field_create_error(exc: BaseException) -> bool:
         "cannot be set" in message
         and ("appropriate screen" in message or "unknown" in message)
     )
+
+
+def _journal_step_label(step: object) -> str:
+    value = str(step).strip().lower()
+    return f"ai-journal-step-{value}"
+
+
+async def _issues_for_goal_step(
+    client: JiraClient,
+    *,
+    project_key: str,
+    goal_label_value: str,
+    step_label: str,
+) -> list[JiraTicket]:
+    jql = (
+        f'project = "{_jql_quote(project_key)}" '
+        f'AND labels = "{_jql_quote(goal_label_value)}" '
+        f'AND labels = "{_jql_quote(step_label)}"'
+    )
+    result = await client.search_issues(jql, fields=("key", "summary", "labels"))
+    raw_items: object = result.get("issues", ()) if isinstance(result, Mapping) else result
+    if not isinstance(raw_items, Sequence) or isinstance(raw_items, (str, bytes)):
+        raise RuntimeError("Jira goal-step probe returned a malformed issue list")
+    tickets: list[JiraTicket] = []
+    for item in raw_items:
+        if isinstance(item, JiraTicket):
+            tickets.append(item)
+            continue
+        if not isinstance(item, Mapping):
+            continue
+        key = item.get("key")
+        if isinstance(key, str) and key:
+            tickets.append(await client.get_ticket(key))
+    return tickets
+
+
+def _jql_quote(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _is_invalid_project_create_error(exc: BaseException) -> bool:

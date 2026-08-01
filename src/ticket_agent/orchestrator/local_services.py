@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import re
 import tempfile
@@ -30,6 +31,8 @@ from ticket_agent.domain.errors import (
 )
 from ticket_agent.domain.git import WorktreeInfo
 from ticket_agent.domain.execution import CommandExecutionPolicy, SandboxAttestation
+from ticket_agent.goal.journal import GoalActionJournal, ProbeResult
+from ticket_agent.goal.types import LoopState, canonical_json, digest
 
 _LOGGER = logging.getLogger(__name__)
 from ticket_agent.orchestrator.git_services import (
@@ -146,6 +149,7 @@ class LocalImplementationService:
         test_runner_factory: TestRunnerFactory | None = None,
         shell_factory: ShellFactory | None = None,
         execution_preflight: ExecutionPreflight | None = None,
+        action_journal: GoalActionJournal | None = None,
     ) -> None:
         self._contract_dir = Path(contract_dir)
         self._contract_loader = contract_loader
@@ -162,6 +166,7 @@ class LocalImplementationService:
             )
         )
         self._execution_preflight = execution_preflight
+        self._action_journal = action_journal
 
     async def implement(self, state: TicketState) -> dict[str, Any]:
         contract_path = _contract_path(state, self._contract_dir)
@@ -187,12 +192,7 @@ class LocalImplementationService:
         try:
             if self._execution_preflight is not None:
                 self._execution_preflight.check(state)
-            worktree = _worktree_info(
-                state,
-                repo_path,
-                self._git,
-                self._lock_id_factory,
-            )
+            worktree = await self._prepare_worktree(state, repo_path)
             files = self._file_adapter_factory(worktree.worktree_path, contract)
             test_runner = self._test_runner_factory(
                 worktree.worktree_path, contract
@@ -221,6 +221,86 @@ class LocalImplementationService:
             "implementation_result": implementation_result,
         }
 
+    async def _prepare_worktree(
+        self,
+        state: TicketState,
+        repo_path: Path,
+    ) -> _PreparedWorktree:
+        existing = _worktree_path(state)
+        if existing is not None or self._action_journal is None:
+            return _worktree_info(
+                state,
+                repo_path,
+                self._git,
+                self._lock_id_factory,
+            )
+        if state.goal_id is None:
+            raise ValueError("goal_id is required to journal worktree creation")
+
+        lock_id = self._lock_id_factory(state)
+        expected_path = repo_path / ".worktrees" / state.ticket_key / lock_id
+        branch_name = f"agent/{state.ticket_key}/{lock_id}"
+
+        def effect() -> _PreparedWorktree:
+            return _worktree_info(
+                state,
+                repo_path,
+                self._git,
+                lambda ignored: lock_id,
+            )
+
+        def probe() -> ProbeResult[_PreparedWorktree]:
+            if not expected_path.exists():
+                return ProbeResult(found=False)
+            prepared = _PreparedWorktree(
+                repo_path=repo_path,
+                worktree_path=expected_path,
+                branch_name=branch_name,
+                ticket_key=state.ticket_key,
+                lock_id=state.lock_id or lock_id,
+            )
+            return ProbeResult(
+                found=True,
+                value=prepared,
+                result_identity=str(expected_path),
+            )
+
+        async def restore(path: str) -> _PreparedWorktree:
+            restored = Path(path)
+            if not restored.exists():
+                raise ValueError(f"completed worktree is missing: {restored}")
+            return _PreparedWorktree(
+                repo_path=repo_path,
+                worktree_path=restored,
+                branch_name=branch_name,
+                ticket_key=state.ticket_key,
+                lock_id=state.lock_id or lock_id,
+            )
+
+        outcome = await self._action_journal.execute(
+            LoopState(
+                goal_id=state.goal_id,
+                contract_version=1,
+                phase="implementing",
+                iteration=state.implementation_attempts + 1,
+            ),
+            operation="worktree_create",
+            natural_key=f"{state.ticket_key}:{lock_id}",
+            request={
+                "repo_path": str(repo_path),
+                "ticket_key": state.ticket_key,
+                "lock_id": lock_id,
+                "base_branch": state.pull_request_base_branch,
+            },
+            effect=effect,
+            probe=probe,
+            result_identity=lambda prepared: str(prepared.worktree_path),
+            restore=restore,
+        )
+        if outcome.value is None:
+            raise ValueError("journaled worktree creation returned no path")
+        return outcome.value
+
 
 class AdapterTestService:
     """Run repository tests through the repo-contract backed test adapter."""
@@ -232,11 +312,13 @@ class AdapterTestService:
         contract_loader: ContractLoader = load_repo_contract,
         shell_factory: ShellFactory | None = None,
         adapter_factory: TestAdapterFactory = LocalTestAdapter,
+        action_journal: GoalActionJournal | None = None,
     ) -> None:
         self._contract_dir = Path(contract_dir)
         self._contract_loader = contract_loader
         self._shell_factory = shell_factory or _build_contract_shell
         self._adapter_factory = adapter_factory
+        self._action_journal = action_journal
 
     async def run_tests(self, state: TicketState) -> TestResult:
         worktree_path = _worktree_path(state)
@@ -261,7 +343,43 @@ class AdapterTestService:
         try:
             shell = self._shell_factory(worktree_path, contract)
             adapter = self._adapter_factory(shell, contract)
-            command_result = adapter.run_tests()
+            if self._action_journal is None:
+                command_result = adapter.run_tests()
+            else:
+                if state.goal_id is None:
+                    raise ValueError("goal_id is required to journal gate execution")
+                candidate = state.candidate_sha or _worktree_content_digest(
+                    worktree_path
+                )
+
+                def effect() -> CommandResult:
+                    return adapter.run_tests()
+
+                outcome = await self._action_journal.execute(
+                    LoopState(
+                        goal_id=state.goal_id,
+                        contract_version=1,
+                        phase="verifying",
+                        iteration=state.implementation_attempts,
+                        candidate_sha=candidate,
+                    ),
+                    operation="gate_run",
+                    natural_key=f"{candidate}:test",
+                    request={
+                        "candidate_sha": candidate,
+                        "gate": "test",
+                        "command": contract.commands.test.command,
+                    },
+                    effect=effect,
+                    # An ambiguous gate is safe to re-run. A completed result
+                    # is restored from its canonical JSON identity below.
+                    probe=lambda: ProbeResult(found=False),
+                    result_identity=lambda result: canonical_json(result),
+                    restore=_command_result_from_identity,
+                )
+                if outcome.value is None:
+                    raise ValueError("journaled gate returned no result")
+                command_result = outcome.value
         except (AgentSystemError, OSError, ValueError) as exc:
             return _failed_result(f"test adapter failed: {exc}")
 
@@ -517,6 +635,33 @@ def _command_result_to_test_result(result: CommandResult) -> TestResult:
         "timed_out": result.timed_out,
         "error": None if tests_passed else _error_output(result),
     }
+
+
+def _command_result_from_identity(identity: str) -> CommandResult:
+    payload = json.loads(identity)
+    attestation_payload = payload.get("sandbox_attestation")
+    attestation = (
+        SandboxAttestation(**attestation_payload) if attestation_payload else None
+    )
+    return CommandResult(
+        command=tuple(payload["command"]),
+        returncode=int(payload["returncode"]),
+        stdout=str(payload.get("stdout", "")),
+        stderr=str(payload.get("stderr", "")),
+        timed_out=bool(payload.get("timed_out", False)),
+        sandbox_attestation=attestation,
+    )
+
+
+def _worktree_content_digest(worktree_path: Path) -> str:
+    entries: list[tuple[str, str]] = []
+    for path in sorted(worktree_path.rglob("*")):
+        relative = path.relative_to(worktree_path)
+        if ".git" in relative.parts or ".worktrees" in relative.parts:
+            continue
+        if path.is_file() and not path.is_symlink():
+            entries.append((relative.as_posix(), digest(path.read_bytes())))
+    return digest(entries)
 
 
 def _combined_output(result: CommandResult) -> str:

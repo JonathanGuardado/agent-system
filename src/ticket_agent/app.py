@@ -37,6 +37,7 @@ from ticket_agent.goal.contract import (
     SQLiteGoalContractStore,
 )
 from ticket_agent.goal.execution_preflight import ExecutionAuthorizationPreflight
+from ticket_agent.goal.journal import GoalActionJournal, JournaledModelRouter
 from ticket_agent.goal.policy import load_risk_policy
 from ticket_agent.goal.semantic_check import ModelSemanticChecker, SemanticChecker
 from ticket_agent.goal.signing import NullSigner, Signer, SigningError, load_signer
@@ -385,6 +386,10 @@ def build_runtime(
         emit=emit,
     )
     goal_spine = SQLiteGoalSpine(database_paths["goal_spine"])
+    action_journal = GoalActionJournal(
+        goal_spine,
+        lease_owner=runtime_config.component_id,
+    )
     goal_contract_store = SQLiteGoalContractStore(database_paths["goal_contracts"])
     try:
         goal_signer = load_signer(runtime_config.signing_key_path, data_dir=data_dir)
@@ -416,6 +421,8 @@ def build_runtime(
     router = model_router
     if planner is None or implementation is None or review is None:
         router = router or create_model_router(transcripts=transcripts)
+    if router is not None:
+        router = JournaledModelRouter(router, action_journal)
     implementation_loop = (
         None
         if implementation is not None
@@ -433,6 +440,7 @@ def build_runtime(
             for defaults in repo_defaults.values()
             if defaults.get("repo_path")
         ],
+        action_journal=action_journal,
     )
     node_runner = TicketNodeRunner(
         planner=planner or ModelRouterPlannerService(router),
@@ -441,6 +449,7 @@ def build_runtime(
             approval_store,
             slack,
             approval_channel,
+            action_journal,
         ),
         implementation=implementation
         or LocalImplementationService(
@@ -448,17 +457,20 @@ def build_runtime(
             implementation_step=implementation_loop.implement_context,
             shell_factory=shell_factory,
             execution_preflight=execution_preflight,
+            action_journal=action_journal,
         ),
         tests=tests
         or AdapterTestService(
             contract_dir=runtime_config.contract_dir,
             shell_factory=shell_factory,
+            action_journal=action_journal,
         ),
         review=review or ModelRouterReviewService(router),
         pull_request=pull_request
         or GitService(
             base_branch=runtime_config.pull_request_base_branch,
             credentials=credentials,
+            action_journal=action_journal,
         ),
         escalation=escalation or JiraEscalationService(execution_service),
         transcripts=transcripts,
@@ -506,6 +518,7 @@ def build_runtime(
         worktree_cleaner=worktree_cleaner,
         checkpointer=checkpointer,
         execution_preflight=execution_preflight,
+        action_journal=action_journal,
     )
     coordinator = _MarkDoneCoordinator(jira_coordinator, detector)
     worker = ExecutionWorker(detector_queue, coordinator, emit=emit)
@@ -544,11 +557,15 @@ def build_runtime(
                 credentials=credentials,
             ),
             store=delivery_store,
-            advancer=SequentialDeliveryAdvancer(jira_client),
+            advancer=SequentialDeliveryAdvancer(
+                jira_client,
+                action_journal=action_journal,
+            ),
             promotion_opener=GhPullRequestOpener(credentials=credentials),
             promotion_base_branch=runtime_config.pull_request_base_branch,
             poll_interval_seconds=runtime_config.github_feedback_poll_interval_seconds,
             emit=emit,
+            action_journal=action_journal,
         )
         feedback_worker = FeedbackWorker(
             feedback_queue,
@@ -557,6 +574,7 @@ def build_runtime(
                 runner=runner,
                 worktree_cleaner=worktree_cleaner,
                 execution_preflight=execution_preflight,
+                action_journal=action_journal,
             ),
             emit=emit,
         )
@@ -1364,6 +1382,7 @@ def _execution_approval_service(
     approval_store: SQLiteExecutionApprovalStore,
     slack: SlackPoster,
     approval_channel: str,
+    action_journal: GoalActionJournal,
 ) -> Any:
     if (
         config.execution_mode == "dry_run"
@@ -1373,6 +1392,7 @@ def _execution_approval_service(
             store=approval_store,
             slack=slack,
             default_channel=approval_channel,
+            action_journal=action_journal,
         )
     return AutoApprovalService()
 

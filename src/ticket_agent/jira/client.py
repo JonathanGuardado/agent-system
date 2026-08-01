@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from hashlib import sha256
 from typing import Any, Protocol
 
 import httpx
@@ -40,6 +41,9 @@ class JiraClient(Protocol):
 
     async def add_comment(self, ticket_key: str, body: str) -> None:
         """Add a comment to a Jira ticket."""
+
+    async def has_comment(self, ticket_key: str, body_digest: str) -> bool:
+        """Return whether a comment with this normalized body digest exists."""
 
     async def create_issue(
         self,
@@ -157,6 +161,25 @@ class JiraRestClient:
             f"/rest/api/3/issue/{ticket_key}/comment",
             json={"body": _adf_doc(body)},
         )
+
+    async def has_comment(self, ticket_key: str, body_digest: str) -> bool:
+        result = await self._request(
+            "GET",
+            f"/rest/api/3/issue/{ticket_key}/comment",
+            params={"maxResults": 1000},
+        )
+        comments = result.get("comments") if isinstance(result, Mapping) else None
+        if not isinstance(comments, Sequence):
+            raise JiraClientError(
+                f"Jira comments response for {ticket_key} was not a list"
+            )
+        for comment in comments:
+            if not isinstance(comment, Mapping):
+                continue
+            body = _description_text(comment.get("body"))
+            if sha256(body.encode("utf-8")).hexdigest() == body_digest:
+                return True
+        return False
 
     async def create_issue(
         self,

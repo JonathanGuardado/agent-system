@@ -6,8 +6,12 @@ import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable, Iterable
+from hashlib import sha256
 from inspect import isawaitable
 
+from ticket_agent.goal.identity import goal_id_from_labels
+from ticket_agent.goal.journal import GoalActionJournal, ProbeResult
+from ticket_agent.goal.types import LoopState
 from ticket_agent.jira.client import JiraClient
 from ticket_agent.jira.constants import (
     EVENT_JIRA_COMPENSATION_COMPLETED,
@@ -55,12 +59,14 @@ class JiraExecutionService:
         in_review_status: str = STATUS_IN_REVIEW,
         emit: EventEmitter | None = None,
         redacted_paths: Iterable[str | os.PathLike[str]] = (),
+        action_journal: GoalActionJournal | None = None,
     ) -> None:
         self._client = client
         self._component_id = component_id
         self._in_review_status = in_review_status.strip() or STATUS_IN_REVIEW
         self._event_emitter = emit
         self._redacted_paths = normalize_local_paths(redacted_paths)
+        self._action_journal = action_journal
 
     async def mark_claimed(self, ticket_key: str) -> None:
         """Mark a Jira ticket as claimed by this component."""
@@ -85,7 +91,7 @@ class JiraExecutionService:
                 _MARK_CLAIMED_OPERATION,
                 ticket_key,
                 failed_step,
-                lambda: self._client.transition_ticket(
+                lambda: self._transition(
                     ticket_key,
                     STATUS_IN_PROGRESS,
                 ),
@@ -115,14 +121,14 @@ class JiraExecutionService:
                     ),
                     (
                         "transition_back_to_todo",
-                        lambda: self._client.transition_ticket(
+                        lambda: self._transition(
                             ticket_key,
                             STATUS_TODO,
                         ),
                     ),
                     (
                         "add_claim_failure_comment",
-                        lambda: self._client.add_comment(
+                        lambda: self._comment(
                             ticket_key,
                             _claim_compensation_comment(failed_step, exc),
                         ),
@@ -167,7 +173,7 @@ class JiraExecutionService:
             _MARK_FAILED_OPERATION,
             ticket_key,
             _STEP_ADD_COMMENT,
-            lambda: self._client.add_comment(
+            lambda: self._comment(
                 ticket_key,
                 "AI execution failed:\n\n"
                 f"{redact_local_paths(reason, self._redacted_paths)}",
@@ -181,7 +187,7 @@ class JiraExecutionService:
             _MARK_IN_REVIEW_OPERATION,
             ticket_key,
             _STEP_TRANSITION_TICKET,
-            lambda: self._client.transition_ticket(
+            lambda: self._transition(
                 ticket_key,
                 self._in_review_status,
             ),
@@ -213,7 +219,7 @@ class JiraExecutionService:
             _MARK_IN_REVIEW_OPERATION,
             ticket_key,
             _STEP_ADD_COMMENT,
-            lambda: self._client.add_comment(
+            lambda: self._comment(
                 ticket_key,
                 f"AI execution opened pull request:\n\n{pull_request_url}",
             ),
@@ -245,13 +251,13 @@ class JiraExecutionService:
             _DRY_RUN_APPROVED_OPERATION,
             ticket_key,
             _STEP_TRANSITION_TICKET,
-            lambda: self._client.transition_ticket(ticket_key, STATUS_TODO),
+            lambda: self._transition(ticket_key, STATUS_TODO),
         )
         await self._call_jira(
             _DRY_RUN_APPROVED_OPERATION,
             ticket_key,
             _STEP_ADD_COMMENT,
-            lambda: self._client.add_comment(
+            lambda: self._comment(
                 ticket_key,
                 "AI execution dry-run approved. No code changes were attempted.",
             ),
@@ -380,10 +386,69 @@ class JiraExecutionService:
             actions=(
                 (
                     "add_partial_failure_comment",
-                    lambda: self._client.add_comment(ticket_key, body),
+                    lambda: self._comment(ticket_key, body),
                 ),
             ),
         )
+
+    async def _transition(self, ticket_key: str, status: str) -> None:
+        if self._action_journal is None:
+            await self._client.transition_ticket(ticket_key, status)
+            return
+        goal_id = await self._goal_id(ticket_key)
+
+        async def probe() -> ProbeResult[None]:
+            ticket = await self._client.get_ticket(ticket_key)
+            return ProbeResult(
+                found=ticket.status == status,
+                result_identity=status if ticket.status == status else None,
+            )
+
+        await self._action_journal.execute(
+            LoopState(
+                goal_id=goal_id,
+                contract_version=1,
+                phase="delivering",
+            ),
+            operation="jira_write:transition",
+            natural_key=f"{ticket_key}:{status}",
+            request={"ticket_key": ticket_key, "target_status": status},
+            effect=lambda: self._client.transition_ticket(ticket_key, status),
+            probe=probe,
+            result_identity=lambda ignored: status,
+        )
+
+    async def _comment(self, ticket_key: str, body: str) -> None:
+        if self._action_journal is None:
+            await self._client.add_comment(ticket_key, body)
+            return
+        goal_id = await self._goal_id(ticket_key)
+        body_digest = sha256(body.encode("utf-8")).hexdigest()
+
+        async def probe() -> ProbeResult[None]:
+            found = await self._client.has_comment(ticket_key, body_digest)
+            return ProbeResult(
+                found=found,
+                result_identity=body_digest if found else None,
+            )
+
+        await self._action_journal.execute(
+            LoopState(
+                goal_id=goal_id,
+                contract_version=1,
+                phase="delivering",
+            ),
+            operation="jira_write:comment",
+            natural_key=f"{ticket_key}:{body_digest}",
+            request={"ticket_key": ticket_key, "body_digest": body_digest},
+            effect=lambda: self._client.add_comment(ticket_key, body),
+            probe=probe,
+            result_identity=lambda ignored: body_digest,
+        )
+
+    async def _goal_id(self, ticket_key: str) -> str:
+        ticket = await self._client.get_ticket(ticket_key)
+        return goal_id_from_labels(ticket.labels)
 
     async def _run_compensation(
         self,

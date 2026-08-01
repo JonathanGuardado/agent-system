@@ -17,9 +17,11 @@ At a high level, the system flows through these stages:
 Slack request
   -> model-assisted proposal
   -> human intake approval
-  -> Jira epic/tasks
+  -> authorized signed GoalContract + durable goal spine
+  -> Jira epic/tasks as the goal projection
   -> ai-ready detection
-  -> SQLite ticket lock/checkpoint
+  -> authorization/sandbox preflight
+  -> SQLite ticket lock/checkpoint + action journal
   -> LangGraph planning
   -> execution approval (automatic or Slack, depending on policy)
   -> implementation
@@ -36,13 +38,13 @@ Slack request
 > or merge is performed by a human as required by current policy. See the
 > [Roadmap](#roadmap) for what is missing and in what order it lands.
 
-Slack is the human-facing interface, and **Jira is the execution source of
-truth today** — detection reads from Jira and the orchestrator works from Jira
-tickets. (After P12 the authorized `GoalContract` becomes the scope authority
-and Jira becomes a projection; that migration has not happened.) SQLite
-provides local coordination for locks and workflow checkpoints. LangGraph
-orchestrates the execution workflow, while the actual coding, file, shell,
-test, and git operations stay in explicit Python components.
+Slack is the human-facing interface. The authorized `GoalContract` is scope
+authority, while Jira is its work-queue projection: detection reads Jira and
+the orchestrator works from Jira tickets, but durable authority is revalidated
+before execution mutation. SQLite provides coordination for locks, workflow
+checkpoints, the goal spine, and the action journal. LangGraph orchestrates the
+execution workflow, while coding, file, shell, test, and git operations stay in
+explicit Python components.
 
 **Target repositories are external inputs** to the runtime, each described by a
 `config/repos/*.yaml` contract; the application changes produced inside them
@@ -330,7 +332,7 @@ dependency · ↪ absorbed into another phase.
 | P9 | ↪ | Real-diff review and the lint gate. Absorbed into P15 and P14; never scheduled separately |
 | P10 | 🔶 | Observability foundations exist; later producers and operational evidence are missing |
 | P11 | ✅ | This repo owns selector config; resolution is pinned and the library copy is example-only |
-| P12 | 🔶 | Goal contracts exist but durable authority, revocation, spine, journal, and execution enforcement do not |
+| P12 | 🔶 | Durable authority, revocation, autonomy, and the action journal are enforced; non-convergence and live recovery evidence remain |
 | P13 | 🔶 | Sandbox enforcement and per-command evidence are wired; context assembly / knowledge map remains |
 | P14 | ⬜ | Verify an immutable committed SHA in an isolated checkout |
 | P15 | ⬜ | Independent review of the complete real diff, maker ≠ checker across fallbacks |
@@ -349,15 +351,16 @@ P13.3a comes before P12 because sandbox refusal must protect every execution
 entry point before later authorization plumbing relies on it. P12.2b and
 P12.2c ship together so durable authorization publication and consumption
 cannot diverge. P12 comes before P14–P17 because those phases all record
-evidence against a goal that does not yet reach the graph. P18 follows P17
+evidence against the goal that now reaches the graph. P18 follows P17
 because it acts on comments left on the promotion PR that P17 opens. Per-step
 rationale is in
 [the roadmap](docs/autonomous-delivery-roadmap.md#recommended-execution-order).
 
 Two things are worth knowing before trusting a status mark anywhere:
 
-- **A capability is not complete because its types exist.** The sandbox and the
-  goal contract are both fully implemented and neither is enforced.
+- **A capability is not complete because its types exist.** Sandbox and goal
+  authority are enforced, while their parent phases remain partial for the
+  separately listed P12/P13 exit criteria.
 - **Opt-in is not operational proof.** Transcripts default to off; a feature
   that *can* be enabled has demonstrated nothing.
 

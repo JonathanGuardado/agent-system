@@ -15,6 +15,8 @@ from ticket_agent.config.repo_contract import (
 from ticket_agent.domain.errors import RepoContractError, WorktreeCreationError
 from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
 from ticket_agent.domain.git import WorktreeInfo
+from ticket_agent.goal.journal import GoalActionJournal
+from ticket_agent.goal.spine import SQLiteGoalSpine
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.local_services import (
     ImplementationContext,
@@ -74,6 +76,50 @@ def test_local_implementation_service_creates_worktree_and_calls_step(tmp_path):
             "changed_files": ["src/example.py"],
         },
     }
+
+
+def test_local_worktree_creation_is_journaled(tmp_path):
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    worktree_path = repo_path / ".worktrees" / "AGENT-123" / "12345678"
+    spine = SQLiteGoalSpine(tmp_path / "spine.sqlite3")
+    git = _FakeGit(
+        WorktreeInfo(
+            repo_path=repo_path,
+            worktree_path=worktree_path,
+            branch_name="agent/AGENT-123/12345678",
+            ticket_key="AGENT-123",
+            lock_id="12345678",
+        )
+    )
+    service = LocalImplementationService(
+        contract_loader=lambda path: _contract(repo_root=str(repo_path)),
+        git=git,
+        file_adapter_factory=lambda worktree, contract: _FakeFileAdapter(worktree),
+        lock_id_factory=lambda state: "12345678",
+        action_journal=GoalActionJournal(spine, lease_owner="worker-1"),
+    )
+
+    try:
+        result = asyncio.run(
+            service.implement(
+                TicketState(
+                    ticket_key="AGENT-123",
+                    summary="Implement feature",
+                    repository="example",
+                    repo_path=str(repo_path),
+                    goal_id="prop-0123456789ab",
+                )
+            )
+        )
+
+        assert result["worktree_path"] == str(worktree_path)
+        actions = spine.actions_for_goal("prop-0123456789ab")
+        assert len(actions) == 1
+        assert actions[0].operation == "worktree_create"
+        assert actions[0].state == "done"
+    finally:
+        spine.close()
 
 
 def test_local_implementation_service_uses_contract_repo_root_when_repo_path_missing(

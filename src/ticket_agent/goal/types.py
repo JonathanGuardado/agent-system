@@ -27,9 +27,10 @@ from datetime import datetime
 from enum import IntEnum
 from hashlib import sha256
 import json
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from ticket_agent.orchestrator.gates import ReviewCoverage, VerificationRecord
+if TYPE_CHECKING:
+    from ticket_agent.orchestrator.gates import ReviewCoverage, VerificationRecord
 
 
 # --------------------------------------------------------------------------
@@ -330,12 +331,135 @@ ActionKind = Literal[
 
 ActionState = Literal["intended", "in_flight", "done", "failed", "abandoned"]
 
-#: Kinds whose remote effect can be probed or deduplicated, and which may
-#: therefore claim effectively-once. Everything else is at-least-once with a
-#: recorded duplicate risk -- notably ``model_invoke``, which has neither an
-#: idempotency key nor a probe, so its spend is bounded rather than exact.
+
+@dataclass(frozen=True, slots=True)
+class OperationPolicy:
+    """Idempotency and ambiguity rules for one concrete external operation."""
+
+    operation: str
+    kind: ActionKind
+    natural_key: str
+    ambiguity_recovery: str
+    maximum_duplicate: str
+    probe_required: bool
+    max_attempts: int = 2
+    charge_reservation_on_ambiguity: bool = False
+
+    @property
+    def effectively_once(self) -> bool:
+        return self.probe_required and self.maximum_duplicate == "0"
+
+
+# Policy is deliberately keyed by operation rather than ActionKind. Jira issue
+# creation and Slack posting are both external writes, for example, but one has
+# a safe probe and the other is explicitly at-least-once.
+OPERATION_POLICIES: Mapping[str, OperationPolicy] = {
+    policy.operation: policy
+    for policy in (
+        OperationPolicy(
+            "jira_write:create_issue",
+            "jira_write",
+            "goal id + step index",
+            "JQL probe on goal label + step",
+            "0",
+            True,
+        ),
+        OperationPolicy(
+            "jira_write:add_ai_ready",
+            "jira_write",
+            "ticket key",
+            "re-read label presence",
+            "0",
+            True,
+        ),
+        OperationPolicy(
+            "jira_write:transition",
+            "jira_write",
+            "ticket key + target status",
+            "re-read ticket status",
+            "0",
+            True,
+        ),
+        OperationPolicy(
+            "jira_write:comment",
+            "jira_write",
+            "ticket key + body digest",
+            "search comment body digest before retry",
+            "0-1, detected",
+            True,
+        ),
+        OperationPolicy(
+            "slack_post",
+            "slack_post",
+            "channel + thread + body digest",
+            "at-least-once re-post",
+            "1, declared",
+            False,
+        ),
+        OperationPolicy(
+            "worktree_create",
+            "worktree_create",
+            "ticket key + lock id",
+            "reuse existing path or clean and recreate",
+            "0",
+            True,
+        ),
+        OperationPolicy(
+            "git_commit",
+            "git_commit",
+            "branch + tree digest",
+            "probe branch commits by tree",
+            "0",
+            True,
+        ),
+        OperationPolicy(
+            "git_push",
+            "git_push",
+            "remote + branch + SHA",
+            "probe remote ref",
+            "0",
+            True,
+        ),
+        OperationPolicy(
+            "pr_create",
+            "pr_create",
+            "repository + head branch",
+            "probe open pull request by head",
+            "0",
+            True,
+        ),
+        OperationPolicy(
+            "pr_merge",
+            "pr_merge",
+            "repository + pull request number + SHA",
+            "probe merge state",
+            "0",
+            True,
+        ),
+        OperationPolicy(
+            "model_invoke",
+            "model_invoke",
+            "goal + iteration + prompt digest",
+            "at-least-once; charge full reservation when ambiguous",
+            "1 call, bounded spend",
+            False,
+            charge_reservation_on_ambiguity=True,
+        ),
+        OperationPolicy(
+            "gate_run",
+            "gate_run",
+            "candidate SHA + gate name",
+            "re-run with SHA-bound result",
+            "idempotent by SHA",
+            True,
+        ),
+    )
+}
+
+# Backward-compatible summary for callers that only need the broad kinds. It
+# is derived from the operation table and is never used to choose recovery.
 PROBEABLE_ACTIONS: frozenset[ActionKind] = frozenset(
-    {"jira_write", "git_push", "pr_create", "pr_merge", "git_commit"}
+    policy.kind for policy in OPERATION_POLICIES.values() if policy.probe_required
 )
 
 
@@ -369,7 +493,8 @@ class ActionRecord:
     def effectively_once(self) -> bool:
         """Whether replay of this action can be deduplicated remotely."""
 
-        return self.kind in PROBEABLE_ACTIONS
+        policy = OPERATION_POLICIES.get(self.operation)
+        return bool(policy and policy.effectively_once)
 
 
 def action_id(goal_id: str, iteration: int, kind: str, natural_key: str) -> str:
@@ -648,6 +773,8 @@ __all__ = [
     "HarnessReadiness",
     "LoopState",
     "NextAction",
+    "OPERATION_POLICIES",
+    "OperationPolicy",
     "PROBEABLE_ACTIONS",
     "RiskClass",
     "ScopeSpec",

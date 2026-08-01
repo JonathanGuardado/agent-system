@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from hashlib import sha256
 
 from ticket_agent.jira.models import JiraTicket
 
@@ -98,6 +99,14 @@ class FakeJiraClient:
         self.calls.append(("add_comment", ticket_key, body))
         self._raise_if_configured("add_comment")
         self.comments.setdefault(ticket_key, []).append(body)
+
+    async def has_comment(self, ticket_key: str, body_digest: str) -> bool:
+        self.calls.append(("has_comment", ticket_key, body_digest))
+        self._raise_if_configured("has_comment")
+        return any(
+            sha256(body.encode("utf-8")).hexdigest() == body_digest
+            for body in self.comments.setdefault(ticket_key, [])
+        )
 
     async def create_issue(
         self,

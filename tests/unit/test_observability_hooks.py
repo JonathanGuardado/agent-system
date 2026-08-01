@@ -316,6 +316,28 @@ def test_graph_run_fills_the_funnel(tmp_path):
     assert reached == {"planned", "approved", "implemented", "pr_opened"}
 
 
+def test_implementation_node_produces_loop_iteration_telemetry(tmp_path):
+    store = SQLiteTelemetryStore(tmp_path / "t.sqlite3")
+    runner = _telemetry_runner(store)
+
+    asyncio.run(
+        runner.implement(
+            _state(goal_id="prop-0123456789ab", implementation_attempts=2)
+        )
+    )
+    totals = store.iteration_totals()
+    store.close()
+
+    assert totals == [
+        {
+            "goal_id": "prop-0123456789ab",
+            "iterations": 1,
+            "tokens": 0,
+            "cost_usd": 0,
+        }
+    ]
+
+
 def test_unapproved_execution_does_not_count_as_approved(tmp_path):
     """A node running is not the same as its stage being reached."""
 

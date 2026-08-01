@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import subprocess
+from pathlib import Path
 from typing import Any, Protocol
 
 from ticket_agent.adapters.local.git_adapter import GitAdapter
 from ticket_agent.domain.errors import PullRequestCreationError
+from ticket_agent.goal.journal import GoalActionJournal, ProbeResult
+from ticket_agent.goal.types import LoopState, digest
 from ticket_agent.github import GH_ROLE_BOT, GitHubCredentials
 from ticket_agent.orchestrator.state import TicketState
 from ticket_agent.redaction import redact_local_paths
@@ -23,6 +25,16 @@ class GitPullRequestPort(Protocol):
         worktree_path: str | Path,
         branch_name: str,
     ) -> None: ...
+
+    def staged_tree_digest(self, worktree_path: str | Path) -> str: ...
+
+    def current_head(self, worktree_path: str | Path) -> tuple[str, str]: ...
+
+    def remote_ref_sha(
+        self,
+        worktree_path: str | Path,
+        branch_name: str,
+    ) -> str | None: ...
 
 
 class GitWorktreeCleanupPort(Protocol):
@@ -44,6 +56,14 @@ class PullRequestOpener(Protocol):
         body: str,
     ) -> str: ...
 
+    def find_open_pull_request(
+        self,
+        *,
+        worktree_path: Path,
+        branch_name: str,
+        base_branch: str,
+    ) -> str | None: ...
+
 
 class GitService:
     """Commit, push, and open a pull request for completed ticket work."""
@@ -55,12 +75,14 @@ class GitService:
         pull_request_opener: PullRequestOpener | None = None,
         base_branch: str = "main",
         credentials: GitHubCredentials | None = None,
+        action_journal: GoalActionJournal | None = None,
     ) -> None:
         self._git = git or GitAdapter(credentials=credentials)
         self._pull_request_opener = pull_request_opener or GhPullRequestOpener(
             credentials=credentials,
         )
         self._base_branch = base_branch
+        self._action_journal = action_journal
 
     async def open_pull_request(self, state: TicketState) -> str:
         if state.pull_request_url:
@@ -70,18 +92,128 @@ class GitService:
         branch_name = _required_branch_name(state)
 
         commit_message = _commit_message(state)
-        self._git.commit(worktree_path, commit_message)
         base_branch = state.pull_request_base_branch or self._base_branch
+        if self._action_journal is None:
+            self._git.commit(worktree_path, commit_message)
+            if state.pull_request_base_branch:
+                self._git.ensure_pull_request_base(worktree_path, base_branch)
+            self._git.push(worktree_path, branch_name)
+            return self._pull_request_opener.open_pull_request(
+                worktree_path=worktree_path,
+                branch_name=branch_name,
+                base_branch=base_branch,
+                title=_pull_request_title(state),
+                body=_pull_request_body(state),
+            )
+        if state.goal_id is None:
+            raise PullRequestCreationError(
+                "goal_id is required to journal Git delivery"
+            )
+
+        loop_state = LoopState(
+            goal_id=state.goal_id,
+            contract_version=1,
+            phase="delivering",
+            iteration=state.implementation_attempts,
+        )
+        tree_digest = self._git.staged_tree_digest(worktree_path)
+
+        def probe_commit() -> ProbeResult[str]:
+            sha, current_tree = self._git.current_head(worktree_path)
+            return ProbeResult(
+                found=current_tree == tree_digest,
+                value=sha if current_tree == tree_digest else None,
+                result_identity=sha if current_tree == tree_digest else None,
+            )
+
+        commit = await self._action_journal.execute(
+            loop_state,
+            operation="git_commit",
+            natural_key=f"{branch_name}:{tree_digest}",
+            request={
+                "branch": branch_name,
+                "tree_digest": tree_digest,
+                "message": commit_message,
+            },
+            effect=lambda: self._git.commit(worktree_path, commit_message),
+            probe=probe_commit,
+            restore=lambda sha: sha,
+        )
+        if commit.value is None:
+            raise PullRequestCreationError("journaled commit returned no SHA")
+        candidate_sha = commit.value
+
         if state.pull_request_base_branch:
             self._git.ensure_pull_request_base(worktree_path, base_branch)
-        self._git.push(worktree_path, branch_name)
-        return self._pull_request_opener.open_pull_request(
-            worktree_path=worktree_path,
-            branch_name=branch_name,
-            base_branch=base_branch,
-            title=_pull_request_title(state),
-            body=_pull_request_body(state),
+
+        def push_effect() -> str:
+            self._git.push(worktree_path, branch_name)
+            return candidate_sha
+
+        def probe_push() -> ProbeResult[str]:
+            remote_sha = self._git.remote_ref_sha(worktree_path, branch_name)
+            return ProbeResult(
+                found=remote_sha == candidate_sha,
+                value=candidate_sha if remote_sha == candidate_sha else None,
+                result_identity=candidate_sha if remote_sha == candidate_sha else None,
+            )
+
+        await self._action_journal.execute(
+            loop_state,
+            operation="git_push",
+            natural_key=f"origin:{branch_name}:{candidate_sha}",
+            request={
+                "remote": "origin",
+                "branch": branch_name,
+                "sha": candidate_sha,
+            },
+            effect=push_effect,
+            probe=probe_push,
+            restore=lambda sha: sha,
         )
+
+        title = _pull_request_title(state)
+        body = _pull_request_body(state)
+
+        def open_pr() -> str:
+            return self._pull_request_opener.open_pull_request(
+                worktree_path=worktree_path,
+                branch_name=branch_name,
+                base_branch=base_branch,
+                title=title,
+                body=body,
+            )
+
+        def probe_pr() -> ProbeResult[str]:
+            url = self._pull_request_opener.find_open_pull_request(
+                worktree_path=worktree_path,
+                branch_name=branch_name,
+                base_branch=base_branch,
+            )
+            return ProbeResult(
+                found=url is not None,
+                value=url,
+                result_identity=url,
+            )
+
+        pr = await self._action_journal.execute(
+            loop_state,
+            operation="pr_create",
+            natural_key=f"{state.repository}:{branch_name}",
+            request={
+                "repository": state.repository,
+                "head": branch_name,
+                "base": base_branch,
+                "title_digest": digest(title),
+                "body_digest": digest(body),
+            },
+            effect=open_pr,
+            probe=probe_pr,
+            restore=lambda url: url,
+        )
+        if pr.value is None:
+            raise PullRequestCreationError("journaled PR creation returned no URL")
+        return pr.value
 
 
 class WorktreeCleanupService:
@@ -171,6 +303,19 @@ class GhPullRequestOpener:
         if not url:
             raise PullRequestCreationError("gh pr create did not return a PR URL")
         return url
+
+    def find_open_pull_request(
+        self,
+        *,
+        worktree_path: Path,
+        branch_name: str,
+        base_branch: str,
+    ) -> str | None:
+        return self._existing_pull_request_url(
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+            base_branch=base_branch,
+        )
 
     def _existing_pull_request_url(
         self,

@@ -26,9 +26,11 @@ ticket-processing system — *not* unattended autonomous delivery.
 Slack request
   → model-assisted proposal
   → human intake approval
-  → Jira epic/tasks
+  → authorized signed GoalContract + durable goal spine
+  → Jira epic/tasks as the goal projection
   → ai-ready detection
-  → SQLite ticket lock/checkpoint
+  → authorization/sandbox preflight
+  → SQLite ticket lock/checkpoint + action journal
   → LangGraph planning
   → execution approval (automatic or Slack, depending on policy)
   → implementation
@@ -45,22 +47,17 @@ which `ApprovalService` is wired: the default `AutoApprovalService`
 human already approved the plan at intake; `JiraLabelApprovalService` and the
 Slack-driven interrupt require an explicit action.
 
-Facts that follow from the code as it stands, each of which contradicts a
-claim that is easy to make from reading the roadmap alone:
+Facts that follow from the code as it stands:
 
-- **Jira remains the execution source of truth.** Detection reads Jira, and
-  the orchestrator works from Jira tickets.
-- **Goal contracts may be compiled, semantically checked, signed, and stored**
-  when `AGENT_SYSTEM_GOAL_ALLOWLIST_USERS` and a signing key are configured.
-- **Goal-contract authorization does not gate execution.**
-  `ApprovalFlow._record_goal_contract` (`intake/approval_flow.py:249-282`)
-  records the outcome and returns; its own docstring says *"Records only.
-  Nothing gates on the outcome yet."* It also runs *after* the Jira write has
-  succeeded.
-- **`goal_id` does not propagate into active graph state.** `TicketWorkItem`
-  (`orchestrator/runner.py:38-52`) has no `goal_id` field, and the
-  `TicketState(...)` construction at `runner.py:264-276` never sets one, so
-  `state.goal_id` is `None` on every production run.
+- **The authorized `GoalContract` is scope authority; Jira is its work-queue
+  projection.** Detection still reads Jira and the orchestrator still works
+  from Jira tickets, but the shared preflight refuses missing, invalid,
+  revoked, out-of-scope, or insufficient-autonomy goal authority before a
+  lock, claim, worktree, or resume mutation.
+- **Goal identity and action recovery are durable.** `goal_id` reaches active
+  graph state, transcripts, funnel events, and loop-iteration telemetry. The
+  SQLite action journal reserves budgets before concrete side effects and
+  applies operation-specific probe and ambiguity policy on recovery.
 - **Verification is not bound to the committed SHA.** Tests run in the
   worktree during `run_tests`; the commit happens later, inside
   `PullRequestService.open_pull_request` (`orchestrator/git_services.py:65-77`).
@@ -83,10 +80,12 @@ the code will and will not do; it is not a claim that every PR the system has
 generated was in fact reviewed and merged. See "Operational validation" under
 [Known limitations](#known-limitations-and-configuration-debt).
 
-## Target architecture (after P12–P18)
+## Remaining target architecture (P14–P18)
 
-**This is the goal, not current behavior.** No part of the flow below should be
-described as active until its phase reaches ✅.
+The authorized contract, spine, journal, and Jira projection at the start of
+this flow are current foundations. The remaining P14–P18 steps begin at the
+candidate commit and must not be described as active until their phases reach
+✅.
 
 ```txt
 Slack
@@ -150,17 +149,17 @@ Five levels, each including those below:
 
 | Level | May |
 |---|---|
-| `observe` | read only |
-| `propose` | write Jira and Slack proposals; no code |
-| `implement` | branch, commit, push, open PRs — **never merge** |
-| `deliver` | merge into `integration/*` — **never promote** |
-| `autonomous` | merge and open the promotion PR; a human reviews only that |
+| `observe` | observation only; no external effects |
+| `propose` | planning and Jira/Slack proposal effects; no code edits |
+| `implement` | edits and verification; no pull request creation |
+| `deliver` | pull request creation; no later autonomous delivery action |
+| `autonomous` | later in-policy autonomous actions as their executors land |
 
 The level in force is the **lowest** of six ceilings:
 
 ```txt
 effective = min(
-    configured,        # env var, default "propose"
+    configured,        # env var, default "observe"
     risk class,        # from the goal contract
     harness readiness, # how well the target repo describes itself
     sandbox,           # no isolation -> propose
@@ -170,8 +169,9 @@ effective = min(
 ```
 
 Everything can only *lower* it, and an unrecognized value yields `observe`, so
-failures make the system more cautious rather than less. `resolve_autonomy` in
-`goal/types.py` implements this correctly; **no execution path calls it yet**.
+failures make the system more cautious rather than less. The production shared
+preflight resolves and persists this decision before execution, and concrete
+action boundaries recheck the latest durable ceiling as defense in depth.
 
 ---
 
@@ -194,10 +194,10 @@ point of the status table:
 3. **Operationally validated** — it has run on real work and the evidence was
    reviewed.
 
-**A capability is never ✅ because its types exist.** Level 1 alone is 🔶. Two
-current example: goal contracts are compiled, signed, and stored while gating
-nothing. P13.3a is runtime-enforced, but P13 remains partial until its separate
-context-assembly / knowledge-map work lands.
+**A capability is never ✅ because its types exist.** Level 1 alone is 🔶.
+Goal authority and P13.3a sandboxing are runtime-enforced, but their parent
+phases remain partial until P12's non-convergence/live-recovery evidence and
+P13's context-assembly / knowledge-map work land.
 
 ## Phase status
 
@@ -211,7 +211,7 @@ commits, tests, and prior discussion, so they are never renumbered or reused.
 | P9 | ↪ | Diff-based review + lint gate. **Absorbed into P14/P15**; not scheduled separately |
 | P10 | 🔶 | Observability foundations exist; later producers and operational evidence are missing |
 | P11 | ✅ | Agent-system owns selector config; the library copy is documented example-only and resolution is pinned by test |
-| P12 | 🔶 | Contracts exist; durable spine, action journal, propagation, and enforcement are missing |
+| P12 | 🔶 | Durable authority, revocation, autonomy, and the action spine are enforced; non-convergence logic and live recovery evidence remain |
 | P13 | 🔶 | Sandbox preflight and per-command evidence are enforced; context assembly / knowledge map remains |
 | P14 | ⬜ | Immutable-SHA verification |
 | P15 | ⬜ | Independent complete-diff review |
@@ -234,7 +234,7 @@ P11 → P13 → P12 → P14 → P15 → P16 → P17 → P18 → revisit P8
 | # | Phase | Why here |
 |---|---|---|
 | 1 | **P11** — configuration ownership | Cheapest, and everything downstream reads selector and policy config. Two copies that can drift make every later digest suspect. |
-| 2 | **P13** — sandbox runtime enforcement | The sandbox exists but is not used. Until commands actually run isolated, unattended execution is forbidden, so every later phase would rest on a capability that is off. |
+| 2 | **P13** — sandbox runtime enforcement | Runtime sandbox enforcement must precede unattended execution, so every later phase rests on an active isolation boundary. |
 | 3 | **P12** — durable spine + propagation | Nothing can be resumed, budgeted, or attributed to a goal until `goal_id` reaches graph state and the journal exists. P14–P17 all record evidence *against a goal*. |
 | 4 | **P14** — verify an immutable SHA | Evidence is meaningless until it binds to the artifact that will ship. |
 | 5 | **P15** — independent complete-diff review | Needs P14's committed SHA to diff against, and P12's spine to record findings. |
@@ -448,7 +448,7 @@ P10.1 checklist — **landed**:
       `pr_opened`/`escalated` from `TicketNodeRunner._record_stage`.
 - [x] `scripts/report_loops.py` (supersedes the planned `report_funnel.py`)
 
-P10.2 checklist — **not landed**, which is why P10 is 🔶:
+P10.2 checklist — **partial**, which is why P10 is 🔶:
 
 - [ ] `committed`/`verified`/`reviewed`/`demoed` stages — they cannot be
       written before P14 introduces the COMMIT/VERIFY topology.
@@ -457,15 +457,10 @@ P10.2 checklist — **not landed**, which is why P10 is 🔶:
 - [ ] **a producer for `gate_results`.** `SQLiteTelemetryStore.record_gates`
       has zero production callers, so the table is created and never written.
       Arrives with P14's `VerificationRecord`.
-- [ ] **a producer for `loop_iterations`.** `TelemetryRecorder.record_iteration`
-      / `SQLiteTelemetryStore.record_iteration` (`telemetry.py:128`, `:147`,
-      `:245`) have zero callers anywhere in `src/`.
-      `IterativeImplementationService._record_loop` writes *transcripts*, not
-      iteration rows — so `strategy_id`, `outcome`, `fingerprint`, `tokens`,
-      and `cost_usd` are never persisted, and the non-convergence detection
-      P12 needs has no data source yet.
-- [ ] `goal_id` on any funnel or iteration row. It is threaded through the
-      telemetry API but is always `None` in production — see P12 below.
+- [x] a production `loop_iterations` producer at each implementation attempt,
+      carrying goal id, iteration, outcome, failure fingerprint, available
+      token/cost data, and wall time
+- [x] canonical `goal_id` propagated into production funnel and iteration rows
 - [ ] **operational measurement.** No funnel has been reviewed over a real run
       of tickets.
 
@@ -564,9 +559,10 @@ does not own this deployment's capability, model, or task-profile values.
 
 ### P12 — Goal contract + durable spine
 
-> **🔶 Partial. Contracts are compiled, checked, signed, and stored — and gate
-> nothing.** See the warning before the checklist. The autonomy ladder
-> described below is implemented and correct; no execution path calls it.
+> **🔶 Partial. P12.2 durable authority, revocation, autonomy, and the complete
+> per-operation action journal are wired and unit-tested.** P12 remains partial
+> until non-convergence policy lands and process-kill/live-run recovery evidence
+> is reviewed against the full exit criteria.
 
 Goal: pursue a *goal*, not a ticket queue. The schema layer landed first so
 later phases import types instead of forward-referencing them.
@@ -598,26 +594,21 @@ Landed in `goal/types.py` and `orchestrator/gates.py`:
   shadow authorizes nothing. No sandbox caps at `propose` unless each command
   is human-approved.
 
-#### ⚠️ P12 authorization does not gate execution.
+#### P12 runtime status
 
-Contracts are compiled, semantically checked, signed, and stored — and then
-**nothing consults them.** `ApprovalFlow._record_goal_contract`
-(`intake/approval_flow.py:249-282`) says so in its own docstring: *"Records
-only. Nothing gates on the outcome yet."* It also runs **after** the Jira
-write has already succeeded, so an unauthorized contract cannot retroactively
-prevent the tickets it would have denied.
+The proposal id is now durable goal identity on every created Jira issue and
+flows through `TicketWorkItem`, `TicketState`, transcripts, funnel metrics, and
+iteration telemetry. Affirmative signed evidence is stored before `ai-ready`
+publication. Every production execution entry point shares a preflight that
+revalidates identity, signature/digests, semantic decision, current revocation,
+repository scope, sandbox readiness, and effective autonomy before mutation.
 
-**The contract never reaches the graph.** `TicketWorkItem`
-(`orchestrator/runner.py:38-52`) has no `goal_id` field, and the
-`TicketState(...)` construction at `runner.py:264-276` never sets one — so
-`state.goal_id` is `None` on every production run. The three places that read
-it (`node_runner.py:115`, `node_runner.py:139`, `model_services.py:301`)
-faithfully propagate `None` into telemetry and transcripts. Every
-`ticket_funnel.goal_id` and every transcript `goal_id` is null in production.
-
-The consequence worth stating plainly: **a ticket executes today whether or
-not a contract authorized it.** The autonomy ladder in `resolve_autonomy` is
-implemented and correct, but nothing on the execution path calls it.
+The action spine and its budget reservations share one SQLite transaction.
+Concrete operation policies cover Jira, Slack, worktrees, Git/PR delivery,
+model calls, and gates; crash tests exercise all four ambiguity points. This is
+not yet operational proof: no recorded real process-kill recovery or sustained
+live goal run has been reviewed, and repeated-failure/non-convergence policy is
+still absent.
 
 P12 checklist:
 
@@ -628,12 +619,12 @@ P12 checklist:
       label and threaded into `TicketState`
 - [x] execution refuses to start when the goal has no authorized contract and
       autonomous execution was requested
-- [ ] `resolve_autonomy` consulted on the execution path, not only at intake
-- [ ] durable spine: loop state in SQLite, Jira written *from* it
-- [ ] action journal (`intended → in-flight → done`) with bounded duplicate
+- [x] `resolve_autonomy` consulted on the execution path and every action ceiling
+- [x] durable spine: loop state and Jira publication intent share SQLite
+- [x] action journal (`intended → in-flight → done`) with bounded duplicate
       spend on ambiguous recovery
-- [ ] non-convergence detection (needs `loop_iterations` to have a producer —
-      see P10.2)
+- [ ] non-convergence detection over repeated failure fingerprints and strategy
+      outcomes
 
 Exit criteria for P12:
 
@@ -681,8 +672,8 @@ in a new costume.
 Env: `AGENT_SYSTEM_GOAL_ALLOWLIST_USERS`, `AGENT_SYSTEM_GOAL_ALLOWLIST_CHANNELS`,
 `AGENT_SYSTEM_SIGNING_KEY_PATH`, `AGENT_SYSTEM_RISK_POLICY_PATH`. All unset by
 default, which authorizes nothing; `runtime_smoke` reports the posture. Contracts
-are recorded on approval but **nothing gates on them yet** — the autonomy ladder
-that consumes them lands with the spine. Tests: `tests/unit/test_goal_contract.py`.
+are recorded before executable publication and revalidated by the shared
+execution preflight. Tests: `tests/unit/test_goal_contract.py`.
 
 **`TicketState` now sets `model_config = ConfigDict(extra="forbid")`.** Under
 pydantic's default `extra="ignore"`, a node returning an undeclared field had
@@ -747,7 +738,7 @@ P12.2a checklist:
       recovery after an ambiguous write
 - [x] durable authorization, shared execution preflight, and autonomy ceilings
       (P12.2b–d)
-- [ ] remaining per-operation journal coverage and crash matrix (P12.2e)
+- [x] remaining per-operation journal coverage and crash matrix (P12.2e)
 
 **P12.2b — durable authorization and revocation.** Store the authorization
 decision, semantic verdict, and every denial reason; denied rows are retained
@@ -796,7 +787,7 @@ P12.2b+c checklist:
 - [x] approval resume loads current Jira identity and returns through the
       lock-owning runner with heartbeat instead of invoking LangGraph directly
 - [x] persisted `AutonomyDecision` and named action ceilings (P12.2d)
-- [ ] remaining per-operation journal coverage and crash matrix (P12.2e)
+- [x] remaining per-operation journal coverage and crash matrix (P12.2e)
 
 **P12.2d — autonomy decisions and ceilings.** Each goal persists an
 `AutonomyDecision` containing effective mode and every binding ceiling, with a
@@ -850,6 +841,18 @@ Crash tests exercise each operation before reservation, after reservation,
 after the external effect, and after completion persistence. Completed actions
 never replay; ambiguous actions obey their declared duplicate and budget
 bounds.
+
+P12.2e checklist:
+
+- [x] select idempotency, probe, recovery classification, attempt bound, and
+      duplicate allowance from the concrete operation rather than `ActionKind`
+- [x] journal production Jira, Slack, worktree, Git/push/PR, model, and gate
+      boundaries; keep `pr_merge` policy ready while no merge executor exists
+- [x] reserve two bounded model attempts atomically, charge an ambiguous call
+      at its full per-attempt reservation, and preserve actual successful cost
+- [x] produce `loop_iterations` from real implementation attempts
+- [x] run the 12-operation crash matrix at all four crash points, including
+      duplicate Jira-create detection and completed-action replay refusal
 
 ### P13 — Harness manifest, trust root, sandbox
 

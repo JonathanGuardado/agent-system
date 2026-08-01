@@ -274,6 +274,7 @@ class SQLiteGoalSpine:
         error: str,
         error_classification: str,
         recovery_classification: str,
+        actual_model_cost_usd: float | None = None,
     ) -> ActionRecord:
         now = self._clock()
         with self._lock, write_transaction(self._connection):
@@ -281,16 +282,24 @@ class SQLiteGoalSpine:
             self._connection.execute(
                 "UPDATE action_records SET state = 'failed', updated_at = ?, "
                 "lease_owner = NULL, lease_expires_at = NULL, error = ?, "
-                "error_classification = ?, recovery_classification = ? "
+                "error_classification = ?, recovery_classification = ?, "
+                "actual_model_cost_usd = COALESCE(?, actual_model_cost_usd) "
                 "WHERE action_id = ? AND state != 'done'",
                 (
                     now.isoformat(),
                     error,
                     error_classification,
                     recovery_classification,
+                    actual_model_cost_usd,
                     action_id_value,
                 ),
             )
+            if actual_model_cost_usd is not None:
+                self._connection.execute(
+                    "UPDATE budget_reservations SET actual_model_cost_usd = ?, "
+                    "updated_at = ? WHERE action_id = ?",
+                    (actual_model_cost_usd, now.isoformat(), action_id_value),
+                )
             return self._load_action_locked(action_id_value)
 
     def load_action(self, action_id_value: str) -> ActionRecord | None:

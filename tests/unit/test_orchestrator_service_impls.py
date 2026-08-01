@@ -15,6 +15,8 @@ from ticket_agent.config.repo_contract import (
     RepoInfo,
 )
 from ticket_agent.domain.errors import RepoContractError
+from ticket_agent.goal.journal import GoalActionJournal
+from ticket_agent.goal.spine import SQLiteGoalSpine
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.local_services import AdapterTestService
 from ticket_agent.orchestrator.state import TicketState
@@ -98,6 +100,41 @@ def test_adapter_test_service_returns_failed_result_when_adapter_raises(tmp_path
     assert result["status"] == "failed"
     assert result["tests_passed"] is False
     assert result["error"] == "test adapter failed: suite is not configured"
+
+
+def test_gate_run_is_sha_bound_journaled_and_not_replayed(tmp_path):
+    spine = SQLiteGoalSpine(tmp_path / "spine.sqlite3")
+    service, calls = _service_for(
+        CommandResult(
+            command=("python", "-m", "pytest"),
+            returncode=0,
+            stdout="passed\n",
+            stderr="",
+        )
+    )
+    service._action_journal = GoalActionJournal(spine, lease_owner="worker-1")
+    state = _state(tmp_path / "worktree").model_copy(
+        update={
+            "goal_id": "prop-0123456789ab",
+            "candidate_sha": "abc123",
+            "implementation_attempts": 1,
+        }
+    )
+
+    try:
+        first = asyncio.run(service.run_tests(state))
+        second = asyncio.run(service.run_tests(state))
+
+        assert first == second
+        assert first["tests_passed"] is True
+        assert len(calls["adapter_calls"]) == 1
+        actions = spine.actions_for_goal("prop-0123456789ab")
+        assert len(actions) == 1
+        assert actions[0].operation == "gate_run"
+        assert actions[0].natural_key == "abc123:test"
+        assert actions[0].state == "done"
+    finally:
+        spine.close()
 
 
 def test_adapter_test_service_returns_failed_result_without_worktree_path():

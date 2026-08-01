@@ -15,12 +15,14 @@ from typing import Any, Literal, Protocol
 
 from langgraph.types import interrupt
 
-from ticket_agent.sqlite_support import connect as _connect
-from ticket_agent.sqlite_support import write_transaction as _write_transaction
-from ticket_agent.orchestrator.services import ApprovalDecision
-from ticket_agent.orchestrator.state import TicketState
+from ticket_agent.goal.journal import GoalActionJournal
+from ticket_agent.goal.types import LoopState, digest
 from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
 from ticket_agent.orchestrator.runner import TicketWorkItem
+from ticket_agent.orchestrator.services import ApprovalDecision
+from ticket_agent.orchestrator.state import TicketState
+from ticket_agent.sqlite_support import connect as _connect
+from ticket_agent.sqlite_support import write_transaction as _write_transaction
 
 
 ApprovalStatus = Literal["pending", "approved", "rejected", "expired"]
@@ -351,6 +353,7 @@ class SlackExecutionApprovalService:
         default_thread_ts: str | None = None,
         timeout: timedelta = _DEFAULT_TIMEOUT,
         poster_user_id: str = "execution-approval",
+        action_journal: GoalActionJournal | None = None,
     ) -> None:
         self._store = store
         self._slack = slack
@@ -358,6 +361,7 @@ class SlackExecutionApprovalService:
         self._default_thread_ts = default_thread_ts
         self._timeout = timeout
         self._poster_user_id = poster_user_id
+        self._action_journal = action_journal
 
     async def request_approval(self, state: TicketState) -> ApprovalDecision:
         thread_ts = _usable_thread_ts(state.slack_thread_ts) or _usable_thread_ts(
@@ -375,12 +379,40 @@ class SlackExecutionApprovalService:
             return _decision_for_status(approval.status)
 
         if pending.created:
-            await self._slack.post_thread_reply(
-                approval.slack_channel,
-                _usable_thread_ts(approval.slack_thread_ts),
-                self._poster_user_id,
-                _format_approval_message(approval, state),
-            )
+            message = _format_approval_message(approval, state)
+
+            async def effect() -> None:
+                await self._slack.post_thread_reply(
+                    approval.slack_channel,
+                    _usable_thread_ts(approval.slack_thread_ts),
+                    self._poster_user_id,
+                    message,
+                )
+
+            if self._action_journal is None or state.goal_id is None:
+                await effect()
+            else:
+                body_digest = digest(message)
+                await self._action_journal.execute(
+                    LoopState(
+                        goal_id=state.goal_id,
+                        contract_version=1,
+                        phase="discovering",
+                        iteration=state.implementation_attempts,
+                    ),
+                    operation="slack_post",
+                    natural_key=(
+                        f"{approval.slack_channel}:"
+                        f"{approval.slack_thread_ts}:{body_digest}"
+                    ),
+                    request={
+                        "channel": approval.slack_channel,
+                        "thread": approval.slack_thread_ts,
+                        "body_digest": body_digest,
+                    },
+                    effect=effect,
+                    result_identity=lambda ignored: body_digest,
+                )
 
         resume_value = interrupt(
             {

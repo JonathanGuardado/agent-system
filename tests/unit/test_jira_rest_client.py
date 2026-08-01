@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from hashlib import sha256
 from typing import Any
 
 from ticket_agent.jira import client as jira_client_module
@@ -66,6 +67,32 @@ def test_jira_rest_client_search_uses_current_jql_endpoint(monkeypatch):
     }
 
 
+def test_jira_rest_client_probes_comment_body_digest(monkeypatch):
+    fake_client = _FakeAsyncClient()
+    monkeypatch.setattr(
+        jira_client_module.httpx,
+        "AsyncClient",
+        lambda **kwargs: fake_client,
+    )
+    body = "AI execution opened pull request"
+
+    found = asyncio.run(
+        JiraRestClient(
+            base_url="https://jira.example.test",
+            user_email="agent@example.test",
+            api_key="secret",
+        ).has_comment(
+            "AGENT-2",
+            sha256(body.encode("utf-8")).hexdigest(),
+        )
+    )
+
+    assert found is True
+    assert fake_client.requests[0]["url"].endswith(
+        "/rest/api/3/issue/AGENT-2/comment"
+    )
+
+
 class _FakeAsyncClient:
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
@@ -80,6 +107,31 @@ class _FakeAsyncClient:
         self.requests.append({"method": method, "url": url, **kwargs})
         if url.endswith("/rest/api/3/search/jql"):
             return _Response({"issues": []})
+        if url.endswith("/rest/api/3/issue/AGENT-2/comment"):
+            return _Response(
+                {
+                    "comments": [
+                        {
+                            "body": {
+                                "type": "doc",
+                                "content": [
+                                    {
+                                        "type": "paragraph",
+                                        "content": [
+                                            {
+                                                "type": "text",
+                                                "text": (
+                                                    "AI execution opened pull request"
+                                                ),
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            )
         if method == "POST":
             return _Response({"key": "AGENT-2"})
         return _Response(

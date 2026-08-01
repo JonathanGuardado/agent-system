@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
+from time import monotonic
 from typing import TYPE_CHECKING, Any, Protocol
 
 from ticket_agent.observability.telemetry import (
+    IterationRecord,
     NullTelemetryRecorder,
     TelemetryRecorder,
 )
@@ -185,6 +188,7 @@ class TicketNodeRunner:
         )
 
     async def implement(self, state: TicketState) -> TicketStateUpdate:
+        started = monotonic()
         try:
             self._autonomy_guard.check(state.goal_id, "implement")
             implementation_update = await self._implementation.implement(state)
@@ -199,6 +203,11 @@ class TicketNodeRunner:
                 "error": error,
                 "errors": [*state.errors, error],
             }
+        self._record_implementation_iteration(
+            state,
+            implementation_update,
+            wall_ms=max(0, round((monotonic() - started) * 1000)),
+        )
         return self._mark_node(
             state,
             "implement",
@@ -208,6 +217,35 @@ class TicketNodeRunner:
             # A fresh attempt invalidates any reason carried from a prior
             # review rejection; escalation reasons must describe this attempt.
             escalation_reason=None,
+        )
+
+    def _record_implementation_iteration(
+        self,
+        state: TicketState,
+        update: dict[str, Any],
+        *,
+        wall_ms: int,
+    ) -> None:
+        if state.goal_id is None:
+            return
+        result = update.get("implementation_result")
+        result = result if isinstance(result, dict) else {}
+        outcome = result.get("status")
+        error = result.get("error") or update.get("error")
+        fingerprint = None
+        if error:
+            fingerprint = sha256(str(error).encode("utf-8")).hexdigest()[:16]
+        self._telemetry.record_iteration(
+            IterationRecord(
+                goal_id=state.goal_id,
+                loop="implement",
+                iteration=state.implementation_attempts + 1,
+                outcome=str(outcome) if outcome is not None else None,
+                fingerprint=fingerprint,
+                tokens=_optional_int(result.get("tokens")),
+                cost_usd=_optional_float(result.get("cost_usd")),
+                wall_ms=wall_ms,
+            )
         )
 
     async def run_tests(self, state: TicketState) -> TicketStateUpdate:
@@ -426,6 +464,16 @@ def _escalation_reason(state: TicketState) -> str:
 
 def _error_message(exc: BaseException) -> str:
     return str(exc) or exc.__class__.__name__
+
+
+def _optional_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _optional_float(value: object) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
 
 
 def _implementation_failure_reason(state: TicketState) -> str | None:

@@ -13,6 +13,8 @@ from ticket_agent.domain.errors import (
     PushError,
 )
 from ticket_agent.github import GitHubCredentials
+from ticket_agent.goal.journal import GoalActionJournal
+from ticket_agent.goal.spine import SQLiteGoalSpine
 from ticket_agent.orchestrator.git_services import (
     GhPullRequestOpener,
     GitService,
@@ -54,6 +56,43 @@ def test_git_service_commits_pushes_opens_pr_and_returns_url(tmp_path):
             ),
         }
     ]
+
+
+def test_git_delivery_effects_are_journaled_and_completed_actions_do_not_replay(
+    tmp_path,
+):
+    spine = SQLiteGoalSpine(tmp_path / "spine.sqlite3")
+    git = _FakeGit()
+    opener = _FakePullRequestOpener("https://github.test/acme/repo/pull/7")
+    service = GitService(
+        git=git,
+        pull_request_opener=opener,
+        action_journal=GoalActionJournal(spine, lease_owner="worker-1"),
+    )
+    state = _state(tmp_path).model_copy(
+        update={
+            "goal_id": "prop-0123456789ab",
+            "repository": "agent-system",
+            "implementation_attempts": 1,
+        }
+    )
+
+    try:
+        first = asyncio.run(service.open_pull_request(state))
+        second = asyncio.run(service.open_pull_request(state))
+
+        assert first == second == "https://github.test/acme/repo/pull/7"
+        assert [call[0] for call in git.calls] == ["commit", "push"]
+        assert len(opener.calls) == 1
+        actions = spine.actions_for_goal("prop-0123456789ab")
+        assert [action.operation for action in actions] == [
+            "git_commit",
+            "git_push",
+            "pr_create",
+        ]
+        assert all(action.state == "done" for action in actions)
+    finally:
+        spine.close()
 
 
 def test_git_service_uses_initiative_base_branch_from_ticket_state(tmp_path):
@@ -463,22 +502,42 @@ class _FakeGit:
         self._push_error = push_error
         self.calls: list[tuple[str, Path, str]] = []
         self.ensured_bases: list[tuple[Path, str]] = []
+        self.head = ("base123", "tree-base")
+        self.remote_sha: str | None = None
 
     def commit(self, worktree_path: str | Path, message: str) -> str:
         self.calls.append(("commit", Path(worktree_path), message))
         if self._commit_error is not None:
             raise self._commit_error
+        self.head = ("abc123", "tree-candidate")
         return "abc123"
 
     def push(self, worktree_path: str | Path, branch_name: str) -> None:
         self.calls.append(("push", Path(worktree_path), branch_name))
         if self._push_error is not None:
             raise self._push_error
+        self.remote_sha = self.head[0]
 
     def ensure_pull_request_base(
         self, worktree_path: str | Path, branch_name: str
     ) -> None:
         self.ensured_bases.append((Path(worktree_path), branch_name))
+
+    def staged_tree_digest(self, worktree_path: str | Path) -> str:
+        del worktree_path
+        return "tree-candidate"
+
+    def current_head(self, worktree_path: str | Path) -> tuple[str, str]:
+        del worktree_path
+        return self.head
+
+    def remote_ref_sha(
+        self,
+        worktree_path: str | Path,
+        branch_name: str,
+    ) -> str | None:
+        del worktree_path, branch_name
+        return self.remote_sha
 
 
 class _FakeCleanupGit:
@@ -497,6 +556,7 @@ class _FakePullRequestOpener:
     def __init__(self, url: str = "https://github.test/acme/repo/pull/1") -> None:
         self._url = url
         self.calls: list[dict[str, Any]] = []
+        self.existing_url: str | None = None
 
     def open_pull_request(
         self,
@@ -516,7 +576,18 @@ class _FakePullRequestOpener:
                 "body": body,
             }
         )
+        self.existing_url = self._url
         return self._url
+
+    def find_open_pull_request(
+        self,
+        *,
+        worktree_path: Path,
+        branch_name: str,
+        base_branch: str,
+    ) -> str | None:
+        del worktree_path, branch_name, base_branch
+        return self.existing_url
 
 
 class _Planner:

@@ -12,6 +12,8 @@ from ticket_agent.domain.intake import (
     TicketSpec,
 )
 from ticket_agent.goal.identity import goal_label
+from ticket_agent.goal.journal import GoalActionJournal, InjectedJournalCrash
+from ticket_agent.goal.spine import SQLiteGoalSpine
 from ticket_agent.intake.jira_writer import JiraWriter
 from ticket_agent.intake.proposal_store import PROPOSAL_TTL_SECONDS
 from ticket_agent.jira.client import JiraClientError
@@ -88,6 +90,51 @@ def test_write_creates_ai_ready_ticket_with_required_fields():
     assert FIELD_REPO_PATH not in ticket.fields
     assert ticket.fields[FIELD_SLACK_CHANNEL] == "C-INTAKE"
     assert ticket.fields[FIELD_SLACK_THREAD_TS] == "t1"
+
+
+def test_create_issue_crash_after_remote_creation_recovers_without_duplicate(
+    tmp_path,
+):
+    spine = SQLiteGoalSpine(tmp_path / "spine.sqlite3")
+    client = FakeJiraClient([])
+    crashing = JiraWriter(client, goal_spine=spine, component_id="worker-1")
+
+    def crash_after_effect(point, record):
+        del record
+        if point == "after_external_effect":
+            raise InjectedJournalCrash(point)
+
+    crashing._journal = GoalActionJournal(
+        spine,
+        lease_owner="worker-1",
+        crash_hook=crash_after_effect,
+    )
+
+    try:
+        with pytest.raises(InjectedJournalCrash):
+            asyncio.run(crashing.write(_proposal()))
+
+        recovered = asyncio.run(
+            JiraWriter(
+                client,
+                goal_spine=spine,
+                component_id="worker-2",
+            ).write(_proposal())
+        )
+
+        assert recovered.created_ticket_keys == ("AGENT-1",)
+        assert client.created_keys == ["AGENT-1"]
+        create_calls = [call for call in client.calls if call[0] == "create_issue"]
+        assert len(create_calls) == 1
+        action = next(
+            action
+            for action in spine.actions_for_goal("prop-000000000001")
+            if action.operation == "jira_write:create_issue"
+        )
+        assert action.state == "done"
+        assert action.recovery_classification == "JQL probe on goal label + step"
+    finally:
+        spine.close()
 
 
 def test_write_creates_epic_for_multi_ticket_proposal():

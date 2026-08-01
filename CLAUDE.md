@@ -23,12 +23,13 @@ architectural one.
 
 **Current:**
 
-Slack → ai-model-selector → IntakeHandler → Jira (execution source of truth) →
-DetectionComponent → SQLite lock → LangGraph StateGraph →
+Slack → ai-model-selector → IntakeHandler → authorized GoalContract / Jira
+projection → durable spine → DetectionComponent → authorization+sandbox
+preflight → SQLite lock/action journal → LangGraph StateGraph →
 ImplementationComponent → internal ModelRouter → worktree tests →
 summary-based review → commit/push → PR → Slack alert
 
-**Target after P12–P18** (not current behavior):
+**Remaining target after P14–P18** (not current behavior):
 
 Slack → authorized signed `GoalContract` → durable goal spine → Jira projection
 → implementation → candidate commit → isolated verification of that SHA →
@@ -52,9 +53,11 @@ autonomous delivery:
 Slack request
   → model-assisted proposal
   → human intake approval
-  → Jira epic/tasks
+  → authorized signed GoalContract + durable goal spine
+  → Jira epic/tasks as the goal projection
   → ai-ready detection
-  → SQLite ticket lock/checkpoint
+  → authorization/sandbox preflight
+  → SQLite ticket lock/checkpoint + action journal
   → LangGraph planning
   → execution approval (automatic or Slack, depending on policy)
   → implementation
@@ -65,15 +68,15 @@ Slack request
   → Jira/Slack reporting
 ```
 
-Five things are easy to assume and are **not** true today:
+Important current boundaries:
 
-- **Jira remains the execution source of truth.** Detection reads Jira; the
-  orchestrator works from Jira tickets.
-- **Goal-contract authorization does not gate execution.** Contracts may be
-  compiled, checked, signed, and stored when configured, but
-  `ApprovalFlow._record_goal_contract` records only — and runs after the Jira
-  write. `goal_id` never reaches active graph state, because `TicketWorkItem`
-  has no such field.
+- **The authorized `GoalContract` is scope authority; Jira is its work-queue
+  projection.** Detection reads Jira, but shared preflight rejects missing,
+  invalid, revoked, out-of-scope, or insufficient-autonomy authority before
+  execution mutation.
+- **Goal identity and recovery state are durable.** `goal_id` reaches graph
+  state and observability records, while the action journal applies concrete
+  operation policy and budget reservation at side-effect boundaries.
 - **Verification is not bound to the committed SHA.** Tests run in the
   worktree; the commit happens later, inside `open_pull_request`.
 - **Review does not consume the real diff.** It reads the implementing model's
@@ -88,9 +91,11 @@ PRs; it does not merge them. Any review or merge is performed by a human, as
 required by current policy. This is a behavioral boundary enforced by the code,
 not a claim that every generated PR has been reviewed and merged in practice.
 
-### Target architecture (after P12–P18)
+### Remaining target architecture (P14–P18)
 
-Do not describe any of this as current behavior:
+The contract, spine, journal, and Jira projection at the start of this flow are
+current foundations. Do not describe the remaining verification, review, and
+delivery steps as current behavior:
 
 ```txt
 Slack → authorized signed GoalContract → durable goal spine / action journal
@@ -113,7 +118,7 @@ dependency · ↪ absorbed into another phase.
 | P9 | ↪ | Diff-based review + lint gate. Absorbed into P14/P15; never scheduled separately |
 | P10 | 🔶 | Observability foundations exist; later producers and operational evidence missing |
 | P11 | ✅ | This repo owns selector config; resolution is pinned and the library copy is example-only |
-| P12 | 🔶 | Contracts exist; durable authority, revocation, spine, journal, propagation, and enforcement are missing |
+| P12 | 🔶 | Durable authority, revocation, autonomy, and the action journal are enforced; non-convergence and live recovery evidence remain |
 | P13 | 🔶 | Sandbox enforcement and attestation are wired; context assembly / knowledge map remains |
 | P14 | ⬜ | Immutable-SHA verification |
 | P15 | ⬜ | Independent complete-diff review |
@@ -121,8 +126,9 @@ dependency · ↪ absorbed into another phase.
 | P17 | ⬜ | Durable delivery, outbox, attestation, trusted CI, promotion |
 | P18 | ⬜ | Bounded rework from promotion-PR change requests |
 
-**A capability is never ✅ because its types exist.** The sandbox and the goal
-contract are both fully implemented and neither is enforced; both are 🔶.
+**A capability is never ✅ because its types exist.** The sandbox and durable
+goal authority are enforced, but P13 still lacks context assembly and P12 still
+lacks non-convergence policy plus reviewed live recovery evidence; both are 🔶.
 
 **P0–P7 are implemented and unit-tested, not operationally validated.**
 External Slack/Jira/GitHub end-to-end verification remains manual.
@@ -141,8 +147,8 @@ P11 (configuration ownership) first because everything downstream reads
 selector and policy config. P13.3a then makes sandbox refusal happen before
 locks, claims, worktrees, or resume. P12.2b and P12.2c are one safe release
 unit: durable authorization publication must ship with consumption at every
-entry point. P12 precedes P14–P17 because those all record evidence against a
-goal that does not yet reach the graph. Per-step rationale and operation-level
+entry point. P12 precedes P14–P17 because those all record evidence against the
+goal that now reaches the graph. Per-step rationale and operation-level
 recovery policy are in
 [the roadmap](docs/autonomous-delivery-roadmap.md#recommended-execution-order).
 
@@ -302,25 +308,19 @@ config/
 
 - **Scope authority — `GoalContract` vs Jira.**
 
-  **Current behavior:** Jira is the execution source of truth. Detection reads
-  Jira and the orchestrator works from Jira tickets. Goal contracts may be
-  compiled, semantically checked, signed, and stored when configured, but
-  **execution does not consult them** — `_record_goal_contract` records the
-  outcome and returns, and `goal_id` never reaches graph state.
-
-  **Target authority model after P12; not currently enforced:** the authorized
-  `GoalContract` becomes the scope authority and Jira becomes a projection and
-  work queue written *from* the plan.
+  **Current behavior:** the authorized `GoalContract` is scope authority and
+  Jira is a projection and work queue written *from* the plan. Detection reads
+  Jira and the orchestrator works from Jira tickets, but shared preflight
+  revalidates current durable authority before execution mutation.
   - The contract records what the human authorized: objective, acceptance
     criteria, non-goals, scope, budgets. Agents plan freely *underneath* it
     and may never widen it.
-  - This is what closes a live bug: because Jira is currently used as memory
-    the system does not own, a human moving a ticket out of "To Do" stalls the
-    batch forever with no error.
+  - Durable intent and action state are retained independently of Jira's role
+    as the human-visible work queue.
   - Slack is only the human-facing interface, before and after.
 
-  Do not describe this migration as done. Until P12 lands, a ticket executes
-  whether or not a contract authorized it.
+  The migration is runtime-enforced and unit-tested. P12 remains partial for
+  non-convergence policy and reviewed live process-kill recovery evidence.
 
 - **Approval moments.**
 
@@ -332,14 +332,14 @@ config/
   already approved the whole plan at intake; `JiraLabelApprovalService` and the
   Slack-driven execution-approval interrupt are the alternatives.
 
-  **Target behavior after P12; not currently enforced:** at autonomy level
+  **P12-enforced behavior:** at autonomy level
   `autonomous`, **one** moment — an allowlisted user in an allowlisted channel
   authorizes ordinary in-policy work at intake, and the only remaining human
   action is reviewing the promotion PR. Re-approval would be required only for
   elevated risk, ambiguity, scope expansion, a declared human-required
-  boundary, or a semantic-check disagreement. `resolve_autonomy` implements
-  this ladder correctly but **no execution path calls it**, so no autonomy
-  level currently changes how many approvals occur.
+  boundary, or a semantic-check disagreement. The shared execution preflight
+  persists the effective mode and every concrete action boundary enforces it;
+  later merge/promotion executors remain P17 work.
 
 ## Internal ModelRouter contract
 

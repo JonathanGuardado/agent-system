@@ -7,6 +7,8 @@ from collections.abc import Callable
 from inspect import isawaitable
 from typing import Protocol
 
+from ticket_agent.goal.journal import GoalActionJournal
+from ticket_agent.goal.types import LoopState, digest
 from ticket_agent.jira.constants import (
     EVENT_JIRA_EXECUTION_CHECKPOINT_CLEANUP_FAILED,
     EVENT_JIRA_EXECUTION_COMPLETED,
@@ -75,6 +77,7 @@ class JiraExecutionCoordinator:
         checkpointer: CheckpointCleaner | None = None,
         slack_poster_user_id: str = "ticket-agent",
         execution_preflight: ExecutionPreflight | None = None,
+        action_journal: GoalActionJournal | None = None,
     ) -> None:
         self._loader = loader
         self._execution_service = execution_service
@@ -85,6 +88,7 @@ class JiraExecutionCoordinator:
         self._checkpointer = checkpointer
         self._slack_poster_user_id = slack_poster_user_id
         self._execution_preflight = execution_preflight
+        self._action_journal = action_journal
 
     async def run_ticket(self, ticket_key: str) -> TicketState:
         """Run one Jira ticket through the existing orchestrator runner."""
@@ -234,14 +238,40 @@ class JiraExecutionCoordinator:
 
     async def _post_slack(self, state: TicketState, text: str) -> None:
         try:
-            result = self._slack.post_thread_reply(
-                state.slack_channel,
-                state.slack_thread_ts or state.ticket_key,
-                self._slack_poster_user_id,
-                text,
-            )
-            if isawaitable(result):
-                await result
+            async def effect() -> None:
+                result = self._slack.post_thread_reply(
+                    state.slack_channel,
+                    state.slack_thread_ts or state.ticket_key,
+                    self._slack_poster_user_id,
+                    text,
+                )
+                if isawaitable(result):
+                    await result
+
+            if self._action_journal is None or state.goal_id is None:
+                await effect()
+            else:
+                thread = state.slack_thread_ts or state.ticket_key
+                body_digest = digest(text)
+                await self._action_journal.execute(
+                    LoopState(
+                        goal_id=state.goal_id,
+                        contract_version=1,
+                        phase="delivering",
+                        iteration=state.implementation_attempts,
+                    ),
+                    operation="slack_post",
+                    natural_key=(
+                        f"{state.slack_channel or ''}:{thread}:{body_digest}"
+                    ),
+                    request={
+                        "channel": state.slack_channel,
+                        "thread": thread,
+                        "body_digest": body_digest,
+                    },
+                    effect=effect,
+                    result_identity=lambda ignored: body_digest,
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -329,6 +359,7 @@ def _state_from_work_item(work_item: TicketWorkItem) -> TicketState:
         summary=work_item.summary,
         description=work_item.description,
         repository=work_item.repository,
+        goal_id=work_item.goal_id,
         repo_path=work_item.repo_path,
         worktree_path=work_item.worktree_path,
         pull_request_base_branch=work_item.pull_request_base_branch,
