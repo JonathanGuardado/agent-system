@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from ticket_agent.domain.intake import (
     IntakeMode,
     Proposal,
     ProposalStatus,
     TicketSpec,
 )
+from ticket_agent.goal.identity import goal_label
 from ticket_agent.intake.jira_writer import JiraWriter
 from ticket_agent.intake.proposal_store import PROPOSAL_TTL_SECONDS
 from ticket_agent.jira.client import JiraClientError
@@ -36,7 +39,7 @@ def _proposal(
 ) -> Proposal:
     created = datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc)
     return Proposal(
-        proposal_id="prop-1",
+        proposal_id="prop-000000000001",
         slack_user_id="U1",
         slack_channel="C-INTAKE",
         slack_thread_ts="t1",
@@ -78,6 +81,7 @@ def test_write_creates_ai_ready_ticket_with_required_fields():
     assert result.created_ticket_keys == ("AGENT-1",)
     ticket = client.tickets["AGENT-1"]
     assert LABEL_AI_READY in ticket.labels
+    assert goal_label("prop-000000000001") in ticket.labels
     assert ticket.fields[FIELD_AGENT_RETRY_COUNT] == 0
     assert ticket.fields[FIELD_AGENT_CAPABILITIES_NEEDED] == ["code.implement"]
     assert ticket.fields[FIELD_REPOSITORY] == "agent-system"
@@ -111,7 +115,9 @@ def test_write_creates_epic_for_multi_ticket_proposal():
     assert result.partial is False
     create_calls = [call for call in client.calls if call[0] == "create_issue"]
     assert create_calls[0][2]["issue_type"] == "Epic"
-    assert create_calls[0][2]["labels"] == []
+    assert create_calls[0][2]["labels"] == [
+        "ai-goal-prop-000000000001"
+    ]
     assert create_calls[0][2]["fields"] == {}
     assert create_calls[0][2]["description"] == "Track the OAuth login work."
     assert [call[2]["parent_key"] for call in create_calls[1:]] == [
@@ -130,10 +136,15 @@ def test_write_creates_epic_for_multi_ticket_proposal():
     assert result.execution_ready_ticket_keys == ("AGENT-2",)
     assert LABEL_AI_READY in client.ticket("AGENT-2").labels
     assert LABEL_AI_READY not in client.ticket("AGENT-3").labels
-    assert client.ticket("AGENT-3").labels[-2:] == [
+    assert client.ticket("AGENT-3").labels[-3:] == [
         f"{LABEL_AI_SEQUENCE_PREFIX}agent-1",
         f"{LABEL_AI_STEP_PREFIX}0002",
+        goal_label("prop-000000000001"),
     ]
+    for key in result.created_ticket_keys:
+        assert client.ticket(key).labels.count(
+            goal_label("prop-000000000001")
+        ) == 1
     assert "- Pull request base branch: integration/agent-1" in client.ticket(
         "AGENT-2"
     ).description
@@ -345,6 +356,53 @@ def test_write_adds_ai_ready_label_when_spec_lacks_it():
 
     ticket = client.tickets["AGENT-1"]
     assert LABEL_AI_READY in ticket.labels
+
+
+@pytest.mark.parametrize(
+    ("proposal_id", "labels"),
+    (
+        ("PROP-000000000001", []),
+        ("prop-000000000001", ["AI-GOAL-prop-000000000001"]),
+        (
+            "prop-000000000001",
+            [
+                "ai-goal-prop-000000000001",
+                "ai-goal-prop-000000000001",
+            ],
+        ),
+        (
+            "prop-000000000001",
+            [
+                "ai-goal-prop-000000000001",
+                "ai-goal-prop-000000000002",
+            ],
+        ),
+    ),
+)
+def test_invalid_or_ambiguous_goal_identity_fails_before_jira_mutation(
+    proposal_id,
+    labels,
+):
+    proposal = _proposal(
+        tickets=[
+            TicketSpec(
+                summary="Unsafe identity",
+                labels=labels,
+                capabilities_needed=["code.implement"],
+                repository="r",
+                repo_path="/r",
+            )
+        ]
+    )
+    proposal = proposal.model_copy(update={"proposal_id": proposal_id})
+    client = FakeJiraClient([])
+
+    result = asyncio.run(JiraWriter(client).write(proposal))
+
+    assert result.created_ticket_keys == ()
+    assert result.unsupported_reason is not None
+    assert "invalid goal identity" in result.unsupported_reason
+    assert not any(call[0] == "create_issue" for call in client.calls)
 
 
 def test_write_retries_without_optional_fields_when_jira_screen_rejects_them():

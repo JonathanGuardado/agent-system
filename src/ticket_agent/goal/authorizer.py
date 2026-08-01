@@ -18,6 +18,7 @@ from ticket_agent.goal.contract import (
     SQLiteGoalContractStore,
 )
 from ticket_agent.goal.types import Budgets
+from ticket_agent.goal.identity import normalize_goal_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -124,17 +125,10 @@ def _repositories(proposal: Proposal) -> list[str]:
 
 
 def _goal_id(proposal: Proposal, write_result: Any) -> str:
-    """Prefer the epic key: one goal is one epic's worth of work.
+    """The proposal id is identity; Jira keys are display metadata only."""
 
-    Falls back to the proposal id so a single-ticket request still gets a
-    contract rather than being silently skipped.
-    """
-
-    created_epic = getattr(write_result, "created_epic_key", None)
-    for candidate in (created_epic, proposal.created_epic_key, proposal.epic_key):
-        if candidate:
-            return str(candidate)
-    return proposal.proposal_id
+    del write_result
+    return normalize_goal_id(proposal.proposal_id)
 
 
 __all__ = [

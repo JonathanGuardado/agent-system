@@ -45,6 +45,7 @@ from ticket_agent.goal.types import (
     ScopeSpec,
     canonical_json,
 )
+from ticket_agent.goal.identity import normalize_goal_id
 from ticket_agent.sqlite_support import connect, write_transaction
 
 _DEFAULT_BUSY_TIMEOUT_MS = 5_000
@@ -151,6 +152,8 @@ class GoalContractCompiler:
         compiler_provider: str = "",
     ) -> AuthorizationOutcome:
         """Compile and judge a request. Never raises on a denial."""
+
+        goal_id = normalize_goal_id(goal_id)
 
         allowlisted, allowlist_reason = self._allowlist.permits(
             user_id=user_id, channel=channel
@@ -341,11 +344,12 @@ class SQLiteGoalContractStore:
         """Store a version. Re-saving the same version is an error, not an
         overwrite -- an immutable record that can be replaced is not one."""
 
+        goal_id = normalize_goal_id(contract.goal_id)
         with self._lock, write_transaction(self._connection):
             existing = self._connection.execute(
                 "SELECT contract_digest FROM goal_contracts "
                 "WHERE goal_id = ? AND version = ?",
-                (contract.goal_id, contract.version),
+                (goal_id, contract.version),
             ).fetchone()
             if existing is not None:
                 if existing["contract_digest"] == contract.contract_digest:
@@ -359,7 +363,7 @@ class SQLiteGoalContractStore:
                 "signature, payload, risk_class, authorized_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    contract.goal_id,
+                    goal_id,
                     contract.version,
                     contract.contract_digest,
                     str(signature) if signature is not None else None,
@@ -370,6 +374,7 @@ class SQLiteGoalContractStore:
             )
 
     def latest_version(self, goal_id: str) -> int | None:
+        goal_id = normalize_goal_id(goal_id)
         with self._lock:
             row = self._connection.execute(
                 "SELECT MAX(version) AS v FROM goal_contracts WHERE goal_id = ?",
@@ -378,6 +383,7 @@ class SQLiteGoalContractStore:
         return None if row is None or row["v"] is None else int(row["v"])
 
     def stored_signature(self, goal_id: str, version: int) -> str | None:
+        goal_id = normalize_goal_id(goal_id)
         with self._lock:
             row = self._connection.execute(
                 "SELECT signature FROM goal_contracts WHERE goal_id = ? AND version = ?",
@@ -386,6 +392,7 @@ class SQLiteGoalContractStore:
         return None if row is None else row["signature"]
 
     def stored_payload(self, goal_id: str, version: int) -> Mapping[str, Any] | None:
+        goal_id = normalize_goal_id(goal_id)
         with self._lock:
             row = self._connection.execute(
                 "SELECT payload FROM goal_contracts WHERE goal_id = ? AND version = ?",

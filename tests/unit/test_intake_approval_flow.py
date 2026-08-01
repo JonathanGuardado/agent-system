@@ -93,7 +93,7 @@ def _build_flow(
 
     def _proposal_id() -> str:
         counter["n"] += 1
-        return f"prop-{counter['n']}"
+        return f"prop-{counter['n']:012x}"
 
     generator = DeterministicProposalGenerator(
         clock=lambda: fixed_now,
@@ -402,7 +402,7 @@ def test_handle_new_request_posts_truncation_note_for_model_generated_proposal(
     generator = _StaticGenerator(
         ProposalDraft(
             proposal=Proposal(
-                proposal_id="prop-truncated",
+                proposal_id="prop-0000000000aa",
                 slack_user_id="U1",
                 slack_thread_ts="t1",
                 mode=IntakeMode.NEW_FEATURE,

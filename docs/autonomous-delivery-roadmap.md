@@ -737,6 +737,17 @@ cost, error classification, and recovery classification. Idempotency and
 recovery policy are selected per concrete operation, never merely per broad
 `ActionKind`.
 
+P12.2a checklist:
+
+- [x] canonical proposal-id normalization at Jira write, contract storage, and
+      lookup; canonical goal label on every created epic and ticket
+- [x] atomic loop-state, action-intent, and budget reservation in one SQLite
+      goal-spine transaction
+- [x] deterministic `jira_write:add_ai_ready` journal entry with label-presence
+      recovery after an ambiguous write
+- [ ] durable authorization, shared execution preflight, autonomy ceilings,
+      and remaining operation coverage (P12.2b–e)
+
 **P12.2b — durable authorization and revocation.** Store the authorization
 decision, semantic verdict, and every denial reason; denied rows are retained
 for audit. A stored row authorizes nothing by its existence: consumers verify

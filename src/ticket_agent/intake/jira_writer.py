@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Protocol
 
 from ticket_agent.domain.intake import Proposal, TicketSpec
 from ticket_agent.jira.client import JiraClient
@@ -17,6 +18,39 @@ from ticket_agent.jira.constants import (
     LABEL_AI_STEP_PREFIX,
 )
 from ticket_agent.jira.models import JiraTicket
+from ticket_agent.goal.identity import (
+    GoalIdentityError,
+    goal_label,
+    normalize_goal_id,
+    validate_goal_labels,
+)
+from ticket_agent.goal.types import ActionRecord, LoopState, action_id, digest
+
+
+class GoalSpine(Protocol):
+    def reserve_action(
+        self,
+        state: LoopState,
+        action: ActionRecord,
+    ) -> ActionRecord: ...
+
+    def mark_in_flight(
+        self,
+        action_id_value: str,
+        *,
+        lease_owner: str,
+        lease_seconds: int = 300,
+        recovery_classification: str | None = None,
+    ) -> ActionRecord: ...
+
+    def mark_done(
+        self,
+        action_id_value: str,
+        *,
+        result_identity: str | None = None,
+        actual_model_cost_usd: float = 0.0,
+        recovery_classification: str | None = None,
+    ) -> ActionRecord: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,10 +103,36 @@ class _SequentialDelivery:
 class JiraWriter:
     """Persist a confirmed proposal as Jira issues with the ai-ready label."""
 
-    def __init__(self, client: JiraClient) -> None:
+    def __init__(
+        self,
+        client: JiraClient,
+        *,
+        goal_spine: GoalSpine | None = None,
+        component_id: str = "ticket-agent",
+    ) -> None:
         self._client = client
+        self._goal_spine = goal_spine
+        self._component_id = component_id
 
     async def write(self, proposal: Proposal) -> JiraWriteResult:
+        try:
+            goal_id = normalize_goal_id(proposal.proposal_id)
+            canonical_goal_label = goal_label(goal_id)
+            for spec in proposal.tickets:
+                validate_goal_labels(
+                    [*spec.labels, canonical_goal_label],
+                    goal_id=goal_id,
+                )
+        except GoalIdentityError as exc:
+            return JiraWriteResult(
+                project_key=_optional_project_key(proposal),
+                unsupported_reason=f"invalid goal identity: {exc}",
+                failed_items=tuple(
+                    JiraWriteFailure(spec=spec, reason="invalid_goal_identity")
+                    for spec in proposal.tickets
+                ),
+            )
+
         project_key = _optional_project_key(proposal)
         if project_key is None:
             return JiraWriteResult(
@@ -96,7 +156,11 @@ class JiraWriter:
         context = _WriteContext(project_key=project_key)
         parent_key = proposal.epic_key
         if parent_key is None and len(proposal.tickets) > 1:
-            parent_key = await self._create_epic(proposal, context)
+            parent_key = await self._create_epic(
+                proposal,
+                context,
+                goal_label_value=canonical_goal_label,
+            )
             if parent_key is None:
                 return JiraWriteResult(
                     project_key=project_key,
@@ -116,6 +180,8 @@ class JiraWriter:
                 execution_ready=_ticket_starts_execution_ready(proposal, index),
                 delivery=delivery,
                 step_index=index,
+                goal_id=goal_id,
+                goal_label_value=canonical_goal_label,
             )
             if context.unsupported_reason is not None:
                 break
@@ -137,6 +203,8 @@ class JiraWriter:
         self,
         proposal: Proposal,
         context: _WriteContext,
+        *,
+        goal_label_value: str,
     ) -> str | None:
         summary = proposal.epic_summary or proposal.title
         description = proposal.epic_description or proposal.summary
@@ -146,7 +214,7 @@ class JiraWriter:
                 summary=summary,
                 description=description,
                 issue_type="Epic",
-                labels=[],
+                labels=[goal_label_value],
                 fields={},
             )
         except Exception as exc:  # noqa: BLE001 - boundary call
@@ -173,13 +241,16 @@ class JiraWriter:
         execution_ready: bool,
         delivery: _SequentialDelivery | None,
         step_index: int,
+        goal_id: str,
+        goal_label_value: str,
     ) -> None:
         labels = _normalize_labels(
             [
                 *spec.labels,
                 *_delivery_labels(delivery, step_index),
+                goal_label_value,
             ],
-            execution_ready=execution_ready,
+            execution_ready=False,
         )
         description = _description_with_delivery(spec.description, delivery, step_index)
         fields = (
@@ -232,10 +303,72 @@ class JiraWriter:
                 )
                 return
 
-        await _ensure_ai_ready_label(self._client, ticket, labels)
+        await _ensure_expected_labels(self._client, ticket, labels)
         context.created.append(ticket.key)
-        if LABEL_AI_READY in labels:
+        if execution_ready:
+            await self._publish_ai_ready(ticket, goal_id=goal_id)
             context.execution_ready.append(ticket.key)
+
+    async def _publish_ai_ready(self, ticket: JiraTicket, *, goal_id: str) -> None:
+        if self._goal_spine is None:
+            if LABEL_AI_READY not in ticket.labels:
+                await self._client.add_labels(ticket.key, [LABEL_AI_READY])
+            return
+
+        natural_key = ticket.key
+        record = ActionRecord(
+            action_id=action_id(
+                goal_id,
+                0,
+                "jira_write:add_ai_ready",
+                natural_key,
+            ),
+            goal_id=goal_id,
+            iteration=0,
+            kind="jira_write",
+            state="intended",
+            operation="jira_write:add_ai_ready",
+            natural_key=natural_key,
+            request_digest=digest(
+                {"ticket_key": ticket.key, "label": LABEL_AI_READY}
+            ),
+            external=True,
+        )
+        durable = self._goal_spine.reserve_action(
+            LoopState(
+                goal_id=goal_id,
+                contract_version=1,
+                phase="discovering",
+            ),
+            record,
+        )
+        if durable.state == "done":
+            return
+
+        recovery = None
+        current = ticket
+        if durable.state in {"in_flight", "failed"} or durable.attempts:
+            recovery = "label_presence_probe"
+            current = await self._client.get_ticket(ticket.key)
+        if LABEL_AI_READY in current.labels:
+            self._goal_spine.mark_done(
+                durable.action_id,
+                result_identity=ticket.key,
+                recovery_classification=recovery,
+            )
+            return
+
+        self._goal_spine.mark_in_flight(
+            durable.action_id,
+            lease_owner=self._component_id,
+            recovery_classification=recovery,
+        )
+        await self._client.add_labels(ticket.key, [LABEL_AI_READY])
+        self._goal_spine.mark_done(
+            durable.action_id,
+            result_identity=ticket.key,
+            recovery_classification=recovery,
+        )
 
 
 def _is_optional_field_create_error(exc: BaseException) -> bool:
@@ -340,7 +473,7 @@ def _description_with_delivery(
     return "\n\n".join(part for part in (description, metadata) if part)
 
 
-async def _ensure_ai_ready_label(
+async def _ensure_expected_labels(
     client: JiraClient,
     ticket: JiraTicket,
     expected_labels: list[str],

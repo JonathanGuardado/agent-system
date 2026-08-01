@@ -47,7 +47,7 @@ def test_slack_message_to_ai_ready_jira_ticket(tmp_path):
         resolver=IntakeIntentResolver(),
         generator=DeterministicProposalGenerator(
             clock=lambda: datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc),
-            proposal_id_factory=lambda: "prop-int-1",
+            proposal_id_factory=lambda: "prop-0000000000ad",
         ),
         store=store,
         jira_writer=JiraWriter(jira_client),
@@ -133,7 +133,7 @@ def test_plain_text_approval_creates_epic_and_child_tasks(tmp_path):
         resolver=IntakeIntentResolver(),
         generator=DeterministicProposalGenerator(
             clock=lambda: datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc),
-            proposal_id_factory=lambda: "prop-int-epic",
+            proposal_id_factory=lambda: "prop-0000000000ae",
         ),
         store=store,
         jira_writer=JiraWriter(jira_client),

@@ -78,7 +78,7 @@ def _build_listener(tmp_path, *, intake_channel: str | None = None):
 
     def _proposal_id() -> str:
         counter["n"] += 1
-        return f"prop-{counter['n']}"
+        return f"prop-{counter['n']:012x}"
 
     flow = ApprovalFlow(
         resolver=_StubResolver([_new_feature_resolution()]),
@@ -345,7 +345,7 @@ def test_listener_routes_active_thread_to_handle_reply(tmp_path):
     listener, store, slack = _build_listener(tmp_path)
 
     proposal = Proposal(
-        proposal_id="prop-stash",
+        proposal_id="prop-0000000000aa",
         slack_user_id="U1",
         slack_thread_ts="t1",
         mode=IntakeMode.NEW_FEATURE,
@@ -527,7 +527,10 @@ def test_listener_routes_intake_and_execution_approvals_without_collision(tmp_pa
         assert approved.outcome == ApprovalOutcome.PROPOSAL_CONFIRMED
         assert approved.write_result is not None
         assert approved.write_result.created_ticket_keys == ("AGENT-1",)
-        assert scenario.jira_client.ticket("AGENT-1").labels == ["ai-ready"]
+        assert scenario.jira_client.ticket("AGENT-1").labels == [
+            "ai-goal-prop-0000000000ab",
+            "ai-ready",
+        ]
     finally:
         scenario.close()
 
@@ -680,7 +683,7 @@ class _ListenerExecutionScenario:
             resolver=_StubResolver([_new_feature_resolution()]),
             generator=DeterministicProposalGenerator(
                 clock=lambda: datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc),
-                proposal_id_factory=lambda: "prop-with-execution",
+                proposal_id_factory=lambda: "prop-0000000000ab",
             ),
             store=self.proposal_store,
             jira_writer=JiraWriter(self.jira_client),
@@ -776,7 +779,7 @@ class _ExecutionEscalation:
 def _save_active_proposal(store: ProposalStore, *, thread_ts: str) -> None:
     store.save(
         Proposal(
-            proposal_id="prop-routing",
+            proposal_id="prop-0000000000ac",
             slack_user_id="U1",
             slack_thread_ts=thread_ts,
             mode=IntakeMode.NEW_FEATURE,

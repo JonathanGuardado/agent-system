@@ -312,11 +312,24 @@ class ActionRecord:
     iteration: int
     kind: ActionKind
     state: ActionState
+    operation: str = ""
+    natural_key: str = ""
+    request_digest: str = ""
     external: bool = False
     attempts: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    lease_owner: str | None = None
     lease_expires_at: datetime | None = None
     result_ref: EvidenceRef | None = None
+    result_identity: str | None = None
+    reserved_model_cost_usd: float = 0.0
+    actual_model_cost_usd: float = 0.0
     error: str | None = None
+    error_classification: str | None = None
+    recovery_classification: str | None = None
 
     @property
     def effectively_once(self) -> bool:

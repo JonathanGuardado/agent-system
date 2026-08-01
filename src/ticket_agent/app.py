@@ -39,6 +39,7 @@ from ticket_agent.goal.contract import (
 from ticket_agent.goal.policy import load_risk_policy
 from ticket_agent.goal.semantic_check import ModelSemanticChecker
 from ticket_agent.goal.signing import SigningError, load_signer
+from ticket_agent.goal.spine import SQLiteGoalSpine
 from ticket_agent.intake.approval_flow import ApprovalFlow, SlackPoster
 from ticket_agent.intake.intent_resolver import IntakeIntentResolver
 from ticket_agent.intake.jira_writer import JiraWriter
@@ -237,6 +238,7 @@ class AgentSystemRuntime:
     jira_client: JiraClient
     config: RuntimeConfig
     database_paths: Mapping[str, Path]
+    goal_spine: SQLiteGoalSpine
     emit: EventEmitter | None = None
     execution_preflight: ExecutionEnvironmentPreflight | None = None
 
@@ -321,6 +323,7 @@ class AgentSystemRuntime:
         self.approval_store.close()
         self.proposal_store.close()
         self.lock_manager.close()
+        self.goal_spine.close()
         if self.feedback_store is not None:
             self.feedback_store.close()
         if self.delivery_store is not None:
@@ -369,6 +372,7 @@ def build_runtime(
         component_id=runtime_config.component_id,
         emit=emit,
     )
+    goal_spine = SQLiteGoalSpine(database_paths["goal_spine"])
 
     transcripts = _build_transcript_recorder(runtime_config, data_dir, repo_defaults)
     telemetry = _build_telemetry_recorder(runtime_config, database_paths)
@@ -533,7 +537,11 @@ def build_runtime(
         resolver=IntakeIntentResolver(),
         generator=proposal_generator,
         store=proposal_store,
-        jira_writer=JiraWriter(jira_client),
+        jira_writer=JiraWriter(
+            jira_client,
+            goal_spine=goal_spine,
+            component_id=runtime_config.component_id,
+        ),
         slack=slack,
         repo_defaults=repo_defaults,
         emit=emit,
@@ -585,6 +593,7 @@ def build_runtime(
         jira_client=jira_client,
         config=runtime_config,
         database_paths=database_paths,
+        goal_spine=goal_spine,
         emit=emit,
         execution_preflight=execution_preflight,
     )
@@ -1135,6 +1144,7 @@ def _database_paths(data_dir: Path) -> dict[str, Path]:
         "delivery_store": data_dir / "github_delivery.sqlite3",
         "telemetry_store": data_dir / "loop_telemetry.sqlite3",
         "goal_contracts": data_dir / "goal_contracts.sqlite3",
+        "goal_spine": data_dir / "goal_spine.sqlite3",
     }
 
 

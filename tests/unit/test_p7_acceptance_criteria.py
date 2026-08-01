@@ -371,7 +371,7 @@ def _request(
 def _placeholder_prior() -> Proposal:
     now = _clock()
     return Proposal(
-        proposal_id="P1",
+        proposal_id="prop-0000000000af",
         slack_user_id="U1",
         slack_thread_ts="t1",
         mode=IntakeMode.NEW_FEATURE,

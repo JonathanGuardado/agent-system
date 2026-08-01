@@ -20,6 +20,7 @@ from ticket_agent.goal.contract import (
     GoalContractError,
     SQLiteGoalContractStore,
 )
+from ticket_agent.goal.identity import GoalIdentityError
 from ticket_agent.goal.policy import (
     DEFAULT_POLICY,
     ChangeClassRule,
@@ -389,7 +390,7 @@ def _compiler(signer=None, checker=None, users=("U1",)):
 
 async def _compile(signer=None, checker=None, **overrides):
     request = dict(
-        goal_id="g1",
+        goal_id="prop-000000000001",
         original_request="Build a landing page in Spanish",
         objective="Ship a Spanish landing page",
         acceptance_criteria=["Page renders", "Copy is in Spanish"],
@@ -496,12 +497,12 @@ def test_store_round_trips_and_detects_a_tampered_row(tmp_path, signer):
     store = SQLiteGoalContractStore(tmp_path / "contracts.sqlite3")
     try:
         store.save(outcome.contract, outcome.signature)
-        assert store.verify_stored("g1", 1, signer)
+        assert store.verify_stored("prop-000000000001", 1, signer)
 
         store._connection.execute(
             "UPDATE goal_contracts SET payload = replace(payload, 'Spanish', 'English')"
         )
-        assert not store.verify_stored("g1", 1, signer)
+        assert not store.verify_stored("prop-000000000001", 1, signer)
     finally:
         store.close()
 
@@ -533,8 +534,9 @@ def test_store_tracks_the_latest_version(tmp_path, signer):
         store.save(outcome.contract, outcome.signature)
         store.save(amended, signature)
 
-        assert store.latest_version("g1") == 2
-        assert store.latest_version("unknown") is None
+        assert store.latest_version("prop-000000000001") == 2
+        with pytest.raises(GoalIdentityError):
+            store.latest_version("unknown")
     finally:
         store.close()
 
@@ -561,7 +563,7 @@ def test_approval_records_a_signed_contract(tmp_path, signer):
 
     now = datetime(2026, 7, 28, tzinfo=timezone.utc)
     proposal = Proposal(
-        proposal_id="p1",
+        proposal_id="prop-000000000001",
         slack_user_id="U1",
         slack_channel="C1",
         slack_thread_ts="1.0",
@@ -606,10 +608,10 @@ def test_approval_records_a_signed_contract(tmp_path, signer):
 
     recorded = [payload for name, payload in events if name == "goal.contract_recorded"]
     assert recorded, f"no contract recorded; events were {[n for n, _ in events]}"
-    assert recorded[0]["goal_id"] == "LAB-30"
+    assert recorded[0]["goal_id"] == "prop-000000000001"
     assert recorded[0]["authorized"] is True
     assert recorded[0]["signed"] is True
-    assert store.verify_stored("LAB-30", 1, signer)
+    assert store.verify_stored("prop-000000000001", 1, signer)
     store.close()
 
 
@@ -622,7 +624,7 @@ def test_authorizer_uses_the_verbatim_request_not_the_summary(signer):
 
     now = datetime(2026, 7, 28, tzinfo=timezone.utc)
     base = dict(
-        proposal_id="p1",
+        proposal_id="prop-000000000001",
         slack_user_id="U1",
         slack_thread_ts="1.0",
         mode=IntakeMode.NEW_FEATURE,
