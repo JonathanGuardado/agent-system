@@ -13,6 +13,7 @@ from ticket_agent.config.repo_contract import (
     RepoInfo,
 )
 from ticket_agent.domain.errors import RepoContractError, WorktreeCreationError
+from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
 from ticket_agent.domain.git import WorktreeInfo
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.local_services import (
@@ -361,6 +362,39 @@ def test_local_implementation_service_returns_failed_result_for_worktree_error(
     assert result["error"] == "implementation failed: worktree already exists"
 
 
+def test_local_implementation_preflight_refuses_before_worktree_creation(tmp_path):
+    repo_path = tmp_path / "repo"
+    git = _FakeGit(
+        WorktreeInfo(
+            repo_path=repo_path,
+            worktree_path=repo_path / ".worktrees" / "unused",
+            branch_name="agent/AGENT-123/unused",
+            ticket_key="AGENT-123",
+            lock_id="unused",
+        )
+    )
+    service = LocalImplementationService(
+        contract_loader=lambda path: _contract(repo_root=str(repo_path)),
+        git=git,
+        execution_preflight=_FailingPreflight(),
+    )
+
+    result = asyncio.run(
+        service.implement(
+            TicketState(
+                ticket_key="AGENT-123",
+                summary="Blocked implementation",
+                repository="example",
+                repo_path=str(repo_path),
+            )
+        )
+    )
+
+    assert git.calls == []
+    assert result["implementation_result"]["status"] == "failed"
+    assert "sandbox unavailable" in result["error"]
+
+
 def test_ticket_node_runner_implement_stores_local_implementation_update(tmp_path):
     repo_path = tmp_path / "repo"
     worktree_path = repo_path / ".worktrees" / "AGENT-123"
@@ -507,6 +541,11 @@ class _FakeFileAdapter:
 
     def list_files(self, path: str | Path = ".") -> tuple[str, ...]:
         return ()
+
+
+class _FailingPreflight:
+    def check(self):
+        raise SandboxUnavailableError("sandbox unavailable")
 
 
 class _Planner:

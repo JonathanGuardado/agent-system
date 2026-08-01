@@ -4,6 +4,9 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import pytest
+
+from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
 from ticket_agent.locking.checkpointer import SQLiteCheckpointer
 from ticket_agent.orchestrator.execution_approval import (
     ExecutionApprovalCommandHandler,
@@ -143,6 +146,22 @@ def test_multiline_approval_command_matcher_rejects_mixed_text():
     assert is_execution_approval_command(
         "approve AGENT-123\nreject AGENT-456"
     ) is True
+
+
+def test_execution_approval_preflight_refuses_before_graph_resume(tmp_path):
+    store = SQLiteExecutionApprovalStore(tmp_path / "approvals.sqlite3")
+    graph = _NeverCalledGraph()
+    handler = ExecutionApprovalCommandHandler(
+        store=store,
+        graph=graph,
+        execution_preflight=_FailingPreflight(),
+    )
+
+    try:
+        with pytest.raises(SandboxUnavailableError, match="sandbox unavailable"):
+            asyncio.run(handler._resume("AGENT-123", "approve"))
+    finally:
+        store.close()
     assert is_execution_approval_command(
         "approve AGENT-123\nplease also do something else"
     ) is False
@@ -367,6 +386,11 @@ class _FakeSlack:
         text: str,
     ) -> None:
         self.messages.append((channel, thread_ts, user_id, text))
+
+
+class _FailingPreflight:
+    def check(self):
+        raise SandboxUnavailableError("sandbox unavailable")
 
 
 class _NeverCalledGraph:

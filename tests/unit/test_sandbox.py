@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import re
+import socket
+import threading
 import subprocess
 
 import pytest
@@ -52,9 +54,14 @@ def worktree(tmp_path):
 def test_network_is_unshared_for_gates_and_shared_only_for_install(worktree):
     sandbox = BubblewrapSandbox()
 
-    gate = sandbox.wrap(["/bin/true"], cwd=worktree, policy=SandboxPolicy())
+    gate = sandbox.wrap(
+        ["/bin/true"], root=worktree, cwd=worktree, policy=SandboxPolicy()
+    )
     install = sandbox.wrap(
-        ["/bin/true"], cwd=worktree, policy=SandboxPolicy(network="install")
+        ["/bin/true"],
+        root=worktree,
+        cwd=worktree,
+        policy=SandboxPolicy(network="install"),
     )
 
     assert "--unshare-all" in gate
@@ -69,7 +76,7 @@ def test_environment_is_cleared_not_inherited(worktree):
     """--unshare-all does not imply a clean environment; measured, not assumed."""
 
     argv = BubblewrapSandbox().wrap(
-        ["/bin/true"], cwd=worktree, policy=SandboxPolicy()
+        ["/bin/true"], root=worktree, cwd=worktree, policy=SandboxPolicy()
     )
 
     assert "--clearenv" in argv
@@ -80,6 +87,7 @@ def test_rlimits_are_applied_in_child_argv_not_preexec(worktree):
 
     argv = BubblewrapSandbox().wrap(
         ["/bin/true"],
+        root=worktree,
         cwd=worktree,
         policy=SandboxPolicy(cpu_seconds=7, memory_bytes=123456, max_processes=9),
     )
@@ -94,13 +102,19 @@ def test_writable_path_escaping_the_worktree_is_refused(worktree):
     with pytest.raises(SandboxUnavailableError):
         BubblewrapSandbox().wrap(
             ["/bin/true"],
+            root=worktree,
             cwd=worktree,
             policy=SandboxPolicy(writable_paths=(Path("/etc"),)),
         )
 
 
 def test_null_sandbox_is_a_passthrough(worktree):
-    assert NullSandbox().wrap(["/bin/true"], cwd=worktree, policy=SandboxPolicy()) == (
+    assert NullSandbox().wrap(
+        ["/bin/true"],
+        root=worktree,
+        cwd=worktree,
+        policy=SandboxPolicy(),
+    ) == (
         "/bin/true",
     )
 
@@ -120,6 +134,7 @@ def test_worktree_is_read_only_with_explicit_writable_mounts(worktree):
             "echo mutated > src.py 2>/dev/null && echo WROTE_SOURCE || echo ro; "
             "echo dep > node_modules/a.js && echo WROTE_MOUNT",
         ],
+        root=worktree,
         cwd=worktree,
         policy=policy,
     )
@@ -141,7 +156,7 @@ def test_credentials_do_not_reach_the_child(worktree):
         SOME_SESSION_COOKIE="polluted",
     )
     argv = BubblewrapSandbox().wrap(
-        ["/usr/bin/env"], cwd=worktree, policy=SandboxPolicy()
+        ["/usr/bin/env"], root=worktree, cwd=worktree, policy=SandboxPolicy()
     )
 
     result = _run(argv, env=polluted)
@@ -156,14 +171,67 @@ def test_credentials_do_not_reach_the_child(worktree):
 
 
 @requires_sandbox
-def test_network_is_actually_blocked_for_gates(worktree):
-    argv = BubblewrapSandbox().wrap(
-        ["/bin/sh", "-c", "getent hosts example.com >/dev/null && echo NET || echo none"],
+def test_install_reaches_controlled_local_endpoint_but_gate_cannot(worktree):
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen()
+    port = server.getsockname()[1]
+    accepted: list[bool] = []
+
+    def accept_once():
+        connection, _ = server.accept()
+        accepted.append(True)
+        connection.close()
+
+    thread = threading.Thread(target=accept_once, daemon=True)
+    thread.start()
+    script = (
+        "import socket; "
+        f"socket.create_connection(('127.0.0.1', {port}), 1).close(); "
+        "print('connected')"
+    )
+    sandbox = BubblewrapSandbox()
+    install = sandbox.wrap(
+        ["/usr/bin/python3", "-c", script],
+        root=worktree,
         cwd=worktree,
+        policy=SandboxPolicy(network="install"),
+    )
+    gate = sandbox.wrap(
+        ["/usr/bin/python3", "-c", script],
+        root=worktree,
+        cwd=worktree,
+        policy=SandboxPolicy(network="none"),
+    )
+
+    try:
+        assert _run(install).returncode == 0
+        thread.join(timeout=2)
+        assert accepted == [True]
+        assert _run(gate).returncode != 0
+    finally:
+        server.close()
+
+
+@requires_sandbox
+def test_nested_working_directory_binds_repository_root(worktree):
+    nested = worktree / "packages" / "app"
+    nested.mkdir(parents=True)
+    sibling = worktree / "shared.txt"
+    sibling.write_text("visible", encoding="utf-8")
+
+    argv = BubblewrapSandbox().wrap(
+        ["/bin/cat", "../../shared.txt"],
+        root=worktree,
+        cwd=nested,
         policy=SandboxPolicy(),
     )
 
-    assert "none" in _run(argv).stdout
+    root_bind = ("--ro-bind", str(worktree.resolve()), str(worktree.resolve()))
+    assert any(tuple(argv[index : index + 3]) == root_bind for index in range(len(argv)))
+    chdir_index = argv.index("--chdir")
+    assert argv[chdir_index + 1] == str(nested.resolve())
+    assert _run(argv).stdout == "visible"
 
 
 @requires_sandbox
@@ -173,7 +241,10 @@ def test_host_secrets_are_not_reachable_from_inside(worktree):
         f'[ -e "{p}" ] && echo "REACHABLE {p}" || true' for p in probes
     )
     argv = BubblewrapSandbox().wrap(
-        ["/bin/sh", "-c", script + "; echo done"], cwd=worktree, policy=SandboxPolicy()
+        ["/bin/sh", "-c", script + "; echo done"],
+        root=worktree,
+        cwd=worktree,
+        policy=SandboxPolicy(),
     )
 
     result = _run(argv)
@@ -186,6 +257,7 @@ def test_host_secrets_are_not_reachable_from_inside(worktree):
 def test_memory_limit_is_enforced(worktree):
     argv = BubblewrapSandbox().wrap(
         ["/usr/bin/python3", "-c", "b = bytearray(512 * 1024 * 1024); print('ALLOCATED')"],
+        root=worktree,
         cwd=worktree,
         policy=SandboxPolicy(memory_bytes=64 * 1024 * 1024),
     )

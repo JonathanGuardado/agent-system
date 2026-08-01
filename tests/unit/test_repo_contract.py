@@ -24,10 +24,14 @@ def _valid_contract(**overrides: str) -> str:
     command: ["python", "-m", "pytest", "tests/", "-x", "-q"]
     timeout_seconds: 120
     working_directory: "."
+    writable_paths: []
+    network: none
   lint:
     command: ["python", "-m", "ruff", "check", "src/"]
     timeout_seconds: 60
     working_directory: "."
+    writable_paths: []
+    network: none
   install: null
 """,
         "policy": """
@@ -88,6 +92,8 @@ def test_loads_valid_new_schema(tmp_path):
     )
     assert contract.commands.test.timeout_seconds == 120
     assert contract.commands.test.working_directory == "."
+    assert contract.commands.test.writable_paths == ()
+    assert contract.commands.test.network == "none"
     assert contract.commands.lint is not None
     assert contract.commands.lint.command == (
         "python",
@@ -116,11 +122,46 @@ def test_rejects_string_command(tmp_path):
     command: "pytest tests/"
     timeout_seconds: 120
     working_directory: "."
+    writable_paths: []
+    network: none
 """
     contract_path = _write_contract(tmp_path, _valid_contract(commands=commands))
 
     with pytest.raises(RepoContractError, match="structured argv list"):
         load_repo_contract(contract_path)
+
+
+@pytest.mark.parametrize("writable_path", ("../outside", "/tmp/outside"))
+def test_rejects_writable_path_escaping_repository(tmp_path, writable_path):
+    commands = f"""
+  test:
+    command: ["python", "-m", "pytest"]
+    timeout_seconds: 120
+    working_directory: "."
+    writable_paths: ["{writable_path}"]
+    network: none
+"""
+
+    with pytest.raises(RepoContractError, match="repository root"):
+        load_repo_contract(
+            _write_contract(tmp_path, _valid_contract(commands=commands))
+        )
+
+
+def test_rejects_install_network_mode_on_non_install_command(tmp_path):
+    commands = """
+  test:
+    command: ["python", "-m", "pytest"]
+    timeout_seconds: 120
+    working_directory: "."
+    writable_paths: []
+    network: install
+"""
+
+    with pytest.raises(RepoContractError, match="only for commands.install"):
+        load_repo_contract(
+            _write_contract(tmp_path, _valid_contract(commands=commands))
+        )
 
 
 def test_rejects_missing_commands_test(tmp_path):
@@ -250,6 +291,8 @@ commands:
     command: ["python", "-m", "pytest"]
     timeout_seconds: 120
     working_directory: "."
+    writable_paths: []
+    network: none
 
 source_dirs:
   - src/
@@ -267,6 +310,8 @@ def test_rejects_command_with_non_string_part(tmp_path):
     command: ["python", "-m", "pytest", 3]
     timeout_seconds: 120
     working_directory: "."
+    writable_paths: []
+    network: none
 """
     contract_path = _write_contract(tmp_path, _valid_contract(commands=commands))
 
@@ -280,6 +325,8 @@ def test_rejects_empty_command_list(tmp_path):
     command: []
     timeout_seconds: 120
     working_directory: "."
+    writable_paths: []
+    network: none
 """
     contract_path = _write_contract(tmp_path, _valid_contract(commands=commands))
 

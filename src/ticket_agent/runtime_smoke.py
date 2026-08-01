@@ -24,6 +24,10 @@ from ticket_agent.adapters.local.sandbox import BubblewrapSandbox
 from ticket_agent.config.repo_contract import load_repo_contract
 from ticket_agent.goal.policy import load_risk_policy
 from ticket_agent.goal.signing import SigningError, load_signer
+from ticket_agent.orchestrator.execution_environment import (
+    ExecutionEnvironmentPreflight,
+)
+from ticket_agent.orchestrator.local_services import RuntimeShellFactory
 from ticket_agent.jira.constants import (
     FIELD_AGENT_ASSIGNED_COMPONENT,
     FIELD_AGENT_CAPABILITIES_NEEDED,
@@ -39,7 +43,7 @@ from ticket_agent.jira.constants import (
 _JIRA_PROJECT_ISSUE_TYPES_REQUIRED = frozenset({"Epic", "Task"})
 
 
-SmokeStatus = Literal["pass", "fail", "skip"]
+SmokeStatus = Literal["pass", "fail", "skip", "warn"]
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
@@ -107,7 +111,7 @@ async def collect_smoke_checks(
         return checks
 
     checks.append(_repo_contracts_check(app_config.runtime.contract_dir))
-    checks.append(_sandbox_check())
+    checks.extend(_sandbox_checks())
     checks.append(_goal_authorization_check(app_config.runtime))
     checks.extend(_harness_readiness_checks(app_config.runtime.contract_dir))
     checks.append(_jira_field_map_check(app_config))
@@ -182,8 +186,8 @@ def _repo_contracts_check(contract_dir: Path) -> SmokeCheck:
     )
 
 
-def _sandbox_check() -> SmokeCheck:
-    """Whether repository commands can be isolated on this host.
+def _sandbox_checks() -> tuple[SmokeCheck, SmokeCheck, SmokeCheck]:
+    """Report capability, production configuration, and wrapper evidence.
 
     Attempts a real unshare rather than checking that bwrap exists. Ubuntu
     24.04 sets kernel.apparmor_restrict_unprivileged_userns=1, under which a
@@ -191,16 +195,54 @@ def _sandbox_check() -> SmokeCheck:
     presence check reports such a host as sandbox-ready when it is not.
     """
 
-    if BubblewrapSandbox.available():
-        return SmokeCheck("sandbox", "pass", "bwrap can create a user namespace")
-    return SmokeCheck(
-        "sandbox",
-        "warn",
-        "no working sandbox; unattended repository commands are forbidden and "
-        "autonomy is capped at 'propose'. On Ubuntu 24.04 this is usually "
-        "kernel.apparmor_restrict_unprivileged_userns=1 -- add an AppArmor "
-        "profile granting 'userns' to /usr/bin/bwrap.",
+    available = BubblewrapSandbox.available()
+    if available:
+        capability = SmokeCheck(
+            "sandbox_host_capability",
+            "pass",
+            "bwrap can create a user namespace",
+        )
+    else:
+        capability = SmokeCheck(
+            "sandbox_host_capability",
+            "warn",
+            "no working bwrap user namespace; repository execution is refused. "
+            "On Ubuntu 24.04 this is usually the AppArmor userns restriction.",
+        )
+
+    configured = SmokeCheck(
+        "sandbox_runtime_configuration",
+        "pass" if RuntimeShellFactory.requires_enforcing_sandbox else "fail",
+        "all production repo-contract shell paths require live bwrap preflight",
     )
+
+    if not available:
+        evidence = SmokeCheck(
+            "sandbox_command_enforcement",
+            "skip",
+            "host capability unavailable, so no enforcing command attestation "
+            "can be produced",
+        )
+    else:
+        try:
+            attestation = RuntimeShellFactory(
+                ExecutionEnvironmentPreflight()
+            ).probe_attestation()
+        except Exception as exc:  # noqa: BLE001 - smoke boundary
+            evidence = SmokeCheck(
+                "sandbox_command_enforcement",
+                "fail",
+                str(exc),
+            )
+        else:
+            evidence = SmokeCheck(
+                "sandbox_command_enforcement",
+                "pass" if attestation.sandbox_profile == "bwrap" else "fail",
+                "wrapper=bwrap "
+                f"policy={attestation.command_policy_digest[:12]} "
+                f"launch={attestation.launch_digest[:12]}",
+            )
+    return capability, configured, evidence
 
 
 def _goal_authorization_check(config: RuntimeConfig) -> SmokeCheck:

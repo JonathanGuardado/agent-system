@@ -16,22 +16,32 @@ commands:
     command: ["npm", "ci", "--no-audit", "--no-fund", "--ignore-scripts"]
     timeout_seconds: 300
     working_directory: "."
+    writable_paths: ["node_modules"]
+    network: install
   test:
     command: ["npm", "run", "test"]
     timeout_seconds: 180
     working_directory: "."
+    writable_paths: ["coverage", ".vitest"]
+    network: none
   lint:
     command: ["npm", "run", "lint"]
     timeout_seconds: 180
     working_directory: "."
+    writable_paths: [".eslintcache"]
+    network: none
   typecheck:
     command: ["npx", "--no-install", "tsc", "--noEmit"]
     timeout_seconds: 180
     working_directory: "."
+    writable_paths: [".tsbuildinfo"]
+    network: none
   build:
     command: ["npm", "run", "build"]
     timeout_seconds: 300
     working_directory: "."
+    writable_paths: [".next", "dist"]
+    network: none
 
 gates:
   test: required

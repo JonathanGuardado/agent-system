@@ -25,6 +25,7 @@ from ticket_agent.orchestrator.runner import (
     TicketWorkItem,
 )
 from ticket_agent.orchestrator.state import TicketState
+from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
 
 
 def test_successful_run_acquires_lock_invokes_graph_and_releases_lock():
@@ -86,6 +87,24 @@ def test_lock_unavailable_skips_graph_execution():
         "reason": "already_locked",
         "component_id": "orchestrator-test",
     }
+
+
+def test_environment_preflight_refuses_before_lock_acquisition():
+    graph = _Graph({"workflow_status": "completed"})
+    lock_manager = _LockManager(lock=_Lock("AGENT-123", lock_id="lock-123"))
+    preflight = _FailingPreflight()
+    runner = _runner(
+        graph,
+        lock_manager,
+        execution_preflight=preflight,
+    )
+
+    with pytest.raises(SandboxUnavailableError, match="sandbox unavailable"):
+        asyncio.run(runner.run_ticket(_work_item()))
+
+    assert preflight.calls == 1
+    assert lock_manager.acquires == []
+    assert graph.invocations == 0
 
 
 def test_runner_clears_stale_checkpoint_after_lock_is_acquired():
@@ -497,6 +516,7 @@ def _runner(
     claim_ticket=None,
     checkpointer=None,
     heartbeat_interval_s: float = 600.0,
+    execution_preflight=None,
 ) -> OrchestratorRunner:
     return OrchestratorRunner(
         graph=graph,
@@ -506,6 +526,7 @@ def _runner(
         claim_ticket=claim_ticket,
         checkpointer=checkpointer,
         heartbeat_interval_s=heartbeat_interval_s,
+        execution_preflight=execution_preflight,
     )
 
 
@@ -647,3 +668,12 @@ class _CheckpointCleaner:
 
     def has_checkpoint(self, thread_id: str) -> bool:
         return thread_id in self._existing_threads
+
+
+class _FailingPreflight:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def check(self):
+        self.calls += 1
+        raise SandboxUnavailableError("sandbox unavailable")

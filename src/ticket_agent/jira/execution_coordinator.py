@@ -22,6 +22,7 @@ from ticket_agent.jira.constants import (
 from ticket_agent.jira.execution_service import JiraExecutionService
 from ticket_agent.jira.work_item_loader import JiraWorkItemLoader
 from ticket_agent.orchestrator.runner import TicketClaimFailedError, TicketWorkItem
+from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
 from ticket_agent.orchestrator.state import TicketState
 
 EventEmitter = Callable[[str, dict[str, object]], object]
@@ -73,6 +74,7 @@ class JiraExecutionCoordinator:
         worktree_cleaner: WorktreeCleaner | None = None,
         checkpointer: CheckpointCleaner | None = None,
         slack_poster_user_id: str = "ticket-agent",
+        execution_preflight: ExecutionPreflight | None = None,
     ) -> None:
         self._loader = loader
         self._execution_service = execution_service
@@ -82,6 +84,7 @@ class JiraExecutionCoordinator:
         self._worktree_cleaner = worktree_cleaner
         self._checkpointer = checkpointer
         self._slack_poster_user_id = slack_poster_user_id
+        self._execution_preflight = execution_preflight
 
     async def run_ticket(self, ticket_key: str) -> TicketState:
         """Run one Jira ticket through the existing orchestrator runner."""
@@ -97,6 +100,15 @@ class JiraExecutionCoordinator:
         except Exception as exc:
             await self._emit_failed(ticket_key, exc)
             raise
+
+        if self._execution_preflight is not None:
+            try:
+                self._execution_preflight.check()
+            except Exception as exc:
+                # Refusal itself must not transition Jira. The sandbox guard
+                # runs before the runner can acquire a lock or claim work.
+                await self._emit_failed(ticket_key, exc)
+                raise
 
         try:
             final_state = await self._runner.run_ticket(work_item)

@@ -15,6 +15,7 @@ from ticket_agent.app import (
     main,
     run_runtime,
 )
+from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
 from ticket_agent.intake.slack_listener import SlackEvent
 from ticket_agent.jira.constants import FIELD_AGENT_ASSIGNED_COMPONENT
 from ticket_agent.jira.constants import (
@@ -815,6 +816,51 @@ def test_recover_after_restart_preserves_active_lock_and_enqueues_ticket(tmp_pat
         runtime.close()
 
 
+def test_restart_preflight_blocks_checkpoint_resume_without_blocking_runtime(tmp_path):
+    events: list[tuple[str, dict[str, Any]]] = []
+    jira_client = FakeJiraClient(
+        JiraTicket(
+            key="AGENT-123",
+            summary="Resume after restart",
+            status=STATUS_IN_PROGRESS,
+            labels=[LABEL_AI_READY, LABEL_AI_CLAIMED],
+            fields={
+                FIELD_AGENT_ASSIGNED_COMPONENT: "agent-system",
+                FIELD_AGENT_RETRY_COUNT: 0,
+            },
+        )
+    )
+    runtime = build_runtime(
+        jira_client=jira_client,
+        slack=_FakeSlack(),
+        config=RuntimeConfig(
+            data_dir=tmp_path,
+            intake_channel="C-INTAKE",
+            execution_approval_channel="C-INTAKE",
+        ),
+        planner=_Planner(),
+        implementation=_Implementation(),
+        tests=_Tests(),
+        review=_Review(),
+        pull_request=_PullRequest(),
+        escalation=_Escalation(),
+        emit=lambda name, payload: events.append((name, dict(payload))),
+    )
+
+    try:
+        assert runtime.lock_manager.acquire("AGENT-123") is not None
+        runtime.execution_preflight = _FailingPreflight()
+
+        resumed = asyncio.run(runtime.recover_after_restart())
+
+        assert resumed == 0
+        assert runtime.queue.empty()
+        assert any(name == "runtime.resume_blocked" for name, _ in events)
+        assert jira_client.ticket("AGENT-123").status == STATUS_IN_PROGRESS
+    finally:
+        runtime.close()
+
+
 def test_main_uses_injected_services_without_live_network(tmp_path):
     env_path = tmp_path / "agent-system.env"
     env_path.write_text("", encoding="utf-8")
@@ -913,6 +959,11 @@ class _Escalation:
         del state, reason
 
 
+class _FailingPreflight:
+    def check(self):
+        raise SandboxUnavailableError("sandbox unavailable")
+
+
 class _QuestionRouter:
     def __init__(self, response: str) -> None:
         self._response = response
@@ -947,6 +998,8 @@ def _repo_contract_yaml(repo_root, *, repo_name: str = "agent-system") -> str:
             "    command: ['python', '-m', 'pytest']",
             "    timeout_seconds: 30",
             "    working_directory: .",
+            "    writable_paths: []",
+            "    network: none",
             "  lint: null",
             "  install: null",
             "policy:",

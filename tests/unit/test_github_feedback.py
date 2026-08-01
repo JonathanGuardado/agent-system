@@ -18,6 +18,8 @@ from ticket_agent.jira.fake_client import FakeJiraClient
 from ticket_agent.jira.models import JiraTicket
 from ticket_agent.orchestrator.runner import TicketWorkItem
 from ticket_agent.orchestrator.state import TicketState
+from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
+import pytest
 
 
 def test_feedback_poller_enqueues_unseen_items_once():
@@ -70,6 +72,30 @@ def test_feedback_execution_runs_existing_pr_branch(tmp_path):
     assert "Pull request feedback to address" in runner.work_items[0].description
     assert "Please change the CTA copy" in runner.work_items[0].description
     assert cleaner.cleaned[0].worktree_path == str(tmp_path / "wt")
+
+
+def test_feedback_preflight_refuses_before_worktree_creation(tmp_path):
+    item = _feedback_item(repo_path=str(tmp_path))
+    loader = _Loader(
+        TicketWorkItem(
+            ticket_key="AGENT-123",
+            summary="Feedback",
+            description="Original",
+            repository="repo",
+        )
+    )
+    worktree_factory = _WorktreeFactory(tmp_path / "wt")
+    coordinator = FeedbackExecutionCoordinator(
+        loader=loader,
+        runner=_Runner(),
+        worktree_factory=worktree_factory,
+        execution_preflight=_FailingPreflight(),
+    )
+
+    with pytest.raises(SandboxUnavailableError, match="sandbox unavailable"):
+        asyncio.run(coordinator.run_feedback(item))
+
+    assert worktree_factory.calls == []
 
 
 def test_merged_delivery_releases_only_next_queued_ticket(tmp_path):
@@ -241,3 +267,8 @@ class _PromotionOpener:
     def open_pull_request(self, **kwargs: Any) -> str:
         self.calls.append(kwargs)
         return "https://github.test/acme/repo/pull/promotion"
+
+
+class _FailingPreflight:
+    def check(self):
+        raise SandboxUnavailableError("sandbox unavailable")

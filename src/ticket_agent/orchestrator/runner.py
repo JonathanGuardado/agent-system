@@ -17,6 +17,7 @@ from ticket_agent.observability.telemetry import (
     TelemetryRecorder,
 )
 from ticket_agent.orchestrator.state import TicketState
+from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
 
 Lock = TicketLock
 EventEmitter = Callable[[str, Mapping[str, Any]], Any]
@@ -132,6 +133,7 @@ class OrchestratorRunner:
         checkpointer: CheckpointCleaner | None = None,
         heartbeat_interval_s: float = 600.0,
         telemetry: TelemetryRecorder | None = None,
+        execution_preflight: ExecutionPreflight | None = None,
     ) -> None:
         if heartbeat_interval_s <= 0:
             raise ValueError("heartbeat_interval_s must be positive")
@@ -145,9 +147,13 @@ class OrchestratorRunner:
         self._checkpointer = checkpointer
         self._heartbeat_interval_s = float(heartbeat_interval_s)
         self._telemetry = telemetry or NullTelemetryRecorder()
+        self._execution_preflight = execution_preflight
 
     async def run_ticket(self, work_item: TicketWorkItem) -> TicketState:
         """Run one ticket through the graph when its lock can be acquired."""
+
+        if self._execution_preflight is not None:
+            self._execution_preflight.check()
 
         lock = self._lock_manager.acquire(work_item.ticket_key)
         resumed = False

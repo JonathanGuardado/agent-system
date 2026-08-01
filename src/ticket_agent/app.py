@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from ticket_agent.config.repo_contract import load_repo_contract
+from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
 from ticket_agent.detection.detector import DetectionComponent
 from ticket_agent.detection.jira_search import JiraDetectionSearchClient
 from ticket_agent.detection.ownership import OwnershipChecker
@@ -77,6 +78,9 @@ from ticket_agent.orchestrator.execution_approval import (
     SQLiteExecutionApprovalStore,
     SlackExecutionApprovalService,
 )
+from ticket_agent.orchestrator.execution_environment import (
+    ExecutionEnvironmentPreflight,
+)
 from ticket_agent.orchestrator.execution_worker import ExecutionWorker
 from ticket_agent.orchestrator.git_services import (
     GhPullRequestOpener,
@@ -89,6 +93,7 @@ from ticket_agent.orchestrator.local_services import (
     AdapterTestService,
     AutoApprovalService,
     LocalImplementationService,
+    RuntimeShellFactory,
 )
 from ticket_agent.orchestrator.model_services import (
     IterativeImplementationService,
@@ -233,6 +238,7 @@ class AgentSystemRuntime:
     config: RuntimeConfig
     database_paths: Mapping[str, Path]
     emit: EventEmitter | None = None
+    execution_preflight: ExecutionEnvironmentPreflight | None = None
 
     async def run_execution_services(self) -> None:
         """Run detection, worker, and reconciler loops until cancelled."""
@@ -268,6 +274,22 @@ class AgentSystemRuntime:
         active_locks = self.lock_manager.active_component_locks(
             limit=self.config.reconcile_batch_size,
         )
+        if active_locks and self.execution_preflight is not None:
+            try:
+                self.execution_preflight.check()
+            except SandboxUnavailableError as exc:
+                for lock in active_locks:
+                    await _emit(
+                        self.emit,
+                        "runtime.resume_blocked",
+                        {
+                            "ticket_key": lock.ticket_key,
+                            "component_id": lock.owner,
+                            "lock_id": lock.lock_id,
+                            "reason": str(exc),
+                        },
+                    )
+                return 0
         for lock in active_locks:
             await self.queue.put(lock.ticket_key)
             await _emit(
@@ -350,6 +372,8 @@ def build_runtime(
 
     transcripts = _build_transcript_recorder(runtime_config, data_dir, repo_defaults)
     telemetry = _build_telemetry_recorder(runtime_config, database_paths)
+    execution_preflight = ExecutionEnvironmentPreflight()
+    shell_factory = RuntimeShellFactory(execution_preflight)
 
     router = model_router
     if planner is None or implementation is None or review is None:
@@ -384,8 +408,14 @@ def build_runtime(
         or LocalImplementationService(
             contract_dir=runtime_config.contract_dir,
             implementation_step=implementation_loop.implement_context,
+            shell_factory=shell_factory,
+            execution_preflight=execution_preflight,
         ),
-        tests=tests or AdapterTestService(contract_dir=runtime_config.contract_dir),
+        tests=tests
+        or AdapterTestService(
+            contract_dir=runtime_config.contract_dir,
+            shell_factory=shell_factory,
+        ),
         review=review or ModelRouterReviewService(router),
         pull_request=pull_request
         or GitService(
@@ -405,6 +435,7 @@ def build_runtime(
         event_emitter=emit,
         claim_ticket=execution_service.mark_claimed,
         checkpointer=checkpointer,
+        execution_preflight=execution_preflight,
         heartbeat_interval_s=runtime_config.heartbeat_interval_s,
         telemetry=telemetry,
     )
@@ -434,6 +465,7 @@ def build_runtime(
         slack=slack,
         worktree_cleaner=worktree_cleaner,
         checkpointer=checkpointer,
+        execution_preflight=execution_preflight,
     )
     coordinator = _MarkDoneCoordinator(jira_coordinator, detector)
     worker = ExecutionWorker(detector_queue, coordinator, emit=emit)
@@ -487,6 +519,7 @@ def build_runtime(
                 ),
                 runner=runner,
                 worktree_cleaner=worktree_cleaner,
+                execution_preflight=execution_preflight,
             ),
             emit=emit,
         )
@@ -518,6 +551,7 @@ def build_runtime(
         on_dry_run_decision=dry_run_finalizer.handle_decision
         if runtime_config.execution_mode == "dry_run"
         else None,
+        execution_preflight=execution_preflight,
     )
     listener = SlackIntakeListener(
         approval_flow=approval_flow,
@@ -552,6 +586,7 @@ def build_runtime(
         config=runtime_config,
         database_paths=database_paths,
         emit=emit,
+        execution_preflight=execution_preflight,
     )
 
 

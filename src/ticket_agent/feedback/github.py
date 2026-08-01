@@ -28,6 +28,7 @@ from ticket_agent.orchestrator.git_services import (
     PullRequestOpener,
     WorktreeCleanupService,
 )
+from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
 from ticket_agent.orchestrator.runner import TicketWorkItem
 from ticket_agent.orchestrator.state import TicketState
 
@@ -436,13 +437,17 @@ class FeedbackExecutionCoordinator:
         runner: TicketRunner,
         worktree_factory: FeedbackWorktreeFactory | None = None,
         worktree_cleaner: WorktreeCleanupService | None = None,
+        execution_preflight: ExecutionPreflight | None = None,
     ) -> None:
         self._loader = loader
         self._runner = runner
         self._worktree_factory = worktree_factory or GitAdapter()
         self._worktree_cleaner = worktree_cleaner or WorktreeCleanupService()
+        self._execution_preflight = execution_preflight
 
     async def run_feedback(self, item: FeedbackItem) -> TicketState:
+        if self._execution_preflight is not None:
+            self._execution_preflight.check()
         base = await self._loader.load(item.ticket_key)
         short_id = item.fingerprint[:8]
         worktree = self._worktree_factory.create_worktree_for_branch(

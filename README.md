@@ -149,7 +149,9 @@ policy checks at the boundary:
 - `FileAdapter` enforces worktree boundaries, protected paths, and symlink
   escape protection.
 - `ShellAdapter` runs only allowlisted commands with a stripped environment and
-  explicit timeouts.
+  explicit timeouts. Production repo-contract commands require Bubblewrap
+  before locks, claims, worktrees, or resume and return per-command sandbox
+  attestations.
 - `TestAdapter` loads test commands from repo contracts instead of inferring
   them from project files.
 - `GitAdapter` works through isolated branches/worktrees and opens pull
@@ -329,7 +331,7 @@ dependency · ↪ absorbed into another phase.
 | P10 | 🔶 | Observability foundations exist; later producers and operational evidence are missing |
 | P11 | ✅ | This repo owns selector config; resolution is pinned and the library copy is example-only |
 | P12 | 🔶 | Goal contracts exist but durable authority, revocation, spine, journal, and execution enforcement do not |
-| P13 | 🔶 | Trust root and sandbox exist, but production lacks pre-mutation enforcement and per-command attestation |
+| P13 | 🔶 | Sandbox enforcement and per-command evidence are wired; context assembly / knowledge map remains |
 | P14 | ⬜ | Verify an immutable committed SHA in an isolated checkout |
 | P15 | ⬜ | Independent review of the complete real diff, maker ≠ checker across fallbacks |
 | P16 | ⬜ | Repeatable evaluation corpus and demonstration evidence |

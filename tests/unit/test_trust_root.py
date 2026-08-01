@@ -196,6 +196,8 @@ commands:
     command: {test_command}
     timeout_seconds: 60
     working_directory: "."
+    writable_paths: []
+    network: none
 policy:
   dependency_install_allowed: false
 source_dirs: ["src/"]

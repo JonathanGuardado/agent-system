@@ -27,8 +27,36 @@ def test_runtime_smoke_passes_non_mutating_checks_with_configured_env(tmp_path):
     assert by_name["repo_contracts"].status == "pass"
     assert by_name["jira_field_map"].status == "pass"
     assert by_name["github_auth"].status == "pass"
+    assert by_name["sandbox_host_capability"].status in {"pass", "warn"}
+    assert by_name["sandbox_runtime_configuration"].status == "pass"
+    assert by_name["sandbox_command_enforcement"].status in {"pass", "skip"}
     assert by_name["slack_auth"].status == "skip"
     assert by_name["jira_auth"].status == "skip"
+
+
+def test_runtime_smoke_separates_sandbox_capability_configuration_and_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        runtime_smoke_module.BubblewrapSandbox,
+        "available",
+        staticmethod(lambda *_: False),
+    )
+
+    checks = asyncio.run(
+        collect_smoke_checks(
+            env=_env(_write_contract(tmp_path)),
+            env_path=_empty_env_file(tmp_path),
+            skip_network=True,
+            run_command=_successful_command,
+        )
+    )
+
+    by_name = {check.name: check for check in checks}
+    assert by_name["sandbox_host_capability"].status == "warn"
+    assert by_name["sandbox_runtime_configuration"].status == "pass"
+    assert by_name["sandbox_command_enforcement"].status == "skip"
 
 
 def test_runtime_smoke_reports_missing_jira_field_map(tmp_path):
@@ -436,6 +464,8 @@ commands:
     command: ["python", "-m", "pytest", "tests/", "-q"]
     timeout_seconds: 120
     working_directory: "."
+    writable_paths: []
+    network: none
   lint: null
   install: null
 policy:

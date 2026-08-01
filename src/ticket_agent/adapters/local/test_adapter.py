@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from ticket_agent.config.repo_contract import RepoContract
+from ticket_agent.config.repo_contract import CommandSpec, RepoContract
 from ticket_agent.domain.errors import RepoContractError
+from ticket_agent.domain.execution import CommandExecutionPolicy
 from ticket_agent.ports.tools import CommandResult, ShellPort
 
 
@@ -25,6 +26,7 @@ class LocalTestAdapter:
                 install_command.command,
                 cwd=install_command.working_directory,
                 timeout_seconds=install_command.timeout_seconds,
+                policy=_execution_policy(install_command),
             )
             if not install_result.ok:
                 return install_result
@@ -34,6 +36,7 @@ class LocalTestAdapter:
             test_command.command,
             cwd=test_command.working_directory,
             timeout_seconds=test_command.timeout_seconds,
+            policy=_execution_policy(test_command),
         )
 
     def run_lint(self) -> CommandResult | None:
@@ -44,9 +47,17 @@ class LocalTestAdapter:
             lint_command.command,
             cwd=lint_command.working_directory,
             timeout_seconds=lint_command.timeout_seconds,
+            policy=_execution_policy(lint_command),
         )
 
     def _install_command(self):
         if not self._contract.policy.dependency_install_allowed:
             return None
         return self._contract.commands.install
+
+
+def _execution_policy(command: CommandSpec) -> CommandExecutionPolicy:
+    return CommandExecutionPolicy(
+        network=command.network,
+        writable_paths=command.writable_paths,
+    )

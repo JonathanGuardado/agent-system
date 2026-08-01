@@ -38,11 +38,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import shutil
 import subprocess
-from typing import Literal, Protocol
+from typing import Protocol
 
 from ticket_agent.domain.errors import AgentSystemError
+from ticket_agent.domain.execution import (
+    CommandExecutionPolicy,
+    CommandNetworkMode,
+)
 
-NetworkPolicy = Literal["none", "install"]
+NetworkPolicy = CommandNetworkMode
 
 #: Read-only system paths every command needs to run at all.
 _SYSTEM_ROBINDS: tuple[str, ...] = ("/usr", "/lib", "/lib64", "/bin", "/sbin")
@@ -83,6 +87,20 @@ class SandboxPolicy:
     writable_paths: tuple[Path, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
 
+    @classmethod
+    def from_execution_policy(
+        cls,
+        policy: CommandExecutionPolicy,
+    ) -> SandboxPolicy:
+        return cls(
+            network=policy.network,
+            cpu_seconds=policy.cpu_seconds,
+            memory_bytes=policy.memory_bytes,
+            max_processes=policy.max_processes,
+            max_file_bytes=policy.max_file_bytes,
+            writable_paths=tuple(Path(path) for path in policy.writable_paths),
+        )
+
     def profile(self) -> str:
         """Short stable string recorded in the verification policy."""
 
@@ -97,6 +115,7 @@ class Sandbox(Protocol):
         self,
         argv: Sequence[str],
         *,
+        root: Path,
         cwd: Path,
         policy: SandboxPolicy,
     ) -> tuple[str, ...]:
@@ -116,6 +135,7 @@ class NullSandbox:
         self,
         argv: Sequence[str],
         *,
+        root: Path,
         cwd: Path,
         policy: SandboxPolicy,
     ) -> tuple[str, ...]:
@@ -183,13 +203,19 @@ class BubblewrapSandbox:
         self,
         argv: Sequence[str],
         *,
+        root: Path,
         cwd: Path,
         policy: SandboxPolicy,
     ) -> tuple[str, ...]:
         if not argv:
             raise SandboxUnavailableError("cannot sandbox an empty command")
 
-        worktree = Path(cwd).resolve()
+        repository_root = Path(root).resolve()
+        command_cwd = Path(cwd).resolve()
+        if not _is_within(command_cwd, repository_root):
+            raise SandboxUnavailableError(
+                f"command working directory escapes repository root: {command_cwd}"
+            )
         command: list[str] = [self._bwrap, "--unshare-all"]
 
         if policy.network == "install":
@@ -220,22 +246,30 @@ class BubblewrapSandbox:
 
         command += ["--tmpfs", "/tmp", "--dir", _SANDBOX_HOME]
 
-        # Default deny: the worktree is read-only, and only declared paths
+        # Default deny: the repository is read-only, and only declared paths
         # are re-bound writable on top of it.
-        command += ["--ro-bind", str(worktree), str(worktree)]
+        command += ["--ro-bind", str(repository_root), str(repository_root)]
         for writable in policy.writable_paths:
             resolved = Path(writable)
             if not resolved.is_absolute():
-                resolved = worktree / resolved
+                resolved = repository_root / resolved
             resolved = resolved.resolve()
-            if not _is_within(resolved, worktree):
+            if not _is_within(resolved, repository_root):
                 raise SandboxUnavailableError(
-                    f"writable path escapes the worktree: {resolved}"
+                    f"writable path escapes the repository root: {resolved}"
                 )
             resolved.mkdir(parents=True, exist_ok=True)
             command += ["--bind", str(resolved), str(resolved)]
 
-        command += ["--proc", "/proc", "--dev", "/dev", "--chdir", str(worktree), "--"]
+        command += [
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--chdir",
+            str(command_cwd),
+            "--",
+        ]
         command += self._rlimit_prefix(policy)
         command += list(argv)
         return tuple(command)

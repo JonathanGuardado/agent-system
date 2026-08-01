@@ -12,10 +12,14 @@ commands:
     command: ["python", "-m", "pytest", "tests/", "-x", "-q"]
     timeout_seconds: 120
     working_directory: "."
+    writable_paths: [".pytest_cache"]
+    network: none
   lint:
     command: ["python", "-m", "ruff", "check", "src/"]
     timeout_seconds: 60
     working_directory: "."
+    writable_paths: [".ruff_cache"]
+    network: none
   install: null
 
 policy:

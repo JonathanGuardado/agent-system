@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, Sequence
 
+from ticket_agent.domain.execution import (
+    CommandExecutionPolicy,
+    SandboxAttestation,
+)
+
 
 @dataclass(frozen=True)
 class CommandResult:
@@ -16,6 +21,7 @@ class CommandResult:
     stdout: str
     stderr: str
     timed_out: bool = False
+    sandbox_attestation: SandboxAttestation | None = None
 
     @property
     def ok(self) -> bool:
@@ -64,6 +70,7 @@ class ShellPort(Protocol):
         *,
         cwd: str | Path | None = None,
         timeout_seconds: int | None = None,
+        policy: CommandExecutionPolicy,
     ) -> CommandResult:
         """Run an allowlisted command inside the worktree boundary."""
 

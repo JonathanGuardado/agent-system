@@ -78,9 +78,10 @@ Five things are easy to assume and are **not** true today:
   worktree; the commit happens later, inside `open_pull_request`.
 - **Review does not consume the real diff.** It reads the implementing model's
   own summary and result.
-- **Production contract commands are not sandboxed.** `_build_contract_shell`
-  constructs `LocalShellAdapter` with no sandbox, so it falls back to
-  `NullSandbox()`.
+- **Production contract commands are sandboxed.** A lazy enforcing preflight
+  refuses execution before locks, claims, worktrees, or resume, both test paths
+  use one runtime shell factory, and every wrapper launch emits an attestation.
+  P13 remains partial only because context assembly / the knowledge map is open.
 
 **The system never merges pull requests automatically.** The runtime opens
 PRs; it does not merge them. Any review or merge is performed by a human, as
@@ -113,7 +114,7 @@ dependency · ↪ absorbed into another phase.
 | P10 | 🔶 | Observability foundations exist; later producers and operational evidence missing |
 | P11 | ✅ | This repo owns selector config; resolution is pinned and the library copy is example-only |
 | P12 | 🔶 | Contracts exist; durable authority, revocation, spine, journal, propagation, and enforcement are missing |
-| P13 | 🔶 | Trust-root/sandbox implementation exists; pre-mutation production enforcement and attestation are missing |
+| P13 | 🔶 | Sandbox enforcement and attestation are wired; context assembly / knowledge map remains |
 | P14 | ⬜ | Immutable-SHA verification |
 | P15 | ⬜ | Independent complete-diff review |
 | P16 | ⬜ | Repeatable evaluation and demonstration evidence |
@@ -574,10 +575,14 @@ commands:
     command: ["python", "-m", "pytest", "tests/", "-x", "-q"]
     timeout_seconds: 120
     working_directory: "."
+    writable_paths: [".pytest_cache"]
+    network: none
   lint:
     command: ["python", "-m", "ruff", "check", "src/"]
     timeout_seconds: 120
     working_directory: "."
+    writable_paths: [".ruff_cache"]
+    network: none
   install: null
 
 policy:

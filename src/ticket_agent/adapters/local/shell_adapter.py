@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 import signal
@@ -14,6 +15,10 @@ from ticket_agent.adapters.local.sandbox import (
     SandboxPolicy,
 )
 from ticket_agent.domain.errors import CommandNotAllowedError, PathBoundaryError
+from ticket_agent.domain.execution import (
+    CommandExecutionPolicy,
+    SandboxAttestation,
+)
 from ticket_agent.ports.tools import CommandResult
 
 #: Seconds to wait for a signalled process group before escalating.
@@ -52,7 +57,6 @@ class LocalShellAdapter:
         *,
         default_timeout_seconds: int = 300,
         sandbox: Sandbox | None = None,
-        policy: SandboxPolicy | None = None,
     ) -> None:
         self._root = Path(worktree_root).resolve(strict=True)
         self._allowed_commands = tuple(
@@ -62,7 +66,6 @@ class LocalShellAdapter:
         # The allowlist and denylist stay as defense in depth. They are
         # command filtering, not a boundary -- the sandbox is the boundary.
         self._sandbox = sandbox or NullSandbox()
-        self._policy = policy or SandboxPolicy()
 
         if default_timeout_seconds <= 0:
             raise ValueError("default_timeout_seconds must be positive")
@@ -71,12 +74,17 @@ class LocalShellAdapter:
     def root(self) -> Path:
         return self._root
 
+    @property
+    def sandbox_profile(self) -> str:
+        return self._sandbox.profile
+
     def run(
         self,
         command: Sequence[str],
         *,
         cwd: str | Path | None = None,
         timeout_seconds: int | None = None,
+        policy: CommandExecutionPolicy,
     ) -> CommandResult:
         normalized = _normalize_command(command)
         if _is_blocked_command(normalized):
@@ -89,14 +97,26 @@ class LocalShellAdapter:
         if timeout <= 0:
             raise ValueError("timeout_seconds must be positive")
 
+        sandbox_policy = SandboxPolicy.from_execution_policy(policy)
         launch = self._sandbox.wrap(
-            normalized, cwd=resolved_cwd, policy=self._policy
+            normalized,
+            root=self._root,
+            cwd=resolved_cwd,
+            policy=sandbox_policy,
+        )
+        attestation = _sandbox_attestation(
+            sandbox_profile=self._sandbox.profile,
+            policy=policy,
+            repository_root=self._root,
+            command_cwd=resolved_cwd,
+            launch=launch,
         )
         return self._run_process(
             launch,
             reported_command=normalized,
             cwd=resolved_cwd,
             timeout=timeout,
+            attestation=attestation,
         )
 
     def _run_process(
@@ -106,6 +126,7 @@ class LocalShellAdapter:
         reported_command: tuple[str, ...],
         cwd: Path,
         timeout: int,
+        attestation: SandboxAttestation,
     ) -> CommandResult:
         """Run a command in its own process group and reap the whole tree.
 
@@ -137,6 +158,7 @@ class LocalShellAdapter:
                 stdout="",
                 stderr=f"failed to start command: {exc}",
                 timed_out=False,
+                sandbox_attestation=attestation,
             )
 
         try:
@@ -150,6 +172,7 @@ class LocalShellAdapter:
                 stdout=stdout,
                 stderr=f"{stderr}\n{message}".strip(),
                 timed_out=True,
+                sandbox_attestation=attestation,
             )
 
         return CommandResult(
@@ -158,6 +181,7 @@ class LocalShellAdapter:
             stdout=stdout or "",
             stderr=stderr or "",
             timed_out=False,
+            sandbox_attestation=attestation,
         )
 
     def _terminate_group(self, process: subprocess.Popen) -> tuple[str, str]:
@@ -250,3 +274,28 @@ def _coerce_output(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return value.decode(errors="replace")
     return value
+
+
+def _sandbox_attestation(
+    *,
+    sandbox_profile: str,
+    policy: CommandExecutionPolicy,
+    repository_root: Path,
+    command_cwd: Path,
+    launch: Sequence[str],
+) -> SandboxAttestation:
+    writable_mounts = tuple(
+        str((repository_root / path).resolve()) for path in policy.writable_paths
+    )
+    launch_digest = hashlib.sha256(
+        b"\0".join(part.encode("utf-8") for part in launch)
+    ).hexdigest()
+    return SandboxAttestation(
+        sandbox_profile=sandbox_profile,
+        command_policy_digest=policy.digest,
+        repository_root=str(repository_root),
+        command_working_directory=str(command_cwd),
+        network_mode=policy.network,
+        writable_mounts=writable_mounts,
+        launch_digest=launch_digest,
+    )

@@ -23,6 +23,7 @@ from ticket_agent.jira.models import JiraExecutionError, JiraTicket
 from ticket_agent.jira.work_item_loader import JiraWorkItemLoader
 from ticket_agent.orchestrator.runner import TicketClaimFailedError, TicketWorkItem
 from ticket_agent.orchestrator.state import TicketState
+from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
 
 
 def test_fake_jira_transition_ticket_uses_status_names():
@@ -113,13 +114,38 @@ def test_fake_jira_execution_path_runner_claim_failure_does_not_mark_failed():
     assert client.comments_for("AGENT-123") == []
 
 
+def test_jira_execution_preflight_refuses_without_claim_or_failure_transition():
+    client = FakeJiraClient(_ticket())
+    runner = _FakeRunner(_state())
+    coordinator = _coordinator(
+        client,
+        runner,
+        execution_preflight=_FailingPreflight(),
+    )
+
+    with pytest.raises(SandboxUnavailableError, match="sandbox unavailable"):
+        asyncio.run(coordinator.run_ticket("AGENT-123"))
+
+    ticket = client.ticket("AGENT-123")
+    assert runner.calls == []
+    assert ticket.status == STATUS_TODO
+    assert ticket.labels == [LABEL_AI_READY]
+    assert client.comments_for("AGENT-123") == []
+
+
 def _coordinator(
     client: FakeJiraClient,
     runner: _FakeRunner,
+    execution_preflight=None,
 ) -> JiraExecutionCoordinator:
     loader = JiraWorkItemLoader(client)
     execution_service = JiraExecutionService(client, component_id="runner-1")
-    return JiraExecutionCoordinator(loader, execution_service, runner)
+    return JiraExecutionCoordinator(
+        loader,
+        execution_service,
+        runner,
+        execution_preflight=execution_preflight,
+    )
 
 
 def _ticket(**updates: Any) -> JiraTicket:
@@ -161,3 +187,8 @@ class _FakeRunner:
         if isinstance(self.result, BaseException):
             raise self.result
         return self.result
+
+
+class _FailingPreflight:
+    def check(self):
+        raise SandboxUnavailableError("sandbox unavailable")

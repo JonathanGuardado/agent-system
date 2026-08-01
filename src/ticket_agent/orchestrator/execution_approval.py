@@ -19,6 +19,7 @@ from ticket_agent.sqlite_support import connect as _connect
 from ticket_agent.sqlite_support import write_transaction as _write_transaction
 from ticket_agent.orchestrator.services import ApprovalDecision
 from ticket_agent.orchestrator.state import TicketState
+from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
 
 
 ApprovalStatus = Literal["pending", "approved", "rejected", "expired"]
@@ -411,6 +412,7 @@ class ExecutionApprovalCommandHandler:
         on_resumed: ResumeCallback | None = None,
         dry_run: bool = False,
         on_dry_run_decision: DryRunDecisionCallback | None = None,
+        execution_preflight: ExecutionPreflight | None = None,
     ) -> None:
         self._store = store
         self._graph = graph
@@ -419,6 +421,7 @@ class ExecutionApprovalCommandHandler:
         self._on_resumed = on_resumed
         self._dry_run = dry_run
         self._on_dry_run_decision = on_dry_run_decision
+        self._execution_preflight = execution_preflight
 
     def matches(self, text: str) -> bool:
         return _parse_commands(text) is not None
@@ -504,6 +507,8 @@ class ExecutionApprovalCommandHandler:
         )
 
     async def _resume(self, ticket_key: str, action: str) -> Any:
+        if self._execution_preflight is not None:
+            self._execution_preflight.check()
         decision = "approved" if action == "approve" else action
         return await self._graph.ainvoke(
             Command(resume={"decision": decision}),

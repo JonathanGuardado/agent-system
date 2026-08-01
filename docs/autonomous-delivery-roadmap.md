@@ -68,10 +68,11 @@ claim that is easy to make from reading the roadmap alone:
   `ModelRouterReviewService.review` (`orchestrator/model_services.py:825-860`)
   sends `state.summary` and `state.implementation_result`, both written by the
   implementing model.
-- **Production contract commands are not sandboxed.**
-  `_build_contract_shell` (`orchestrator/local_services.py:397-408`)
-  constructs `LocalShellAdapter` without injecting a sandbox, so
-  `shell_adapter.py:64` falls back to `NullSandbox()`.
+- **Production contract commands are sandboxed before mutation.** P13.3a wires
+  one enforcing preflight through the runner, Jira and feedback coordinators,
+  approval/restart resume, worktree creation, and both contract-test paths.
+  Each real wrapper launch emits a `SandboxAttestation`. P13 remains partial
+  because context assembly / the knowledge map is still open.
 
 **The system never merges pull requests automatically.** The runtime opens
 PRs; it does not merge them. Any review or merge is performed by a human, as
@@ -194,9 +195,9 @@ point of the status table:
    reviewed.
 
 **A capability is never ✅ because its types exist.** Level 1 alone is 🔶. Two
-current examples: the sandbox is fully implemented and unused by the production
-shell path, and goal contracts are compiled, signed, and stored while gating
-nothing.
+current example: goal contracts are compiled, signed, and stored while gating
+nothing. P13.3a is runtime-enforced, but P13 remains partial until its separate
+context-assembly / knowledge-map work lands.
 
 ## Phase status
 
@@ -211,7 +212,7 @@ commits, tests, and prior discussion, so they are never renumbered or reused.
 | P10 | 🔶 | Observability foundations exist; later producers and operational evidence are missing |
 | P11 | ✅ | Agent-system owns selector config; the library copy is documented example-only and resolution is pinned by test |
 | P12 | 🔶 | Contracts exist; durable spine, action journal, propagation, and enforcement are missing |
-| P13 | 🔶 | Trust-root/sandbox implementation exists, but production command execution does not use it |
+| P13 | 🔶 | Sandbox preflight and per-command evidence are enforced; context assembly / knowledge map remains |
 | P14 | ⬜ | Immutable-SHA verification |
 | P15 | ⬜ | Independent complete-diff review |
 | P16 | ⬜ | Repeatable evaluation and demonstration evidence |
@@ -812,10 +813,9 @@ bounds.
 
 ### P13 — Harness manifest, trust root, sandbox
 
-> **🔶 Partial. The sandbox is implemented and unused by the production shell
-> path** — see the warning at the end of this section before citing any of
-> this as working. Everything below describes what was built; it does not
-> describe what currently executes.
+> **🔶 Partial. P13.3a enforces the sandbox in the production shell path and
+> before execution mutation.** Context assembly / the knowledge map remains,
+> so the whole phase is not complete.
 
 Goal: declare what may run, where it may write, and what holds verification
 authority — then isolate execution so untrusted repository code cannot reach
@@ -867,29 +867,26 @@ profile granting `userns` to `/usr/bin/bwrap` (same shape as the shipped
 inside the sandbox. The sandbox bounds the damage; it does not eliminate
 supply-chain execution. `lab.yaml` therefore uses `npm ci --ignore-scripts`.
 
-#### ⚠️ P13 is NOT runtime-enforced. Do not describe the sandbox as landed.
+#### P13.3a landed — runtime boundary, not merely host capability
 
-**The production shell path does not use the sandbox.**
-`_build_contract_shell` (`orchestrator/local_services.py:397-408`) constructs
+`ExecutionEnvironmentPreflight` now refuses a non-`bwrap` wrapper before lock
+acquisition, Jira claim, feedback/local worktree creation, or graph resume. The
+production runtime injects it independently into the runner, Jira and feedback
+coordinators, approval resume, restart resume, and implementation service.
+Construction stays lazy, so an incapable host can still run intake/proposal
+work while repository execution is refused.
 
-```python
-return LocalShellAdapter(worktree_path, allowed_commands=allowed_commands)
-```
+`RuntimeShellFactory` is the single production factory used by
+`AdapterTestService` and the model-callable contract test runner. The port
+accepts adapter-independent `CommandExecutionPolicy`; the adapter translates
+it to `SandboxPolicy`. `CommandSpec` requires explicit write mounts and network
+mode, Bubblewrap binds the repository root separately from the nested working
+directory, and every actual wrapper launch returns a complete
+`SandboxAttestation` on `CommandResult`.
 
-with no `sandbox=` argument, and `LocalShellAdapter.__init__`
-(`adapters/local/shell_adapter.py:64`) falls back to
-`self._sandbox = sandbox or NullSandbox()`. **`build_sandbox(...)` has zero
-callers in `src/` outside its own module.** Every repo-contract command — every
-`npm ci`, every test run — therefore executes unisolated today.
-
-This is worse than simply missing, because `runtime_smoke` reports
-`sandbox: pass` on a host where bubblewrap works. That check proves the
-*host* is capable; it says nothing about whether the code path uses it. A
-reader is invited to conclude the opposite of the truth.
-
-**Availability is not enforcement.** The two must be asserted separately:
-`BubblewrapSandbox.available()` answers "could we isolate", and only an
-assertion that the executing adapter holds a non-null sandbox answers "did we".
+Smoke no longer conflates three facts. It reports host capability, hard-wired
+runtime enforcement, and evidence from a harmless command sent through the
+production wrapper path as separate checks.
 
 P13.1/P13.2 checklist — **landed**:
 
@@ -940,14 +937,14 @@ enforce, and per-command enforcement evidence.
 
 P13.3a checklist:
 
-- [ ] sandbox preflight guards every production entry point before mutation
-- [ ] `CommandExecutionPolicy` crosses the port without adapter imports
-- [ ] command schema declares and validates writes/network
-- [ ] nested working directories bind the repository root and chdir within it
-- [ ] both production shell paths enforce the same runtime-bound sandbox
-- [ ] real wrapper emits complete `SandboxAttestation`
-- [ ] smoke separates capability, configuration, and enforcement evidence
-- [ ] controlled-local-endpoint tests prove install network and non-install
+- [x] sandbox preflight guards every production entry point before mutation
+- [x] `CommandExecutionPolicy` crosses the port without adapter imports
+- [x] command schema declares and validates writes/network
+- [x] nested working directories bind the repository root and chdir within it
+- [x] both production shell paths enforce the same runtime-bound sandbox
+- [x] real wrapper emits complete `SandboxAttestation`
+- [x] smoke separates capability, configuration, and enforcement evidence
+- [x] controlled-local-endpoint tests prove install network and non-install
       isolation without relying on the public internet
 - [ ] context assembly / knowledge map (separate P13.3 remainder)
 

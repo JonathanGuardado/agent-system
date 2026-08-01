@@ -17,6 +17,7 @@ from ticket_agent.config.trust_root import (
     resolve_closure,
 )
 from ticket_agent.domain.errors import RepoContractError
+from ticket_agent.domain.execution import CommandNetworkMode
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -55,6 +56,8 @@ class CommandSpec:
     command: tuple[str, ...]
     timeout_seconds: int
     working_directory: str
+    writable_paths: tuple[str, ...] = ()
+    network: CommandNetworkMode = "none"
 
 
 @dataclass(frozen=True)
@@ -355,12 +358,45 @@ def _parse_command_spec(raw: Any, label: str) -> CommandSpec:
         raise RepoContractError(
             f"{label}.working_directory must be a non-empty string"
         )
+    _validate_relative_path(working_directory, f"{label}.working_directory")
+
+    if "writable_paths" not in raw:
+        raise RepoContractError(f"{label}.writable_paths is required")
+    writable_paths = _parse_string_list(
+        raw.get("writable_paths"),
+        f"{label}.writable_paths",
+        required=True,
+        allow_empty=True,
+    )
+    for index, writable_path in enumerate(writable_paths):
+        _validate_relative_path(
+            writable_path,
+            f"{label}.writable_paths[{index}]",
+        )
+
+    if "network" not in raw:
+        raise RepoContractError(f"{label}.network is required")
+    network = raw.get("network")
+    if network not in ("none", "install"):
+        raise RepoContractError(f"{label}.network must be 'none' or 'install'")
+    if network == "install" and label != "commands.install":
+        raise RepoContractError(
+            f"{label}.network may be 'install' only for commands.install"
+        )
 
     return CommandSpec(
         command=command,
         timeout_seconds=timeout_seconds,
         working_directory=working_directory,
+        writable_paths=writable_paths,
+        network=network,
     )
+
+
+def _validate_relative_path(value: str, label: str) -> None:
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts:
+        raise RepoContractError(f"{label} must stay within the repository root")
 
 
 def _parse_policy(raw: Any) -> ExecutionPolicy:
@@ -513,29 +549,39 @@ def _scaffold_test_command(language: str, package_manager: str) -> CommandSpec:
             command=("python", "-m", "pytest", "tests/", "-x", "-q"),
             timeout_seconds=120,
             working_directory=".",
+            writable_paths=(".pytest_cache",),
+            network="none",
         )
     if language == "javascript":
         return CommandSpec(
             command=(package_manager, "test"),
             timeout_seconds=120,
             working_directory=".",
+            writable_paths=("node_modules/.cache",),
+            network="none",
         )
     if language == "go":
         return CommandSpec(
             command=("go", "test", "./..."),
             timeout_seconds=120,
             working_directory=".",
+            writable_paths=(),
+            network="none",
         )
     if language == "rust":
         return CommandSpec(
             command=("cargo", "test"),
             timeout_seconds=300,
             working_directory=".",
+            writable_paths=("target",),
+            network="none",
         )
     return CommandSpec(
         command=("echo", "no-tests-configured"),
         timeout_seconds=10,
         working_directory=".",
+        writable_paths=(),
+        network="none",
     )
 
 
@@ -545,6 +591,8 @@ def _scaffold_lint_command(language: str) -> CommandSpec | None:
             command=("python", "-m", "ruff", "check", "src/"),
             timeout_seconds=60,
             working_directory=".",
+            writable_paths=(".ruff_cache",),
+            network="none",
         )
     return None
 
@@ -572,6 +620,8 @@ def _write_contract_yaml(contract: RepoContract, path: Path) -> None:
         f"    command: {list(contract.commands.test.command)}",
         f"    timeout_seconds: {contract.commands.test.timeout_seconds}",
         f"    working_directory: \"{contract.commands.test.working_directory}\"",
+        f"    writable_paths: {list(contract.commands.test.writable_paths)}",
+        f"    network: {contract.commands.test.network}",
     ]
     if contract.commands.lint:
         lines += [
@@ -579,6 +629,8 @@ def _write_contract_yaml(contract: RepoContract, path: Path) -> None:
             f"    command: {list(contract.commands.lint.command)}",
             f"    timeout_seconds: {contract.commands.lint.timeout_seconds}",
             f"    working_directory: \"{contract.commands.lint.working_directory}\"",
+            f"    writable_paths: {list(contract.commands.lint.writable_paths)}",
+            f"    network: {contract.commands.lint.network}",
         ]
     else:
         lines.append("  lint: null")

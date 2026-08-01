@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import logging
 import re
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,7 @@ from yaml import YAMLError
 from ticket_agent.adapters.local.file_adapter import LocalFileAdapter
 from ticket_agent.adapters.local.git_adapter import GitAdapter
 from ticket_agent.adapters.local.shell_adapter import LocalShellAdapter
+from ticket_agent.adapters.local.sandbox import Sandbox
 from ticket_agent.adapters.local.test_adapter import LocalTestAdapter
 from ticket_agent.config.repo_contract import (
     RepoContract,
@@ -27,6 +29,7 @@ from ticket_agent.domain.errors import (
     RepoContractError,
 )
 from ticket_agent.domain.git import WorktreeInfo
+from ticket_agent.domain.execution import CommandExecutionPolicy, SandboxAttestation
 
 _LOGGER = logging.getLogger(__name__)
 from ticket_agent.orchestrator.git_services import (
@@ -35,6 +38,7 @@ from ticket_agent.orchestrator.git_services import (
     GitService,
     PullRequestOpener,
 )
+from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
 from ticket_agent.orchestrator.state import TicketState
 from ticket_agent.ports.tools import CommandResult, FilePort, ShellPort, TestPort
 
@@ -140,6 +144,8 @@ class LocalImplementationService:
         implementation_step: ImplementationStep | None = None,
         lock_id_factory: LockIdFactory | None = None,
         test_runner_factory: TestRunnerFactory | None = None,
+        shell_factory: ShellFactory | None = None,
+        execution_preflight: ExecutionPreflight | None = None,
     ) -> None:
         self._contract_dir = Path(contract_dir)
         self._contract_loader = contract_loader
@@ -147,9 +153,15 @@ class LocalImplementationService:
         self._file_adapter_factory = file_adapter_factory
         self._implementation_step = implementation_step or _prepare_only_step
         self._lock_id_factory = lock_id_factory or _new_short_lock_id
-        self._test_runner_factory = (
-            test_runner_factory or _make_contract_test_runner
+        self._shell_factory = shell_factory or _build_contract_shell
+        self._test_runner_factory = test_runner_factory or (
+            lambda worktree, contract: _make_contract_test_runner(
+                worktree,
+                contract,
+                shell_factory=self._shell_factory,
+            )
         )
+        self._execution_preflight = execution_preflight
 
     async def implement(self, state: TicketState) -> dict[str, Any]:
         contract_path = _contract_path(state, self._contract_dir)
@@ -173,6 +185,8 @@ class LocalImplementationService:
             )
 
         try:
+            if self._execution_preflight is not None:
+                self._execution_preflight.check()
             worktree = _worktree_info(
                 state,
                 repo_path,
@@ -395,22 +409,62 @@ def _normalize_repo_name(repository: str) -> str:
     return Path(normalized).name
 
 
-def _build_contract_shell(worktree_path: Path, contract: RepoContract) -> ShellPort:
-    allowed_commands = [contract.commands.test.command]
-    if (
-        contract.policy.dependency_install_allowed
-        and contract.commands.install is not None
-    ):
-        allowed_commands.append(contract.commands.install.command)
+def _build_contract_shell(
+    worktree_path: Path,
+    contract: RepoContract,
+    *,
+    sandbox: Sandbox | None = None,
+) -> ShellPort:
+    allowed_commands = [
+        spec.command for spec in contract.commands.gate_commands().values()
+    ]
     return LocalShellAdapter(
         worktree_path,
         allowed_commands=allowed_commands,
+        sandbox=sandbox,
     )
+
+
+class RuntimeShellFactory:
+    """Build every production contract shell from the same live preflight."""
+
+    requires_enforcing_sandbox = True
+
+    def __init__(self, preflight: ExecutionPreflight) -> None:
+        self._preflight = preflight
+
+    def __call__(self, worktree_path: Path, contract: RepoContract) -> ShellPort:
+        return _build_contract_shell(
+            worktree_path,
+            contract,
+            sandbox=self._preflight.check(),
+        )
+
+    def probe_attestation(self) -> SandboxAttestation:
+        """Execute a harmless command through the production wrapper path."""
+
+        with tempfile.TemporaryDirectory(prefix="ticket-agent-sandbox-probe-") as raw:
+            root = Path(raw)
+            shell = LocalShellAdapter(
+                root,
+                allowed_commands=(("/bin/true",),),
+                sandbox=self._preflight.check(),
+            )
+            result = shell.run(
+                ("/bin/true",),
+                policy=CommandExecutionPolicy(),
+            )
+        if not result.ok or result.sandbox_attestation is None:
+            detail = result.stderr.strip() or f"exit code {result.returncode}"
+            raise AgentSystemError(f"sandbox enforcement probe failed: {detail}")
+        return result.sandbox_attestation
 
 
 def _make_contract_test_runner(
     worktree_path: Path,
     contract: RepoContract,
+    *,
+    shell_factory: ShellFactory = _build_contract_shell,
 ) -> TestRunner:
     """Build a zero-arg runner for the repo-contract test command.
 
@@ -421,7 +475,7 @@ def _make_contract_test_runner(
 
     def run() -> TestResult:
         try:
-            shell = _build_contract_shell(worktree_path, contract)
+            shell = shell_factory(worktree_path, contract)
             adapter = LocalTestAdapter(shell, contract)
             command_result = adapter.run_tests()
         except (AgentSystemError, OSError, ValueError) as exc:
@@ -521,4 +575,5 @@ __all__ = [
     "ImplementationContext",
     "LocalImplementationService",
     "PullRequestOpener",
+    "RuntimeShellFactory",
 ]

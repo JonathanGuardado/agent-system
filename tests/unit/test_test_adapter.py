@@ -56,11 +56,15 @@ def test_test_adapter_run_tests_uses_contract_commands_test(tmp_path):
     command: [{sys.executable!r}, "-c", "print('tests ran')"]
     timeout_seconds: 5
     working_directory: "."
+    writable_paths: []
+    network: none
   lint: null
   install:
     command: [{sys.executable!r}, "-c", "print('install should not run')"]
     timeout_seconds: 5
     working_directory: "."
+    writable_paths: []
+    network: install
 """,
     )
     tests = LocalTestAdapter(_shell(worktree), contract)
@@ -79,11 +83,15 @@ def test_test_adapter_runs_install_before_tests_when_policy_allows(tmp_path):
     command: [{sys.executable!r}, "-c", "from pathlib import Path; assert Path('installed').exists(); print('tests ran')"]
     timeout_seconds: 5
     working_directory: "."
+    writable_paths: []
+    network: none
   lint: null
   install:
     command: [{sys.executable!r}, "-c", "from pathlib import Path; Path('installed').write_text('yes'); print('install ran')"]
     timeout_seconds: 5
     working_directory: "."
+    writable_paths: ["installed"]
+    network: install
 """,
         dependency_install_allowed=True,
     )
@@ -104,11 +112,15 @@ def test_test_adapter_returns_install_failure_without_running_tests(tmp_path):
     command: [{sys.executable!r}, "-c", "print('tests should not run')"]
     timeout_seconds: 5
     working_directory: "."
+    writable_paths: []
+    network: none
   lint: null
   install:
     command: [{sys.executable!r}, "-c", "import sys; print('install failed'); sys.exit(7)"]
     timeout_seconds: 5
     working_directory: "."
+    writable_paths: []
+    network: install
 """,
         dependency_install_allowed=True,
     )
@@ -129,10 +141,14 @@ def test_test_adapter_run_lint_uses_contract_commands_lint_when_present(tmp_path
     command: [{sys.executable!r}, "-c", "print('tests ran')"]
     timeout_seconds: 5
     working_directory: "."
+    writable_paths: []
+    network: none
   lint:
     command: [{sys.executable!r}, "-c", "print('lint ran')"]
     timeout_seconds: 5
     working_directory: "."
+    writable_paths: []
+    network: none
   install: null
 """,
     )
@@ -153,6 +169,8 @@ def test_test_adapter_run_lint_returns_none_when_lint_is_null(tmp_path):
     command: [{sys.executable!r}, "-c", "print('tests ran')"]
     timeout_seconds: 5
     working_directory: "."
+    writable_paths: []
+    network: none
   lint: null
   install: null
 """,
@@ -170,6 +188,8 @@ def test_test_adapter_does_not_auto_detect_commands(tmp_path):
     command: [{sys.executable!r}, "-c", "print('contract tests ran')"]
     timeout_seconds: 5
     working_directory: "."
+    writable_paths: []
+    network: none
   lint: null
   install: null
 """,
