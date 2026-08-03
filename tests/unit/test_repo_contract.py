@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import pytest
 
@@ -158,7 +159,7 @@ def test_rejects_install_network_mode_on_non_install_command(tmp_path):
     network: install
 """
 
-    with pytest.raises(RepoContractError, match="only for commands.install"):
+    with pytest.raises(RepoContractError, match=re.escape("only for commands.install")):
         load_repo_contract(
             _write_contract(tmp_path, _valid_contract(commands=commands))
         )
@@ -171,7 +172,7 @@ def test_rejects_missing_commands_test(tmp_path):
 """
     contract_path = _write_contract(tmp_path, _valid_contract(commands=commands))
 
-    with pytest.raises(RepoContractError, match="commands.test is required"):
+    with pytest.raises(RepoContractError, match=re.escape("commands.test is required")):
         load_repo_contract(contract_path)
 
 

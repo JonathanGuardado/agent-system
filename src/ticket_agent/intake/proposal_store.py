@@ -142,7 +142,7 @@ class ProposalStore:
         )
         placeholders = ",".join("?" for _ in active_statuses)
         sql = (
-            "SELECT proposal_json FROM active_proposals "
+            "SELECT proposal_json FROM active_proposals "  # noqa: S608 - column list is a module constant, never request data
             "WHERE slack_user_id = ? AND slack_thread_ts = ? "
             f"AND status IN ({placeholders}) "
             "ORDER BY created_at DESC LIMIT 1"

@@ -16,7 +16,7 @@ from collections.abc import Iterable
 import os
 import re
 
-SECRET_PLACEHOLDER = "<redacted-secret>"
+SECRET_PLACEHOLDER = "<redacted-secret>"  # noqa: S105 - the literal placeholder that replaces secrets, not a secret
 
 # Prefix-anchored provider token formats. Each is specific enough that a match
 # is a credential rather than a coincidence.

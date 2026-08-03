@@ -1042,6 +1042,7 @@ class _MarkDoneCoordinator:
         try:
             result = await self._coordinator.run_ticket(ticket_key)
         except Exception:
+            _LOGGER.exception("ticket %s raised out of the coordinator", ticket_key)
             return None
         if not _is_waiting_for_execution_approval_result(result):
             self._detector.mark_done(ticket_key)
@@ -1182,12 +1183,15 @@ def _install_signal_handlers(
 ) -> None:
     loop = asyncio.get_running_loop()
 
+    # Held so a fire-and-forget emit cannot be garbage collected mid-flight.
+    _shutdown_tasks: set[asyncio.Task[Any]] = set()
+
     def _request_shutdown(signal_name: str) -> None:
         if shutdown_event.is_set():
             return
         result = emit("app.shutdown_requested", {"signal": signal_name})
         if isawaitable(result):
-            loop.create_task(result)
+            _shutdown_tasks.add(loop.create_task(result))
         shutdown_event.set()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -1314,7 +1318,8 @@ def _runtime_repo_defaults(
     for path in sorted(contract_dir.glob("*.yaml")):
         try:
             contracts.append((path, load_repo_contract(path)))
-        except Exception:  # noqa: BLE001 - smoke/runtime preflight reports details
+        except Exception:
+            _LOGGER.warning("skipping unreadable repo contract %s", path, exc_info=True)
             continue
     if not contracts or not config.jira_target_projects:
         return {}

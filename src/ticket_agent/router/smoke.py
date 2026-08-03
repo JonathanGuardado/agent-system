@@ -38,7 +38,7 @@ def main(env: Mapping[str, str] | None = None) -> int:
 
     try:
         router = create_model_router(timeout_s=60)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - smoke CLI reports every failure as output, never a traceback
         print(
             "Router construction failed: "
             f"{exc.__class__.__name__}: {_safe_message(exc, env)}"
@@ -75,7 +75,7 @@ def main(env: Mapping[str, str] | None = None) -> int:
 
     try:
         response = asyncio.run(router.invoke(capability=CAPABILITY, messages=MESSAGES))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - smoke CLI reports every failure as output, never a traceback
         message = (
             f"Provider call failed: {exc.__class__.__name__}: "
             f"{_safe_message(exc, env)}"
@@ -161,9 +161,9 @@ def _format_token_usage(response: object) -> str:
 def _safe_message(exc: Exception, env: Mapping[str, str]) -> str:
     message = str(exc) or exc.__class__.__name__
     for key, value in env.items():
-        if "KEY" in key.upper() or "TOKEN" in key.upper() or "SECRET" in key.upper():
-            if value:
-                message = message.replace(value, "[redacted]")
+        upper = key.upper()
+        if value and ("KEY" in upper or "TOKEN" in upper or "SECRET" in upper):
+            message = message.replace(value, "[redacted]")
     return message
 
 

@@ -192,7 +192,7 @@ class TicketNodeRunner:
         try:
             self._autonomy_guard.check(state.goal_id, "implement")
             implementation_update = await self._implementation.implement(state)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - any node failure becomes a recorded failed result
             error = _error_message(exc)
             implementation_update = {
                 "implementation_result": {
@@ -252,7 +252,7 @@ class TicketNodeRunner:
         try:
             self._autonomy_guard.check(state.goal_id, "run_tests")
             test_result = await self._tests.run_tests(state)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - any node failure becomes a recorded failed result
             error = _error_message(exc)
             test_result = {"status": "failed", "tests_passed": False, "error": error}
         return self._mark_node(
@@ -267,7 +267,7 @@ class TicketNodeRunner:
         try:
             self._autonomy_guard.check(state.goal_id, "review")
             verification_result = await self._review.review(state)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - any node failure becomes a recorded failed result
             error = _error_message(exc)
             verification_result = {
                 "status": "failed",
@@ -297,7 +297,7 @@ class TicketNodeRunner:
         try:
             self._autonomy_guard.check(state.goal_id, "open_pull_request")
             pull_request_url = await self._pull_request.open_pull_request(state)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - any node failure becomes a recorded failed result
             error = _error_message(exc)
             return self._mark_node(
                 state,

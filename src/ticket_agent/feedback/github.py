@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from hashlib import sha256
 from inspect import isawaitable
 import json
+import logging
 from pathlib import Path
 import re
 import sqlite3
@@ -36,6 +37,8 @@ from ticket_agent.orchestrator.runner import TicketWorkItem
 from ticket_agent.orchestrator.state import TicketState
 
 EventEmitter = Callable[[str, dict[str, Any]], Any]
+
+_LOGGER = logging.getLogger(__name__)
 
 EVENT_FEEDBACK_POLL_STARTED = "feedback.poll_started"
 EVENT_FEEDBACK_ENQUEUED = "feedback.enqueued"
@@ -215,7 +218,7 @@ class GitHubFeedbackPoller:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                pass
+                _LOGGER.warning("feedback poll failed; retrying", exc_info=True)
             await self._sleep(self._poll_interval)
 
     async def _sleep(self, seconds: float) -> None:
@@ -477,7 +480,7 @@ class GitHubMergedDeliveryPoller:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                pass
+                _LOGGER.warning("delivery poll failed; retrying", exc_info=True)
             result = self._clock(self._poll_interval)
             if isawaitable(result):
                 await result
@@ -785,7 +788,8 @@ class GhCliFeedbackClient:
             env = self._credentials.gh_env(GH_ROLE_BOT)
             if env is not None:
                 kwargs["env"] = env
-        result = subprocess.run(tuple(command), **kwargs)
+        kwargs.setdefault("check", False)  # the returncode check is below
+        result = subprocess.run(tuple(command), **kwargs)  # noqa: PLW1510 - check is setdefault-ed above; the returncode check is below
         if result.returncode != 0:
             raise RuntimeError(_subprocess_failure_message(result))
         return result

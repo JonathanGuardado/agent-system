@@ -380,5 +380,6 @@ def test_observability_modules_import_standalone():
             [sys.executable, "-c", f"import {module}"],
             capture_output=True,
             text=True,
+            check=False,
         )
         assert result.returncode == 0, f"{module} failed to import: {result.stderr}"

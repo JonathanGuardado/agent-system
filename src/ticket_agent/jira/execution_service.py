@@ -244,7 +244,7 @@ class JiraExecutionService:
         )
         try:
             await self.mark_released(ticket_key)
-        except JiraExecutionError:
+        except JiraExecutionError:  # noqa: TRY203 - re-raised so the broad handler below cannot swallow cancellation
             raise
         await self._call_jira(
             _DRY_RUN_APPROVED_OPERATION,
@@ -522,6 +522,7 @@ class JiraExecutionService:
         except asyncio.CancelledError:
             raise
         except Exception:
+            _LOGGER.warning("execution event emit failed", exc_info=True)
             return
 
 

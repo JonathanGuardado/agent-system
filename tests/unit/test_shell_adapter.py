@@ -153,6 +153,7 @@ def test_timeout_reaps_the_whole_process_tree(tmp_path):
             ["pgrep", "-f", f"^/bin/sleep {marker}$"],
             capture_output=True,
             text=True,
+            check=False,
         )
         return found.stdout.split()
 
@@ -165,7 +166,9 @@ def test_timeout_reaps_the_whole_process_tree(tmp_path):
         assert survivors() == []
     finally:
         subprocess.run(
-            ["pkill", "-f", f"^/bin/sleep {marker}$"], capture_output=True
+            ["pkill", "-f", f"^/bin/sleep {marker}$"],
+            capture_output=True,
+            check=False,
         )
 
 

@@ -295,7 +295,8 @@ class SQLiteExecutionApprovalStore:
             """,
             (ticket_key,),
         ).fetchone()
-        assert row is not None
+        if row is None:
+            raise RuntimeError("approval row vanished between write and read-back")
         return _row_to_approval(row)
 
     def _upsert_approval_locked(self, approval: ExecutionApproval) -> None:

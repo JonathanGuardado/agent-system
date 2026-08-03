@@ -66,8 +66,11 @@ class OwnershipChecker:
 
         # R2: agent component mismatch → skip.
         component = ticket.fields.get(FIELD_AGENT_ASSIGNED_COMPONENT)
-        if isinstance(component, str) and component.strip():
-            if component.strip() != self._component_id:
+        if (
+            isinstance(component, str)
+            and component.strip()
+            and component.strip() != self._component_id
+        ):
                 return OwnershipDecision(
                     eligible=False,
                     reason="different_component",

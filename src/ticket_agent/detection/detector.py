@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from inspect import isawaitable
+import logging
 from logging import Logger
 from typing import Any, Protocol
 
 from ticket_agent.detection.ownership import OwnershipChecker
 from ticket_agent.jira.constants import LABEL_AI_READY, STATUS_TODO
 from ticket_agent.jira.models import JiraTicket
+
+_LOGGER = logging.getLogger(__name__)
 
 EventEmitter = Callable[[str, Mapping[str, Any]], Any]
 TicketQueue = asyncio.Queue
@@ -152,12 +155,13 @@ class DetectionComponent:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                _LOGGER.warning("detection poll failed; backing off", exc_info=True)
                 backoff = min(backoff * 2, self._max_backoff)
                 if backoff <= 0:
                     backoff = self._poll_interval
             try:
                 await self._clock(backoff if backoff > 0 else self._poll_interval)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError:  # noqa: TRY203 - re-raised so the broad handler below cannot swallow cancellation
                 raise
 
     async def _emit(self, event_name: str, **payload: Any) -> None:

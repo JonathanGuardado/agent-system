@@ -58,7 +58,7 @@ async def reconcile_expired_locks(
                 await _emit_reconciled(emit, lock, jira_cleaned=jira_cleaned)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - one bad lock must not stop reconciling the rest
             await _emit_reconcile_failed(emit, lock, exc)
             continue
     return reconciled

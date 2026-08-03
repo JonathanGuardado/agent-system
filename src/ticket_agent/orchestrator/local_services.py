@@ -33,8 +33,6 @@ from ticket_agent.domain.execution import CommandExecutionPolicy, SandboxAttesta
 from ticket_agent.domain.git import WorktreeInfo
 from ticket_agent.goal.journal import GoalActionJournal, ProbeResult
 from ticket_agent.goal.types import LoopState, canonical_json, digest
-
-_LOGGER = logging.getLogger(__name__)
 from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
 from ticket_agent.orchestrator.git_services import (
     GhPullRequestOpener,
@@ -44,6 +42,8 @@ from ticket_agent.orchestrator.git_services import (
 )
 from ticket_agent.orchestrator.state import TicketState
 from ticket_agent.ports.tools import CommandResult, FilePort, ShellPort, TestPort
+
+_LOGGER = logging.getLogger(__name__)
 
 TestResult = dict[str, Any]
 ImplementationResult = dict[str, Any]

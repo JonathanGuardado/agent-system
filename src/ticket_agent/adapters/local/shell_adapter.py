@@ -228,7 +228,7 @@ class LocalShellAdapter:
 
 def _normalize_command(command: Sequence[str]) -> tuple[str, ...]:
     if isinstance(command, str):
-        raise ValueError("command must be a non-empty sequence of non-empty strings")
+        raise ValueError("command must be a non-empty sequence of non-empty strings")  # noqa: TRY004 - one validation contract regardless of why the command is invalid
     normalized = tuple(command)
     if not normalized or not all(isinstance(part, str) and part for part in normalized):
         raise ValueError("command must be a non-empty sequence of non-empty strings")

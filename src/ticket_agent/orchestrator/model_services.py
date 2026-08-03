@@ -445,7 +445,7 @@ class IterativeImplementationService:
                     ),
                     turns_used=turns_used,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - any model failure becomes a recorded failed implementation
                 return self._record_loop_end(
                     state,
                     _failed_implementation_result(
@@ -912,7 +912,7 @@ def _mapping_envelope_field(response: Mapping[str, Any]) -> str | None:
     has_metadata = bool(_MODEL_ENVELOPE_METADATA_FIELDS.intersection(response))
     invalid_metadata_field: str | None = None
 
-    for field in _MODEL_ENVELOPE_FIELDS:
+    for field in _MODEL_ENVELOPE_FIELDS:  # noqa: F402 - loop-local; `field` from dataclasses is only used at class scope
         if field not in response or response[field] is None:
             continue
         value = response[field]
@@ -1079,7 +1079,7 @@ def _optional_tool_arg_int(
         return None
     value = args[name]
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{action}.args.{name} must be an integer")
+        raise ValueError(f"{action}.args.{name} must be an integer")  # noqa: TRY004 - one validation contract regardless of why the payload is invalid
     if value < minimum:
         raise ValueError(f"{action}.args.{name} must be >= {minimum}")
     return value
@@ -1092,17 +1092,17 @@ def _optional_tool_arg_bool(
 ) -> bool:
     value = args[name]
     if not isinstance(value, bool):
-        raise ValueError(f"{action}.args.{name} must be a boolean")
+        raise ValueError(f"{action}.args.{name} must be a boolean")  # noqa: TRY004 - one validation contract regardless of why the payload is invalid
     return value
 
 
 def _tool_arg_string_list(value: Any, name: str, action: str) -> list[str]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        raise ValueError(f"{action}.args.{name} must be a list of strings")
+        raise ValueError(f"{action}.args.{name} must be a list of strings")  # noqa: TRY004 - one validation contract regardless of why the payload is invalid
     result: list[str] = []
     for index, item in enumerate(value):
         if not isinstance(item, str):
-            raise ValueError(
+            raise ValueError(  # noqa: TRY004 - one validation contract regardless of why the payload is invalid
                 f"{action}.args.{name}[{index}] must be a string"
             )
         result.append(item)
@@ -1534,7 +1534,7 @@ def _failed_test_excerpt(test_result: Any) -> str | None:
     if not failed:
         return None
     excerpt_parts: list[str] = []
-    for field in ("stdout", "stderr", "summary", "output", "error", "message"):
+    for field in ("stdout", "stderr", "summary", "output", "error", "message"):  # noqa: F402 - loop-local; `field` from dataclasses is only used at class scope
         value = test_result.get(field)
         if isinstance(value, str) and value.strip():
             excerpt_parts.append(f"{field}: {value.strip()}")
@@ -1559,7 +1559,7 @@ def _failed_implementation_excerpt(implementation_result: Any) -> str | None:
         return None
 
     excerpt_parts: list[str] = []
-    for field in ("status", "error_code", "error", "summary"):
+    for field in ("status", "error_code", "error", "summary"):  # noqa: F402 - loop-local; `field` from dataclasses is only used at class scope
         value = implementation_result.get(field)
         if isinstance(value, str) and value.strip():
             excerpt_parts.append(f"{field}: {value.strip()}")

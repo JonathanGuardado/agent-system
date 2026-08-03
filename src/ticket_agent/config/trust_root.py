@@ -255,8 +255,8 @@ def pointer_values(document: Any, pointers: Sequence[str]) -> dict[str, Any]:
 
 def _read_pointer(document: Any, pointer: str) -> Any:
     node = document
-    for token in [t for t in pointer.split("/") if t]:
-        token = token.replace("~1", "/").replace("~0", "~")
+    for raw_token in [t for t in pointer.split("/") if t]:
+        token = raw_token.replace("~1", "/").replace("~0", "~")
         if isinstance(node, Mapping) and token in node:
             node = node[token]
         elif isinstance(node, list) and token.isdigit() and int(token) < len(node):

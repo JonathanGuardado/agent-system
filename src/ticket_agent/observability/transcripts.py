@@ -33,7 +33,7 @@ import logging
 from pathlib import Path
 import re
 from threading import RLock
-from typing import Any, Protocol, TextIO, Self
+from typing import Any, Protocol, Self, TextIO
 
 from ticket_agent.redaction import redact
 
@@ -228,8 +228,8 @@ class JsonlTranscriptRecorder:
             for handle in self._handles.values():
                 try:
                     handle.close()
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception:
+                    _LOGGER.warning("transcript handle close failed", exc_info=True)
             self._handles.clear()
 
     def __enter__(self) -> Self:
@@ -302,8 +302,8 @@ class JsonlTranscriptRecorder:
             _, evicted = self._handles.popitem(last=False)
             try:
                 evicted.close()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception:
+                _LOGGER.warning("evicted transcript handle close failed", exc_info=True)
         return handle
 
     def _note_failure(self, exc: Exception) -> None:

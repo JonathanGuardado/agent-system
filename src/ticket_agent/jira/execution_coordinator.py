@@ -203,7 +203,7 @@ class JiraExecutionCoordinator:
             await self._execution_service.mark_failed(ticket_key, _error_message(error))
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - reporting failure must not mask the original execution failure
             await self._emit(
                 EVENT_JIRA_EXECUTION_FAILURE_REPORT_FAILED,
                 ticket_key=ticket_key,
@@ -274,7 +274,7 @@ class JiraExecutionCoordinator:
                 )
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Slack delivery is best-effort; the event records the miss
             await self._emit(
                 EVENT_JIRA_EXECUTION_SLACK_NOTIFICATION_FAILED,
                 ticket_key=state.ticket_key,
@@ -303,7 +303,7 @@ class JiraExecutionCoordinator:
                 await result
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - cleanup failure is reported, never raised over the run result
             await self._emit(
                 EVENT_JIRA_EXECUTION_WORKTREE_CLEANUP_FAILED,
                 ticket_key=state.ticket_key,
@@ -319,7 +319,7 @@ class JiraExecutionCoordinator:
                 await result
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - cleanup failure is reported, never raised over the run result
             await self._emit(
                 EVENT_JIRA_EXECUTION_CHECKPOINT_CLEANUP_FAILED,
                 ticket_key=ticket_key,

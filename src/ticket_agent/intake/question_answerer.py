@@ -198,7 +198,7 @@ class JiraQuestionAnswerHandler:
         if ticket_key is not None:
             try:
                 ticket = await self._jira_client.get_ticket(ticket_key)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - any Jira failure becomes a structured error reply
                 return {
                     "kind": "jira_ticket_error",
                     "ticket_key": ticket_key,
@@ -228,7 +228,7 @@ class JiraQuestionAnswerHandler:
                 jql,
                 fields=("summary", "status", "labels", "assignee", "updated"),
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - any search failure becomes a structured error reply
             return {
                 "kind": "jira_search_error",
                 "terms": terms,
@@ -261,7 +261,7 @@ class JiraQuestionAnswerHandler:
                 metadata={"workflow_node": "intake_question_answer"},
             )
             content = _model_content(response)
-        except Exception:
+        except Exception:  # noqa: BLE001 - any model failure falls back to a canned reply
             return _ModelReply(message=_fallback_reply(context))
 
         return _reply_from_model_response(response, content or _fallback_reply(context))

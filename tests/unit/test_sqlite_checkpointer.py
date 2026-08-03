@@ -124,7 +124,7 @@ def _row_count(db_path, table: str, ticket_key: str) -> int:
     }
     with sqlite3.connect(db_path) as conn:
         row = conn.execute(
-            f"SELECT COUNT(*) FROM {tables[table]} WHERE thread_id = ?",
+            f"SELECT COUNT(*) FROM {tables[table]} WHERE thread_id = ?",  # noqa: S608 - table name is a test constant
             (ticket_key,),
         ).fetchone()
     return int(row[0])

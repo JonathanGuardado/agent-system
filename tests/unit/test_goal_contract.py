@@ -145,8 +145,7 @@ def test_policy_digest_changes_with_the_rules():
     baseline = _POLICY.policy_digest
     changed = replace(
         _POLICY,
-        change_classes=_POLICY.change_classes
-        + (ChangeClassRule(name="extra", patterns=("x/*",), risk="low"),),
+        change_classes=(*_POLICY.change_classes, ChangeClassRule(name="extra", patterns=("x/*",), risk="low")),
     )
 
     assert changed.policy_digest != baseline

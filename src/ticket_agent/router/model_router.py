@@ -127,7 +127,7 @@ class ModelRouter:
                     messages,
                     self._timeout_s,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - any provider failure is an attempt; the chain continues
                 error = _error_message(exc)
                 attempts.append(
                     ModelAttempt(

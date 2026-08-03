@@ -553,7 +553,7 @@ async def _issues_for_goal_step(
     result = await client.search_issues(jql, fields=("key", "summary", "labels"))
     raw_items: object = result.get("issues", ()) if isinstance(result, Mapping) else result
     if not isinstance(raw_items, Sequence) or isinstance(raw_items, (str, bytes)):
-        raise RuntimeError("Jira goal-step probe returned a malformed issue list")
+        raise RuntimeError("Jira goal-step probe returned a malformed issue list")  # noqa: TRY004 - one validation contract regardless of why the payload is invalid
     tickets: list[JiraTicket] = []
     for item in raw_items:
         if isinstance(item, JiraTicket):

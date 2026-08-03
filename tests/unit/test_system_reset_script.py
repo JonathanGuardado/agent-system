@@ -134,5 +134,5 @@ def _seed_runtime_dbs(tmp_path) -> None:
 
 def _count(path, table: str) -> int:
     with sqlite3.connect(path) as con:
-        row = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+        row = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608 - table name is a test constant
     return int(row[0])

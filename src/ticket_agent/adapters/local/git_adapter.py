@@ -333,7 +333,8 @@ class GitAdapter:
         }
         if env is not None:
             kwargs["env"] = dict(env)
-        return subprocess.run(("git", *args), **kwargs)
+        kwargs.setdefault("check", False)  # callers inspect returncode
+        return subprocess.run(("git", *args), **kwargs)  # noqa: PLW1510 - check is setdefault-ed above so callers may still opt in
 
     def _git_bot_env(self) -> Mapping[str, str] | None:
         if self._credentials is None:
@@ -591,7 +592,8 @@ def _run_command(
     }
     if env is not None:
         kwargs["env"] = dict(env)
-    return subprocess.run(tuple(command), **kwargs)
+    kwargs.setdefault("check", False)  # callers inspect returncode
+    return subprocess.run(tuple(command), **kwargs)  # noqa: PLW1510 - check is setdefault-ed above so callers may still opt in
 
 
 def _validate_safe_ref_component(value: str, label: str) -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import pytest
@@ -265,8 +265,8 @@ def _response(data: Any, *, status_code: int = 200) -> FakeResponse:
 
 def _install_fake_async_client(monkeypatch, result):
     class FakeAsyncClient:
-        calls: list[dict[str, Any]] = []
-        instances: list[FakeAsyncClient] = []
+        calls: ClassVar[list[dict[str, Any]]] = []
+        instances: ClassVar[list[FakeAsyncClient]] = []
 
         def __init__(self, *, timeout: int) -> None:
             self.timeout = timeout

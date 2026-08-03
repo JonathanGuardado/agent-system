@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from inspect import isawaitable
+import logging
 from logging import Logger
 import re
 from typing import Any, Protocol
@@ -20,6 +21,8 @@ from ticket_agent.observability.telemetry import (
 )
 from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
 from ticket_agent.orchestrator.state import TicketState
+
+_LOGGER = logging.getLogger(__name__)
 
 Lock = TicketLock
 EventEmitter = Callable[[str, Mapping[str, Any]], Any]
@@ -311,7 +314,7 @@ class OrchestratorRunner:
                 lock_id=final_state.lock_id,
             )
             return final_state
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - the graph failure is recorded and re-raised with context
             graph_exception = exc
             graph_traceback = exc.__traceback__
             failed_state = _mark_failed(state, exc)
@@ -507,6 +510,11 @@ class OrchestratorRunner:
         try:
             return bool(has_checkpoint(ticket_key))
         except Exception:
+            _LOGGER.warning(
+                "checkpoint probe failed for %s; treating as absent",
+                ticket_key,
+                exc_info=True,
+            )
             return False
 
     async def _emit_heartbeat_failed(
@@ -648,4 +656,5 @@ async def _cancel_and_await(task: asyncio.Task[Any]) -> None:
     except asyncio.CancelledError:
         return
     except Exception:
+        _LOGGER.warning("background task failed during shutdown", exc_info=True)
         return

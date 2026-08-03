@@ -140,7 +140,10 @@ class ApprovalFlow:
         )
         draft = await _generate_proposal(self._generator, request)
         if draft.needs_clarification:
-            assert draft.clarification is not None
+            if draft.clarification is None:
+                raise ValueError(
+                    "generator asked for clarification without providing one"
+                )
             # Persist the placeholder so the answer returns through _revise with
             # this as prior, which disables a second clarification round.
             if draft.pending_proposal is not None:
@@ -155,7 +158,10 @@ class ApprovalFlow:
                 posted_message=draft.clarification,
             )
 
-        assert draft.proposal is not None
+        if draft.proposal is None:
+            raise ValueError(
+                "generator returned neither a proposal nor a clarification"
+            )
         proposal = draft.proposal
         self._store.save(proposal)
         message = _format_proposal_message(proposal)
@@ -396,7 +402,10 @@ class ApprovalFlow:
         )
         draft = await _generate_proposal(self._generator, request, prior=proposal)
         if draft.needs_clarification:
-            assert draft.clarification is not None
+            if draft.clarification is None:
+                raise ValueError(
+                    "generator asked for clarification without providing one"
+                )
             await self._post(
                 channel,
                 proposal.slack_thread_ts,
@@ -409,7 +418,10 @@ class ApprovalFlow:
                 posted_message=draft.clarification,
             )
 
-        assert draft.proposal is not None
+        if draft.proposal is None:
+            raise ValueError(
+                "generator returned neither a revision nor a clarification"
+            )
         revised = draft.proposal
         self._store.update(revised)
         message = _format_proposal_message(revised, revised=True)

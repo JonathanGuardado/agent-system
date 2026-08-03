@@ -39,7 +39,12 @@ requires_sandbox = pytest.mark.skipif(
 
 def _run(argv, env=None, timeout=30):
     return subprocess.run(
-        list(argv), capture_output=True, text=True, timeout=timeout, env=env
+        list(argv),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=env,
+        check=False,
     )
 
 

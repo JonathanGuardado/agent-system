@@ -391,7 +391,7 @@ class ModelRouterProposalGenerator:
                 level=logging.WARNING,
             )
             return await self._fallback_generate(request, prior)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - any model failure falls back to the deterministic generator
             _log_proposal_event(
                 "intake.proposal_model_fallback",
                 {
@@ -1105,7 +1105,7 @@ def _extract_json_object(text: str) -> dict[str, object]:
     except json.JSONDecodeError:
         parsed = _extract_fenced_or_embedded_json(stripped)
     if not isinstance(parsed, dict):
-        raise ValueError("model response JSON must be an object")
+        raise ValueError("model response JSON must be an object")  # noqa: TRY004 - one validation contract regardless of why the payload is invalid
     return parsed
 
 

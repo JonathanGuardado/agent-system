@@ -290,7 +290,7 @@ class SQLiteCheckpointer(BaseCheckpointSaver):
             current_v = current
         else:
             current_v = int(current.split(".")[0])
-        return f"{current_v + 1:032}.{random.random():016}"
+        return f"{current_v + 1:032}.{random.random():016}"  # noqa: S311 - jitter for lock backoff, not a security decision
 
     def delete_thread(self, thread_id: str) -> None:
         """Delete all checkpoints and writes for a thread (ticket_key).

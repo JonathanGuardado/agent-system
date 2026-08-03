@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from ticket_agent.adapters.local.file_adapter import LocalFileAdapter
@@ -108,7 +110,7 @@ def test_file_adapter_rejects_protected_write_paths(tmp_path, path):
 def test_file_adapter_rejects_root_pyproject_toml_when_not_allowed(tmp_path):
     adapter = LocalFileAdapter(_worktree(tmp_path), _contract())
 
-    with pytest.raises(PolicyViolationError, match="pyproject.toml"):
+    with pytest.raises(PolicyViolationError, match=re.escape("pyproject.toml")):
         adapter.write_text("pyproject.toml", "[project]\nname = 'example'\n")
 
 

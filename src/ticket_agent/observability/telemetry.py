@@ -175,8 +175,8 @@ class SQLiteTelemetryStore:
         with self._lock:
             try:
                 self._connection.close()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception:
+                _LOGGER.warning("telemetry store close failed", exc_info=True)
 
     # -- writes ------------------------------------------------------------
 
@@ -188,7 +188,7 @@ class SQLiteTelemetryStore:
             return
         column = f"{stage}_at"
         sql = (
-            f"INSERT INTO ticket_funnel (ticket_key, goal_id, {column}) "
+            f"INSERT INTO ticket_funnel (ticket_key, goal_id, {column}) "  # noqa: S608 - column name comes from the validated STAGES set, never from input
             "VALUES (?, ?, ?) "
             "ON CONFLICT(ticket_key) DO UPDATE SET "
             # First write wins: a resumed ticket must not reset its clock.
@@ -277,7 +277,7 @@ class SQLiteTelemetryStore:
     def funnel_counts(self, *, since: str | None = None) -> dict[str, int]:
         counts: dict[str, int] = {}
         for stage in STAGES:
-            sql = f"SELECT COUNT(*) FROM ticket_funnel WHERE {stage}_at IS NOT NULL"
+            sql = f"SELECT COUNT(*) FROM ticket_funnel WHERE {stage}_at IS NOT NULL"  # noqa: S608 - column name comes from the validated STAGES set, never from input
             params: tuple[Any, ...] = ()
             if since:
                 sql += f" AND {stage}_at >= ?"
