@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+import logging
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -11,6 +12,8 @@ from ticket_agent.config.repo_contract import load_repo_contract
 from ticket_agent.domain.errors import AgentSystemError
 from ticket_agent.goal.identity import normalize_goal_id
 from ticket_agent.goal.types import (
+    AUTONOMY_DECISION_SCHEMA_VERSION,
+    CANDIDATE_EVIDENCE_SOURCE,
     READINESS_CEILING,
     RISK_CEILING,
     AutonomyCeiling,
@@ -20,6 +23,8 @@ from ticket_agent.goal.types import (
     HarnessReadiness,
     resolve_autonomy,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 class AutonomyDecisionStore(Protocol):
@@ -64,6 +69,7 @@ class GoalAutonomyResolver:
         contract_dir: str | Path = "config/repos",
         repo_defaults: Mapping[str, Mapping[str, str]] | None = None,
         enforced_gate_names: tuple[str, ...] = ("test",),
+        candidate_evidence_ready: bool = False,
         clock: Any = None,
     ) -> None:
         self._store = store
@@ -71,7 +77,13 @@ class GoalAutonomyResolver:
         self._contract_dir = Path(contract_dir)
         self._repo_defaults = repo_defaults or {}
         self._enforced_gate_names = tuple(sorted(set(enforced_gate_names)))
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        # Derived, not configured. This stays False until isolated verification
+        # of a committed SHA (P14), independent complete-diff review (P15), and
+        # candidate-authorization enforcement are all live. The parameter exists
+        # so those phases can flip it and so tests can exercise both sides -- it
+        # is not an operator knob, and no configuration file reaches it.
+        self._candidate_evidence_ready = candidate_evidence_ready
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     def decide(
         self,
@@ -93,6 +105,7 @@ class GoalAutonomyResolver:
             sandbox_available=sandbox_available,
             per_command_approval=per_command_approval,
             all_required_gates_enforced=all_required_gates_enforced,
+            candidate_evidence_ready=self._candidate_evidence_ready,
             halted=halted,
         )
         configured = AutonomyMode.parse(self._configured_mode)
@@ -142,6 +155,21 @@ class GoalAutonomyResolver:
                 ),
             ),
             AutonomyCeiling(
+                source=CANDIDATE_EVIDENCE_SOURCE,
+                mode=(
+                    AutonomyMode.AUTONOMOUS
+                    if self._candidate_evidence_ready
+                    else AutonomyMode.IMPLEMENT
+                ),
+                detail=(
+                    "candidate_evidence_ready="
+                    f"{self._candidate_evidence_ready}; "
+                    "requires isolated verification of a committed SHA, "
+                    "independent complete-diff review, and enforced candidate "
+                    "authorization"
+                ),
+            ),
+            AutonomyCeiling(
                 source="operator:halted",
                 mode=(
                     AutonomyMode.OBSERVE if halted else AutonomyMode.AUTONOMOUS
@@ -161,6 +189,7 @@ class GoalAutonomyResolver:
                 required_gates=required_gates,
                 enforced_gate_names=self._enforced_gate_names,
                 decided_at=self._clock(),
+                schema_version=AUTONOMY_DECISION_SCHEMA_VERSION,
             )
         )
 
@@ -231,7 +260,7 @@ class AutonomyActionGuard:
     def check(self, goal_id: str | None, operation: str) -> AutonomyDecision:
         try:
             canonical_goal_id = normalize_goal_id(goal_id)
-        except Exception as exc:  # noqa: BLE001 - action boundaries fail closed
+        except Exception as exc:
             raise AutonomyActionError(
                 f"operation {operation} requires canonical goal identity"
             ) from exc
@@ -245,12 +274,42 @@ class AutonomyActionGuard:
             raise AutonomyActionError(
                 f"operation {operation} has no persisted autonomy decision"
             )
-        if decision.effective_mode < required:
+        effective = self._capped_mode(decision, operation)
+        if effective < required:
             raise AutonomyActionError(
                 f"operation {operation} requires {required}, "
-                f"effective mode is {decision.effective_mode}"
+                f"effective mode is {effective}"
             )
         return decision
+
+    def _capped_mode(
+        self,
+        decision: AutonomyDecision,
+        operation: str,
+    ) -> AutonomyMode:
+        """Re-apply the candidate-evidence ceiling at the effect boundary.
+
+        A decision persisted by an earlier build carries whatever mode that
+        build resolved -- possibly ``deliver`` -- and reading it back would
+        otherwise let a pre-upgrade row authorize an external effect the
+        current build would never have granted. Upgrading must not leave a
+        stale grant lying in the database.
+        """
+
+        if decision.is_candidate_evidence_aware:
+            return decision.effective_mode
+        capped = min(decision.effective_mode, AutonomyMode.IMPLEMENT)
+        if capped != decision.effective_mode:
+            LOGGER.warning(
+                "capping legacy autonomy decision for %s: operation=%s "
+                "persisted=%s capped=%s schema_version=%s",
+                decision.goal_id,
+                operation,
+                decision.effective_mode,
+                capped,
+                decision.schema_version,
+            )
+        return capped
 
 
 __all__ = [

@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import logging
-import os
-import re
-import signal
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from inspect import isawaitable
+import json
+import logging
+import os
 from pathlib import Path
+import re
+import signal
 from typing import Any
 
 from ticket_agent.config.repo_contract import load_repo_contract
@@ -23,8 +23,8 @@ from ticket_agent.feedback.github import (
     FeedbackWorker,
     GhCliFeedbackClient,
     GhCliMergedDeliveryClient,
-    GitHubMergedDeliveryPoller,
     GitHubFeedbackPoller,
+    GitHubMergedDeliveryPoller,
     SequentialDeliveryAdvancer,
     SQLiteFeedbackStore,
 )
@@ -63,8 +63,8 @@ from ticket_agent.jira.constants import (
     FIELD_AGENT_RETRY_COUNT,
     FIELD_EPIC_LINK,
     FIELD_MAX_ATTEMPTS,
-    FIELD_REPOSITORY,
     FIELD_REPO_PATH,
+    FIELD_REPOSITORY,
     FIELD_SLACK_CHANNEL,
     FIELD_SLACK_THREAD_TS,
     STATUS_IN_REVIEW,
@@ -75,11 +75,21 @@ from ticket_agent.jira.work_item_loader import JiraWorkItemLoader
 from ticket_agent.locking.checkpointer import SQLiteCheckpointer
 from ticket_agent.locking.reconciler import reconcile_expired_locks
 from ticket_agent.locking.sqlite_store import SQLiteLockManager
+from ticket_agent.observability.telemetry import (
+    NullTelemetryRecorder,
+    TelemetryRecorder,
+    open_telemetry_store,
+)
+from ticket_agent.observability.transcripts import (
+    JsonlTranscriptRecorder,
+    NullTranscriptRecorder,
+    TranscriptRecorder,
+)
 from ticket_agent.orchestrator.execution_approval import (
     ExecutionApproval,
     ExecutionApprovalCommandHandler,
-    SQLiteExecutionApprovalStore,
     SlackExecutionApprovalService,
+    SQLiteExecutionApprovalStore,
 )
 from ticket_agent.orchestrator.execution_environment import (
     ExecutionEnvironmentPreflight,
@@ -105,16 +115,6 @@ from ticket_agent.orchestrator.model_services import (
     ModelRouterProtocol,
     ModelRouterReviewService,
 )
-from ticket_agent.observability.telemetry import (
-    NullTelemetryRecorder,
-    TelemetryRecorder,
-    open_telemetry_store,
-)
-from ticket_agent.observability.transcripts import (
-    JsonlTranscriptRecorder,
-    NullTranscriptRecorder,
-    TranscriptRecorder,
-)
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.runner import OrchestratorRunner
 from ticket_agent.orchestrator.services import (
@@ -127,6 +127,13 @@ from ticket_agent.orchestrator.services import (
 )
 from ticket_agent.router.factory import create_model_router
 
+#: Whether the candidate-evidence chain is wired into the production path.
+#:
+#: A code constant, not a setting: flipping it is a reviewable change that
+#: should land only alongside P14 verification, P15 review, and enforced
+#: candidate authorization. While it is False the runtime cannot push or open a
+#: pull request at any configured autonomy mode.
+CANDIDATE_EVIDENCE_CAPABILITIES_LIVE = False
 
 EventEmitter = Callable[[str, Mapping[str, Any]], Any]
 SlackLoop = Callable[[], Awaitable[None]]
@@ -211,7 +218,7 @@ class AppConfig:
     github_admin_token: str | None = None
     github_bot_token: str | None = None
 
-    def github_credentials(self) -> "GitHubCredentials":
+    def github_credentials(self) -> GitHubCredentials:
         from ticket_agent.github import GitHubCredentials
 
         return GitHubCredentials(
@@ -409,6 +416,12 @@ def build_runtime(
         # Only the test node has a production executor whose failure blocks
         # progress today. Config declarations cannot manufacture coverage.
         enforced_gate_names=("test",),
+        # Deliberately not read from configuration. Candidate evidence exists
+        # only once isolated verification of a committed SHA, independent
+        # complete-diff review, and candidate-authorization enforcement are all
+        # wired into the production path. Until then no setting may raise
+        # autonomy past `implement`, and the constant is the record of that.
+        candidate_evidence_ready=CANDIDATE_EVIDENCE_CAPABILITIES_LIVE,
     )
     execution_preflight = ExecutionAuthorizationPreflight(
         environment_preflight,
@@ -1626,10 +1639,10 @@ def _runtime_payload(runtime: AgentSystemRuntime) -> dict[str, Any]:
 
 
 __all__ = [
-    "AgentSystemRuntime",
-    "AppConfig",
     "DEFAULT_ENV_PATH",
     "REQUIRED_ENV_VARS",
+    "AgentSystemRuntime",
+    "AppConfig",
     "RuntimeConfig",
     "RuntimeLoopExited",
     "StartupConfigError",

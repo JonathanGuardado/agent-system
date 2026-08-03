@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -11,8 +11,11 @@ from ticket_agent.goal.autonomy import (
 )
 from ticket_agent.goal.spine import SQLiteGoalSpine
 from ticket_agent.goal.types import (
+    AUTONOMY_DECISION_SCHEMA_VERSION,
+    CANDIDATE_EVIDENCE_SOURCE,
     AcceptanceCriterion,
     AuthorizationContext,
+    AutonomyCeiling,
     AutonomyDecision,
     AutonomyMode,
     GoalContract,
@@ -45,6 +48,7 @@ def test_unrecognized_configured_mode_persists_observe_with_named_inputs(tmp_pat
             "runtime:sandbox_available",
             "policy:per_command_approval",
             "runtime:derived_gate_enforcement",
+            CANDIDATE_EVIDENCE_SOURCE,
             "operator:halted",
         }
         assert spine.latest_autonomy_decision(GOAL_ID) == decision
@@ -77,7 +81,7 @@ def test_gate_enforcement_is_derived_from_wired_executors(tmp_path):
 def test_action_ceiling_binds_each_concrete_boundary(tmp_path):
     spine = SQLiteGoalSpine(tmp_path / "spine.sqlite3")
     guard = AutonomyActionGuard(spine)
-    decided_at = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    decided_at = datetime(2026, 8, 1, tzinfo=UTC)
     try:
         _save_mode(spine, AutonomyMode.OBSERVE, decided_at)
         with pytest.raises(AutonomyActionError, match="requires propose"):
@@ -114,7 +118,7 @@ def _contract() -> GoalContract:
             slack_channel="C1",
             slack_message_ts="1.0",
             allowlisted=True,
-            authorized_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            authorized_at=datetime(2026, 8, 1, tzinfo=UTC),
         ),
         original_request="Implement the feature",
         objective="Implement the feature",
@@ -128,14 +132,37 @@ def _save_mode(
     spine: SQLiteGoalSpine,
     mode: AutonomyMode,
     decided_at: datetime,
+    *,
+    candidate_evidence_ready: bool = True,
 ) -> None:
+    """Persist a decision at ``mode``.
+
+    Defaults to a current-capability decision so ladder assertions exercise the
+    guard's mode comparison rather than the legacy cap. Pass
+    ``candidate_evidence_ready=False`` to build a pre-upgrade row.
+    """
+
+    ceilings = (
+        (
+            AutonomyCeiling(
+                source=CANDIDATE_EVIDENCE_SOURCE,
+                mode=AutonomyMode.AUTONOMOUS,
+                detail="candidate_evidence_ready=True",
+            ),
+        )
+        if candidate_evidence_ready
+        else ()
+    )
     spine.save_autonomy_decision(
         AutonomyDecision(
             goal_id=GOAL_ID,
             contract_version=1,
             effective_mode=mode,
-            ceilings=(),
+            ceilings=ceilings,
             decided_at=decided_at,
+            schema_version=(
+                AUTONOMY_DECISION_SCHEMA_VERSION if candidate_evidence_ready else 0
+            ),
         )
     )
 
@@ -192,3 +219,122 @@ def _write_contract(tmp_path, *, required_gates: tuple[str, ...]) -> None:
         "\n".join(content) + "\n",
         encoding="utf-8",
     )
+
+
+def test_candidate_evidence_ceiling_caps_a_deliverable_contract(tmp_path):
+    """Configuration alone cannot buy delivery.
+
+    A standard-risk contract has `RISK_CEILING["standard"] == DELIVER`, and a
+    repository requiring only gates that happen to be wired satisfies gate
+    enforcement. Before this ceiling those two facts together were enough to
+    reach `deliver`.
+    """
+
+    spine = SQLiteGoalSpine(tmp_path / "spine.sqlite3")
+    resolver = GoalAutonomyResolver(
+        spine,
+        configured_mode="autonomous",
+        contract_dir=tmp_path,
+        enforced_gate_names=("test",),
+    )
+    try:
+        decision = resolver.decide(_contract(), sandbox_available=True)
+
+        assert decision.effective_mode <= AutonomyMode.IMPLEMENT
+        # Asserted as a contributed ceiling rather than a binding one: other
+        # ceilings may sit lower in a given fixture, but this one must always
+        # be present and must never exceed `implement`.
+        ceiling = next(
+            item
+            for item in decision.ceilings
+            if item.source == CANDIDATE_EVIDENCE_SOURCE
+        )
+        assert ceiling.mode is AutonomyMode.IMPLEMENT
+        assert decision.schema_version == AUTONOMY_DECISION_SCHEMA_VERSION
+    finally:
+        spine.close()
+
+
+def test_pre_upgrade_deliver_decision_cannot_open_or_push_a_candidate(tmp_path):
+    """The release test for this step.
+
+    An operator who ran an older build may already have a persisted `deliver`
+    or `autonomous` row. Upgrading must not leave that grant usable: the guard
+    re-applies the ceiling on read, so the stale row authorizes nothing
+    external no matter what mode it recorded.
+    """
+
+    spine = SQLiteGoalSpine(tmp_path / "spine.sqlite3")
+    guard = AutonomyActionGuard(spine)
+    decided_at = datetime(2026, 8, 1, tzinfo=UTC)
+    try:
+        for offset, mode in enumerate(
+            (AutonomyMode.DELIVER, AutonomyMode.AUTONOMOUS)
+        ):
+            _save_mode(
+                spine,
+                mode,
+                decided_at + timedelta(seconds=offset),
+                candidate_evidence_ready=False,
+            )
+            for operation in ("open_pull_request", "pr_create", "pr_merge"):
+                with pytest.raises(AutonomyActionError, match="effective mode"):
+                    guard.check(GOAL_ID, operation)
+
+            # Capped, not revoked: implementation still proceeds.
+            guard.check(GOAL_ID, "run_tests")
+    finally:
+        spine.close()
+
+
+def test_legacy_decision_is_identified_by_version_not_only_by_source(tmp_path):
+    """A forged ceiling record on a stale schema version is still legacy."""
+
+    spine = SQLiteGoalSpine(tmp_path / "spine.sqlite3")
+    guard = AutonomyActionGuard(spine)
+    try:
+        spine.save_autonomy_decision(
+            AutonomyDecision(
+                goal_id=GOAL_ID,
+                contract_version=1,
+                effective_mode=AutonomyMode.DELIVER,
+                ceilings=(
+                    AutonomyCeiling(
+                        source=CANDIDATE_EVIDENCE_SOURCE,
+                        mode=AutonomyMode.AUTONOMOUS,
+                        detail="claimed",
+                    ),
+                ),
+                decided_at=datetime(2026, 8, 1, tzinfo=UTC),
+                schema_version=0,
+            )
+        )
+
+        with pytest.raises(AutonomyActionError, match="effective mode"):
+            guard.check(GOAL_ID, "pr_create")
+    finally:
+        spine.close()
+
+
+def test_candidate_evidence_ready_restores_the_full_ladder(tmp_path):
+    """The ceiling lowers autonomy and nothing else.
+
+    Guards against a cap that silently becomes permanent once the phases that
+    should lift it are wired.
+    """
+
+    spine = SQLiteGoalSpine(tmp_path / "spine.sqlite3")
+    resolver = GoalAutonomyResolver(
+        spine,
+        configured_mode="deliver",
+        contract_dir=tmp_path,
+        enforced_gate_names=("test",),
+        candidate_evidence_ready=True,
+    )
+    try:
+        decision = resolver.decide(_contract(), sandbox_available=True)
+
+        assert CANDIDATE_EVIDENCE_SOURCE not in decision.binding_sources
+        assert decision.is_candidate_evidence_aware
+    finally:
+        spine.close()

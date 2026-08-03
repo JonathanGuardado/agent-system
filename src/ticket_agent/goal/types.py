@@ -21,7 +21,7 @@ downstream attestation by construction rather than by invalidation logic.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime
 from enum import IntEnum
@@ -50,7 +50,7 @@ class AutonomyMode(IntEnum):
     AUTONOMOUS = 4
 
     @classmethod
-    def parse(cls, value: object) -> "AutonomyMode":
+    def parse(cls, value: object) -> AutonomyMode:
         """Fail closed: anything unrecognized resolves to ``OBSERVE``."""
 
         if isinstance(value, cls):
@@ -75,6 +75,15 @@ class AutonomyCeiling:
     detail: str = ""
 
 
+#: Ceiling source naming the candidate-evidence gate. A decision that does not
+#: carry it was resolved by a build that could not enforce it.
+CANDIDATE_EVIDENCE_SOURCE = "runtime:candidate_evidence_ready"
+
+#: Capability version of autonomy resolution. Bumped when a new ceiling makes
+#: older decisions unsafe to honour rather than merely incomplete.
+AUTONOMY_DECISION_SCHEMA_VERSION = 1
+
+
 @dataclass(frozen=True, slots=True)
 class AutonomyDecision:
     """Persisted effective mode and every input ceiling for one goal."""
@@ -86,6 +95,23 @@ class AutonomyDecision:
     required_gates: tuple[str, ...] = ()
     enforced_gate_names: tuple[str, ...] = ()
     decided_at: datetime | None = None
+    #: Capability version of the resolver that produced this decision.
+    #: Defaults to ``0`` so a decision persisted before the
+    #: candidate-evidence ceiling existed is recognisable as legacy rather
+    #: than mistaken for a current one that simply omitted the source.
+    schema_version: int = 0
+
+    @property
+    def is_candidate_evidence_aware(self) -> bool:
+        """Whether this decision was resolved with the candidate-evidence ceiling.
+
+        A decision persisted before the ceiling existed cannot have been
+        constrained by it, so it must not be read as permitting delivery.
+        """
+
+        return self.schema_version >= AUTONOMY_DECISION_SCHEMA_VERSION and any(
+            ceiling.source == CANDIDATE_EVIDENCE_SOURCE for ceiling in self.ceilings
+        )
 
     @property
     def binding_sources(self) -> tuple[str, ...]:
@@ -218,7 +244,7 @@ class Budgets:
     max_changed_files: int | None = None
     max_diff_bytes: int | None = None
 
-    def exceeded_by(self, consumed: "Budgets") -> tuple[str, ...]:
+    def exceeded_by(self, consumed: Budgets) -> tuple[str, ...]:
         """Names of every budget ``consumed`` has met or passed."""
 
         breached: list[str] = []
@@ -589,7 +615,7 @@ class DigestSet:
     policy: str = ""
     trust_root: str = ""
 
-    def matches(self, other: "DigestSet") -> bool:
+    def matches(self, other: DigestSet) -> bool:
         return self == other
 
 
@@ -714,6 +740,7 @@ def resolve_autonomy(
     sandbox_available: bool,
     per_command_approval: bool = False,
     all_required_gates_enforced: bool = False,
+    candidate_evidence_ready: bool = False,
     halted: bool = False,
 ) -> tuple[AutonomyMode, tuple[str, ...]]:
     """Resolve the effective mode and name every ceiling that bound it.
@@ -741,6 +768,13 @@ def resolve_autonomy(
     if not all_required_gates_enforced:
         # A gate in off or shadow authorizes nothing.
         ceilings.append(("gate_enforcement", AutonomyMode.IMPLEMENT))
+    if not candidate_evidence_ready:
+        # Nothing may leave the machine until a committed candidate has been
+        # verified in isolation and reviewed independently. Gate enforcement
+        # does not imply this: a contract requiring only gates that happen to
+        # be wired satisfies `gate_enforcement` while producing no candidate
+        # evidence at all.
+        ceilings.append(("candidate_evidence", AutonomyMode.IMPLEMENT))
     if halted:
         ceilings.append(("halted", AutonomyMode.OBSERVE))
 
@@ -750,6 +784,10 @@ def resolve_autonomy(
 
 
 __all__ = [
+    "AUTONOMY_DECISION_SCHEMA_VERSION",
+    "CANDIDATE_EVIDENCE_SOURCE",
+    "OPERATION_POLICIES",
+    "PROBEABLE_ACTIONS",
     "READINESS_CEILING",
     "RISK_CEILING",
     "AcceptanceCriterion",
@@ -773,9 +811,7 @@ __all__ = [
     "HarnessReadiness",
     "LoopState",
     "NextAction",
-    "OPERATION_POLICIES",
     "OperationPolicy",
-    "PROBEABLE_ACTIONS",
     "RiskClass",
     "ScopeSpec",
     "StrategyRef",

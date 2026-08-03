@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+import json
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -111,7 +111,7 @@ class SQLiteGoalSpine:
     ) -> None:
         self._lock = RLock()
         self._connection = connect(db_path, busy_timeout_ms)
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._clock = clock or (lambda: datetime.now(UTC))
         with self._lock:
             self._connection.executescript(self._SCHEMA)
 
@@ -545,6 +545,10 @@ def _autonomy_decision_from_payload(payload: dict[str, Any]) -> AutonomyDecision
         required_gates=tuple(payload.get("required_gates", ())),
         enforced_gate_names=tuple(payload.get("enforced_gate_names", ())),
         decided_at=_parse_datetime(payload.get("decided_at")),
+        # A payload written before the candidate-evidence ceiling existed has
+        # no version. It reads as 0 -- legacy -- rather than being promoted to
+        # the current one by omission.
+        schema_version=int(payload.get("schema_version", 0)),
     )
 
 

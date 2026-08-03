@@ -6,7 +6,7 @@ negative cases matter more than the positive one.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -34,7 +34,7 @@ from ticket_agent.orchestrator.gates import (
     initial_outcomes,
 )
 
-_NOW = datetime(2026, 7, 27, tzinfo=timezone.utc)
+_NOW = datetime(2026, 7, 27, tzinfo=UTC)
 
 
 def _policy(required=("test",), **kwargs) -> VerificationPolicy:
@@ -155,23 +155,23 @@ def test_full_review_coverage_is_complete():
 
 
 def _contract(**kwargs) -> GoalContract:
-    defaults = dict(
-        goal_id="g1",
-        version=1,
-        schema_version=1,
-        authorization=AuthorizationContext(
+    defaults = {
+        "goal_id": "g1",
+        "version": 1,
+        "schema_version": 1,
+        "authorization": AuthorizationContext(
             requester="U1",
             slack_channel="C1",
             slack_message_ts="1.0",
             allowlisted=True,
             authorized_at=_NOW,
         ),
-        original_request="Add a landing page",
-        objective="Ship a landing page",
-        acceptance_criteria=(AcceptanceCriterion("c1", "Page renders"),),
-        permitted_scope=ScopeSpec(repositories=("demo",)),
-        risk_class="standard",
-    )
+        "original_request": "Add a landing page",
+        "objective": "Ship a landing page",
+        "acceptance_criteria": (AcceptanceCriterion("c1", "Page renders"),),
+        "permitted_scope": ScopeSpec(repositories=("demo",)),
+        "risk_class": "standard",
+    }
     defaults.update(kwargs)
     return GoalContract(**defaults)
 
@@ -225,6 +225,7 @@ def test_autonomy_is_bounded_by_every_ceiling():
         readiness="full",
         sandbox_available=True,
         all_required_gates_enforced=True,
+        candidate_evidence_ready=True,
     )
     assert mode is AutonomyMode.AUTONOMOUS
 
@@ -327,25 +328,25 @@ def test_ready_for_promotion_is_a_non_terminal_phase():
 
 def _authorization(**kwargs) -> CandidateAuthorization:
     record = _record(_policy(), {"test": GateOutcome(gate="test", status="passed")})
-    defaults = dict(
-        repository="demo",
-        goal_id="g1",
-        head_sha="a" * 40,
-        tree_oid="b" * 40,
-        base_branch="integration/g1",
-        base_oid="c" * 40,
-        merge_base_oid="c" * 40,
-        verification=record,
-        review_coverage=ReviewCoverage(
+    defaults = {
+        "repository": "demo",
+        "goal_id": "g1",
+        "head_sha": "a" * 40,
+        "tree_oid": "b" * 40,
+        "base_branch": "integration/g1",
+        "base_oid": "c" * 40,
+        "merge_base_oid": "c" * 40,
+        "verification": record,
+        "review_coverage": ReviewCoverage(
             files_total=1, files_reviewed=1, hunks_total=1, hunks_reviewed=1
         ),
-        review_verdict="approved",
-        digests=DigestSet(contract="x"),
-        trust_root_untouched=True,
-        secrets_clean=True,
-        scope_respected=True,
-        binaries_cleared=True,
-    )
+        "review_verdict": "approved",
+        "digests": DigestSet(contract="x"),
+        "trust_root_untouched": True,
+        "secrets_clean": True,
+        "scope_respected": True,
+        "binaries_cleared": True,
+    }
     defaults.update(kwargs)
     return CandidateAuthorization(**defaults)
 
@@ -410,14 +411,14 @@ def test_goal_achievement_requires_a_confirmed_promotion_pr():
 
 
 def test_goal_achievement_denies_on_unmet_criteria_and_failed_demo():
-    base = dict(
-        goal_id="g1",
-        contract_version=1,
-        non_goals_respected=True,
-        integration_checkpoint_passed=True,
-        promotion_pr_url="u",
-        promotion_pr_confirmed=True,
-    )
+    base = {
+        "goal_id": "g1",
+        "contract_version": 1,
+        "non_goals_respected": True,
+        "integration_checkpoint_passed": True,
+        "promotion_pr_url": "u",
+        "promotion_pr_confirmed": True,
+    }
     unmet = GoalAchievement(
         criteria={"c1": CriterionOutcome("c1", met=False)}, **base
     )

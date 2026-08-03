@@ -6,7 +6,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.constants import FAKE_AGENT_SYSTEM_REPO_PATH
 
+from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
+import ticket_agent.app as app_module
 from ticket_agent.app import (
     DEFAULT_ENV_PATH,
     REQUIRED_ENV_VARS,
@@ -17,17 +20,16 @@ from ticket_agent.app import (
     main,
     run_runtime,
 )
-from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
 from ticket_agent.goal.contract import Allowlist, GoalContractCompiler
 from ticket_agent.goal.policy import load_risk_policy
 from ticket_agent.goal.semantic_check import SemanticVerdict
 from ticket_agent.goal.signing import generate_key, load_signer
 from ticket_agent.intake.slack_listener import SlackEvent
-from ticket_agent.jira.constants import FIELD_AGENT_ASSIGNED_COMPONENT
 from ticket_agent.jira.constants import (
+    FIELD_AGENT_ASSIGNED_COMPONENT,
     FIELD_AGENT_RETRY_COUNT,
-    FIELD_REPOSITORY,
     FIELD_REPO_PATH,
+    FIELD_REPOSITORY,
     LABEL_AI_CLAIMED,
     LABEL_AI_EXECUTION_APPROVED,
     LABEL_AI_READY,
@@ -38,10 +40,25 @@ from ticket_agent.jira.constants import (
 from ticket_agent.jira.fake_client import FakeJiraClient
 from ticket_agent.jira.models import JiraTicket
 from ticket_agent.orchestrator.state import TicketState
-from tests.constants import FAKE_AGENT_SYSTEM_REPO_PATH
 
 
-def test_build_runtime_wires_execution_approval_commands_into_listener(tmp_path):
+@pytest.fixture
+def candidate_evidence_live(monkeypatch):
+    """Pretend the candidate-evidence chain is wired.
+
+    Delivery is capped at `implement` until P14 verification, P15 review, and
+    candidate authorization land, so the end-to-end path below cannot reach a
+    pull request under the real constant. Overriding it in code (never in
+    configuration) keeps the delivery path covered for the phases that will
+    build it, and makes the constant the single thing standing in the way.
+    """
+
+    monkeypatch.setattr(app_module, "CANDIDATE_EVIDENCE_CAPABILITIES_LIVE", True)
+
+
+def test_build_runtime_wires_execution_approval_commands_into_listener(
+    tmp_path, candidate_evidence_live
+):
     config = _authorized_config(
         RuntimeConfig(
             data_dir=tmp_path,
@@ -182,7 +199,7 @@ def test_build_runtime_wires_question_answering_without_creating_proposal(tmp_pa
         runtime.close()
 
 
-def test_fake_slack_to_jira_to_execution_pr_path(tmp_path):
+def test_fake_slack_to_jira_to_execution_pr_path(tmp_path, candidate_evidence_live):
     slack = _FakeSlack()
     jira_client = FakeJiraClient([])
     implementation = _Implementation()
@@ -663,19 +680,7 @@ def test_load_app_config_reads_env_file_and_runtime_options(tmp_path):
 def test_load_app_config_picks_up_github_tokens(tmp_path):
     env_path = tmp_path / "agent-system.env"
     env_path.write_text(
-        "\n".join(
-            [
-                "SLACK_BOT_TOKEN=xoxb-unit",
-                "SLACK_APP_TOKEN=xapp-unit",
-                "JIRA_BASE_URL=https://jira.example.test",
-                "JIRA_USER_EMAIL=agent@example.test",
-                "JIRA_API_KEY=jira-key",
-                "DEEPSEEK_API_KEY=deepseek-key",
-                "GEMINI_API_KEY=gemini-key",
-                "GH_ADMIN_TOKEN=admin-pat",
-                "GH_BOT_TOKEN=bot-pat",
-            ]
-        ),
+        "SLACK_BOT_TOKEN=xoxb-unit\nSLACK_APP_TOKEN=xapp-unit\nJIRA_BASE_URL=https://jira.example.test\nJIRA_USER_EMAIL=agent@example.test\nJIRA_API_KEY=jira-key\nDEEPSEEK_API_KEY=deepseek-key\nGEMINI_API_KEY=gemini-key\nGH_ADMIN_TOKEN=admin-pat\nGH_BOT_TOKEN=bot-pat",
         encoding="utf-8",
     )
 
@@ -691,17 +696,7 @@ def test_load_app_config_picks_up_github_tokens(tmp_path):
 def test_load_app_config_github_tokens_default_to_none(tmp_path):
     env_path = tmp_path / "agent-system.env"
     env_path.write_text(
-        "\n".join(
-            [
-                "SLACK_BOT_TOKEN=xoxb-unit",
-                "SLACK_APP_TOKEN=xapp-unit",
-                "JIRA_BASE_URL=https://jira.example.test",
-                "JIRA_USER_EMAIL=agent@example.test",
-                "JIRA_API_KEY=jira-key",
-                "DEEPSEEK_API_KEY=deepseek-key",
-                "GEMINI_API_KEY=gemini-key",
-            ]
-        ),
+        "SLACK_BOT_TOKEN=xoxb-unit\nSLACK_APP_TOKEN=xapp-unit\nJIRA_BASE_URL=https://jira.example.test\nJIRA_USER_EMAIL=agent@example.test\nJIRA_API_KEY=jira-key\nDEEPSEEK_API_KEY=deepseek-key\nGEMINI_API_KEY=gemini-key",
         encoding="utf-8",
     )
 
