@@ -24,10 +24,14 @@ from dataclasses import dataclass
 import os
 from typing import Literal
 
-GH_ROLE_ADMIN = "admin"
-GH_ROLE_BOT = "bot"
-
 GitHubRole = Literal["admin", "bot"]
+
+# Annotated rather than inferred: without this the constants are plain `str`,
+# so every call that passes one loses the distinction between the admin and bot
+# tokens at the type level -- which is the distinction the whole module exists
+# to keep.
+GH_ROLE_ADMIN: GitHubRole = "admin"
+GH_ROLE_BOT: GitHubRole = "bot"
 
 _GIT_GITHUB_EXTRAHEADER_KEY = "http.https://github.com/.extraheader"
 _PASSTHROUGH_ENV_VARS = ("PATH", "HOME", "VIRTUAL_ENV", "LANG", "LC_ALL")
