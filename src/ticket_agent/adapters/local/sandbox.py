@@ -126,6 +126,20 @@ class Sandbox(Protocol):
         """Identifier recorded alongside verification evidence."""
 
 
+ENFORCING_SANDBOX_PROFILE = "bwrap"
+
+
+def is_enforcing_sandbox(sandbox: Sandbox) -> bool:
+    """Whether ``sandbox`` is a real boundary rather than a passthrough.
+
+    One definition, consulted by both the environment preflight that refuses
+    execution and the autonomy resolver that records availability, so the two
+    can never disagree about what "sandboxed" means.
+    """
+
+    return sandbox.profile == ENFORCING_SANDBOX_PROFILE
+
+
 class NullSandbox:
     """Passthrough. Permitted only when a human supervises each command."""
 
@@ -327,6 +341,7 @@ def build_sandbox(*, required: bool) -> Sandbox:
 
 
 __all__ = [
+    "ENFORCING_SANDBOX_PROFILE",
     "ENV_ALLOWLIST",
     "BubblewrapSandbox",
     "NetworkPolicy",
@@ -335,4 +350,5 @@ __all__ = [
     "SandboxPolicy",
     "SandboxUnavailableError",
     "build_sandbox",
+    "is_enforcing_sandbox",
 ]

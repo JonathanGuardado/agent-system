@@ -2,23 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 import inspect
 import json
 import logging
+from pathlib import Path
 import re
 import tempfile
-from collections.abc import Callable
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Awaitable, Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
 from yaml import YAMLError
 
 from ticket_agent.adapters.local.file_adapter import LocalFileAdapter
 from ticket_agent.adapters.local.git_adapter import GitAdapter
-from ticket_agent.adapters.local.shell_adapter import LocalShellAdapter
 from ticket_agent.adapters.local.sandbox import Sandbox
+from ticket_agent.adapters.local.shell_adapter import LocalShellAdapter
 from ticket_agent.adapters.local.test_adapter import LocalTestAdapter
 from ticket_agent.config.repo_contract import (
     RepoContract,
@@ -29,22 +29,21 @@ from ticket_agent.domain.errors import (
     AgentSystemError,
     RepoContractError,
 )
-from ticket_agent.domain.git import WorktreeInfo
 from ticket_agent.domain.execution import CommandExecutionPolicy, SandboxAttestation
+from ticket_agent.domain.git import WorktreeInfo
 from ticket_agent.goal.journal import GoalActionJournal, ProbeResult
 from ticket_agent.goal.types import LoopState, canonical_json, digest
 
 _LOGGER = logging.getLogger(__name__)
+from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
 from ticket_agent.orchestrator.git_services import (
     GhPullRequestOpener,
     GitPullRequestPort,
     GitService,
     PullRequestOpener,
 )
-from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
 from ticket_agent.orchestrator.state import TicketState
 from ticket_agent.ports.tools import CommandResult, FilePort, ShellPort, TestPort
-
 
 TestResult = dict[str, Any]
 ImplementationResult = dict[str, Any]
@@ -374,7 +373,7 @@ class AdapterTestService:
                     # An ambiguous gate is safe to re-run. A completed result
                     # is restored from its canonical JSON identity below.
                     probe=lambda: ProbeResult(found=False),
-                    result_identity=lambda result: canonical_json(result),
+                    result_identity=canonical_json,
                     restore=_command_result_from_identity,
                 )
                 if outcome.value is None:
@@ -522,8 +521,7 @@ def _repo_name(state: TicketState) -> str | None:
 
 def _normalize_repo_name(repository: str) -> str:
     normalized = repository.rstrip("/")
-    if normalized.endswith(".git"):
-        normalized = normalized[:-4]
+    normalized = normalized.removesuffix(".git")
     return Path(normalized).name
 
 
@@ -531,7 +529,7 @@ def _build_contract_shell(
     worktree_path: Path,
     contract: RepoContract,
     *,
-    sandbox: Sandbox | None = None,
+    sandbox: Sandbox,
 ) -> ShellPort:
     allowed_commands = [
         spec.command for spec in contract.commands.gate_commands().values()

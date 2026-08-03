@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import hashlib
 import os
 from pathlib import Path
 import signal
 import subprocess
-from typing import Sequence
 
 from ticket_agent.adapters.local.sandbox import (
-    NullSandbox,
     Sandbox,
     SandboxPolicy,
 )
@@ -55,8 +54,8 @@ class LocalShellAdapter:
         worktree_root: str | Path,
         allowed_commands: Sequence[Sequence[str]],
         *,
+        sandbox: Sandbox,
         default_timeout_seconds: int = 300,
-        sandbox: Sandbox | None = None,
     ) -> None:
         self._root = Path(worktree_root).resolve(strict=True)
         self._allowed_commands = tuple(
@@ -65,7 +64,11 @@ class LocalShellAdapter:
         self._default_timeout_seconds = default_timeout_seconds
         # The allowlist and denylist stay as defense in depth. They are
         # command filtering, not a boundary -- the sandbox is the boundary.
-        self._sandbox = sandbox or NullSandbox()
+        #
+        # ``sandbox`` is required rather than defaulted: a caller that wants no
+        # boundary must name ``NullSandbox()`` and be visible in review. A
+        # default silently gives unsupervised code the weakest option.
+        self._sandbox = sandbox
 
         if default_timeout_seconds <= 0:
             raise ValueError("default_timeout_seconds must be positive")
@@ -142,7 +145,7 @@ class LocalShellAdapter:
         """
 
         try:
-            process = subprocess.Popen(  # noqa: S603 - argv is allowlisted above
+            process = subprocess.Popen(
                 list(launch),
                 cwd=cwd,
                 stdout=subprocess.PIPE,
@@ -236,9 +239,7 @@ def _is_blocked_command(command: tuple[str, ...]) -> bool:
     command_name = Path(command[0]).name
     if command_name in _DENYLISTED_COMMAND_NAMES:
         return True
-    if _contains_dangerous_argv_value(command):
-        return True
-    return False
+    return bool(_contains_dangerous_argv_value(command))
 
 
 def _contains_dangerous_argv_value(command: tuple[str, ...]) -> bool:

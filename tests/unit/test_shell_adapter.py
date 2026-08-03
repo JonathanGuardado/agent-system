@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-import sys
 import subprocess
+import sys
 import time
 
 import pytest
 
-from ticket_agent.adapters.local.sandbox import BubblewrapSandbox
+from ticket_agent.adapters.local.sandbox import BubblewrapSandbox, NullSandbox
 from ticket_agent.adapters.local.shell_adapter import LocalShellAdapter
 from ticket_agent.domain.errors import CommandNotAllowedError, PathBoundaryError
 from ticket_agent.domain.execution import CommandExecutionPolicy
-
 
 _POLICY = CommandExecutionPolicy()
 
@@ -25,6 +24,7 @@ def test_shell_adapter_runs_allowlisted_command_inside_worktree(tmp_path):
     shell = LocalShellAdapter(
         _worktree(tmp_path),
         allowed_commands=[(sys.executable, "-c")],
+        sandbox=NullSandbox(),
     )
 
     result = shell.run((sys.executable, "-c", "print('ok')"), policy=_POLICY)
@@ -39,6 +39,7 @@ def test_shell_adapter_rejects_command_outside_allowlist(tmp_path):
     shell = LocalShellAdapter(
         _worktree(tmp_path),
         allowed_commands=[(sys.executable, "-c")],
+        sandbox=NullSandbox(),
     )
 
     with pytest.raises(CommandNotAllowedError):
@@ -49,6 +50,7 @@ def test_shell_adapter_rejects_denylisted_command_even_if_allowlisted(tmp_path):
     shell = LocalShellAdapter(
         _worktree(tmp_path),
         allowed_commands=[("curl",)],
+        sandbox=NullSandbox(),
     )
 
     with pytest.raises(CommandNotAllowedError):
@@ -59,6 +61,7 @@ def test_shell_adapter_rejects_dangerous_argv_containing_docker(tmp_path):
     shell = LocalShellAdapter(
         _worktree(tmp_path),
         allowed_commands=[(sys.executable, "-c")],
+        sandbox=NullSandbox(),
     )
 
     with pytest.raises(CommandNotAllowedError):
@@ -67,7 +70,7 @@ def test_shell_adapter_rejects_dangerous_argv_containing_docker(tmp_path):
 
 def test_shell_adapter_rejects_cwd_outside_worktree(tmp_path):
     worktree = _worktree(tmp_path)
-    shell = LocalShellAdapter(worktree, allowed_commands=[(sys.executable, "-c")])
+    shell = LocalShellAdapter(worktree, allowed_commands=[(sys.executable, "-c")], sandbox=NullSandbox())
 
     with pytest.raises(PathBoundaryError):
         shell.run(
@@ -82,6 +85,7 @@ def test_shell_adapter_env_isolation_hides_parent_secret(tmp_path, monkeypatch):
     shell = LocalShellAdapter(
         _worktree(tmp_path),
         allowed_commands=[(sys.executable, "-c")],
+        sandbox=NullSandbox(),
     )
 
     result = shell.run(
@@ -101,6 +105,7 @@ def test_shell_adapter_env_isolation_sets_home_to_tmp(tmp_path):
     shell = LocalShellAdapter(
         _worktree(tmp_path),
         allowed_commands=[(sys.executable, "-c")],
+        sandbox=NullSandbox(),
     )
 
     result = shell.run(
@@ -116,6 +121,7 @@ def test_shell_adapter_timeout_returns_timed_out_result(tmp_path):
     shell = LocalShellAdapter(
         _worktree(tmp_path),
         allowed_commands=[(sys.executable, "-c")],
+        sandbox=NullSandbox(),
     )
 
     result = shell.run(
@@ -140,7 +146,7 @@ def test_timeout_reaps_the_whole_process_tree(tmp_path):
 
     marker = "918273"
     command = ("/bin/sh", "-c", f"/bin/sleep {marker} & sleep 60")
-    adapter = LocalShellAdapter(tmp_path, [command])
+    adapter = LocalShellAdapter(tmp_path, [command], sandbox=NullSandbox())
 
     def survivors() -> list[str]:
         found = subprocess.run(
@@ -165,7 +171,7 @@ def test_timeout_reaps_the_whole_process_tree(tmp_path):
 
 def test_failure_to_start_is_reported_not_raised(tmp_path):
     command = ("/nonexistent/binary", "--flag")
-    adapter = LocalShellAdapter(tmp_path, [command])
+    adapter = LocalShellAdapter(tmp_path, [command], sandbox=NullSandbox())
 
     result = adapter.run(command, policy=_POLICY)
 
@@ -203,3 +209,18 @@ def test_real_wrapper_attestation_carries_complete_command_evidence(tmp_path):
     assert attestation.network_mode == "none"
     assert attestation.writable_mounts == (str((root / ".cache").resolve()),)
     assert len(attestation.launch_digest) == 64
+
+
+def test_shell_adapter_requires_an_explicit_sandbox(tmp_path):
+    """A caller that wants no boundary must say so, visibly.
+
+    The previous default silently handed unsupervised code the weakest
+    option, so the omission is now a construction error rather than a
+    passthrough.
+    """
+
+    with pytest.raises(TypeError, match="sandbox"):
+        LocalShellAdapter(
+            _worktree(tmp_path),
+            allowed_commands=[(sys.executable, "-c")],
+        )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 
+from ticket_agent.adapters.local.sandbox import NullSandbox
 from ticket_agent.adapters.local.shell_adapter import LocalShellAdapter
 from ticket_agent.adapters.local.test_adapter import LocalTestAdapter
 from ticket_agent.config.repo_contract import load_repo_contract
@@ -45,7 +46,7 @@ test_dirs:
 
 
 def _shell(worktree):
-    return LocalShellAdapter(worktree, allowed_commands=[(sys.executable, "-c")])
+    return LocalShellAdapter(worktree, allowed_commands=[(sys.executable, "-c")], sandbox=NullSandbox())
 
 
 def test_test_adapter_run_tests_uses_contract_commands_test(tmp_path):

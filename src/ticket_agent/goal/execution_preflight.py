@@ -6,9 +6,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from ticket_agent.adapters.local.sandbox import Sandbox
-from ticket_agent.domain.execution import CommandExecutionPolicy
+from ticket_agent.adapters.local.sandbox import Sandbox, is_enforcing_sandbox
 from ticket_agent.domain.errors import AgentSystemError
+from ticket_agent.domain.execution import CommandExecutionPolicy
 from ticket_agent.goal.autonomy import GoalAutonomyResolver
 from ticket_agent.goal.contract import SQLiteGoalContractStore
 from ticket_agent.goal.identity import (
@@ -102,9 +102,16 @@ class ExecutionAuthorizationPreflight:
             raise ExecutionAuthorizationError(
                 f"repository {repository!r} is outside goal {goal_id} scope"
             )
+        # Observe the wrapper object that will actually build the launch argv,
+        # for the same reason ``ExecutionEnvironmentPreflight`` does: a
+        # configured policy string is not evidence. ``check`` above refuses a
+        # non-enforcing sandbox today, so this is currently always true -- but
+        # asserting a constant makes the guarantee depend on a raise forty
+        # lines away, and any injected preflight satisfying the protocol
+        # without that raise would silently record availability it never had.
         autonomy = self._autonomy_resolver.decide(
             effective.record.contract,
-            sandbox_available=True,
+            sandbox_available=is_enforcing_sandbox(sandbox),
         )
         if autonomy.effective_mode < AutonomyMode.IMPLEMENT:
             raise ExecutionAuthorizationError(
@@ -115,7 +122,7 @@ class ExecutionAuthorizationPreflight:
 
 
 __all__ = [
+    "AuthorizedExecutionContext",
     "ExecutionAuthorizationError",
     "ExecutionAuthorizationPreflight",
-    "AuthorizedExecutionContext",
 ]

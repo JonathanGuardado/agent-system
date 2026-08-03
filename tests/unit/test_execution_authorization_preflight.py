@@ -205,3 +205,74 @@ def _work_item() -> TicketWorkItem:
         goal_id=GOAL_ID,
         labels=(f"ai-goal-{GOAL_ID}", "ai-ready"),
     )
+
+
+class _RecordingResolver:
+    """Capture what the preflight claims about sandbox availability."""
+
+    def __init__(self) -> None:
+        self.sandbox_available: list[bool] = []
+
+    def decide(self, contract, *, sandbox_available, **kwargs):
+        del kwargs
+        self.sandbox_available.append(sandbox_available)
+        return AutonomyDecision(
+            goal_id=contract.goal_id,
+            contract_version=contract.version,
+            effective_mode=AutonomyMode.IMPLEMENT,
+            ceilings=(),
+        )
+
+
+class _PassthroughSandbox:
+    profile = "none"
+
+
+class _PermissiveEnvironment:
+    """A preflight satisfying the protocol without refusing a null sandbox."""
+
+    def check(self, subject=None):
+        del subject
+        return _PassthroughSandbox()
+
+
+def test_sandbox_availability_is_observed_not_asserted(tmp_path):
+    """Availability comes from the wrapper that will build the launch argv.
+
+    ``ExecutionEnvironmentPreflight`` refuses a non-enforcing sandbox, so in
+    production this is always true. Asserting the constant would make that
+    guarantee depend on a raise in a different object, and any preflight
+    satisfying the protocol without it would record availability it never had.
+    """
+
+    signer = Signer(generate_key())
+    store = SQLiteGoalContractStore(tmp_path / "contracts.sqlite3")
+    resolver = _RecordingResolver()
+    try:
+        store.save_outcome(_outcome(signer))
+        preflight = ExecutionAuthorizationPreflight(
+            _PermissiveEnvironment(), store, signer, resolver
+        )
+
+        preflight.check(_work_item())
+
+        assert resolver.sandbox_available == [False]
+    finally:
+        store.close()
+
+
+def test_enforcing_sandbox_reports_availability(tmp_path):
+    signer = Signer(generate_key())
+    store = SQLiteGoalContractStore(tmp_path / "contracts.sqlite3")
+    resolver = _RecordingResolver()
+    try:
+        store.save_outcome(_outcome(signer))
+        preflight = ExecutionAuthorizationPreflight(
+            _Environment(), store, signer, resolver
+        )
+
+        preflight.check(_work_item())
+
+        assert resolver.sandbox_available == [True]
+    finally:
+        store.close()

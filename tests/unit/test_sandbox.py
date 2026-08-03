@@ -11,8 +11,8 @@ import os
 from pathlib import Path
 import re
 import socket
-import threading
 import subprocess
+import threading
 
 import pytest
 
@@ -22,6 +22,7 @@ from ticket_agent.adapters.local.sandbox import (
     SandboxPolicy,
     SandboxUnavailableError,
     build_sandbox,
+    is_enforcing_sandbox,
 )
 
 _SECRET_RE = re.compile(
@@ -287,3 +288,24 @@ def test_build_sandbox_refuses_to_degrade_when_isolation_is_required(monkeypatch
         build_sandbox(required=True)
 
     assert isinstance(build_sandbox(required=False), NullSandbox)
+
+
+def test_null_sandbox_is_not_an_enforcing_boundary():
+    assert is_enforcing_sandbox(NullSandbox()) is False
+
+
+def test_bubblewrap_sandbox_is_an_enforcing_boundary():
+    assert is_enforcing_sandbox(BubblewrapSandbox()) is True
+
+
+def test_enforcement_is_decided_by_the_wrapper_not_a_configured_string():
+    """The preflight and the autonomy resolver must agree on one definition."""
+
+    class _ClaimsToBeSandboxed:
+        profile = "bwrap-ish"
+
+        def wrap(self, argv, *, root, cwd, policy):
+            del root, cwd, policy
+            return tuple(argv)
+
+    assert is_enforcing_sandbox(_ClaimsToBeSandboxed()) is False

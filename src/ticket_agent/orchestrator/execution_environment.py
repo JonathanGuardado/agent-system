@@ -6,9 +6,11 @@ from collections.abc import Callable
 from typing import Protocol
 
 from ticket_agent.adapters.local.sandbox import (
+    ENFORCING_SANDBOX_PROFILE,
     Sandbox,
     SandboxUnavailableError,
     build_sandbox,
+    is_enforcing_sandbox,
 )
 
 
@@ -35,10 +37,11 @@ class ExecutionEnvironmentPreflight:
         sandbox = self._sandbox_factory()
         # A configured policy string is not evidence. Consult the wrapper
         # object that will actually build the launch argv.
-        if sandbox.profile != "bwrap":
+        if not is_enforcing_sandbox(sandbox):
             raise SandboxUnavailableError(
-                "production repository commands require an enforcing bwrap "
-                f"sandbox; actual wrapper profile is {sandbox.profile!r}"
+                "production repository commands require an enforcing "
+                f"{ENFORCING_SANDBOX_PROFILE} sandbox; actual wrapper profile "
+                f"is {sandbox.profile!r}"
             )
         return sandbox
 

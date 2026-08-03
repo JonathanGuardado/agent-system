@@ -31,7 +31,7 @@ from ticket_agent.orchestrator.state import TicketState
 def test_preflight_rejects_null_wrapper_even_when_policy_text_says_bwrap():
     misleading_policy = SandboxPolicy()
     assert misleading_policy.profile().startswith("bwrap:")
-    preflight = ExecutionEnvironmentPreflight(lambda: NullSandbox())
+    preflight = ExecutionEnvironmentPreflight(NullSandbox)
 
     with pytest.raises(SandboxUnavailableError, match="actual wrapper profile"):
         preflight.check()
@@ -39,7 +39,7 @@ def test_preflight_rejects_null_wrapper_even_when_policy_text_says_bwrap():
 
 def test_both_contract_test_paths_use_the_same_enforcing_shell_factory(tmp_path):
     contract = _contract()
-    preflight = ExecutionEnvironmentPreflight(lambda: NullSandbox())
+    preflight = ExecutionEnvironmentPreflight(NullSandbox)
     shell_factory = RuntimeShellFactory(preflight)
     state = TicketState(
         ticket_key="AGENT-123",
