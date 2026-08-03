@@ -245,6 +245,105 @@ P11 → P13 → P12 → P14 → P15 → P16 → P17 → P18 → revisit P8
 
 ---
 
+## Cross-phase invariants
+
+These bind more than one phase, so they are stated once here rather than
+duplicated into each phase specification. **Every invariant is added here before
+the step that implements it**, and this section is authoritative when an
+implementation plan disagrees with it.
+
+### Engineering baseline
+
+The digests every later phase binds — contract, policy, harness, trust root —
+are only as trustworthy as the toolchain that computed them. That toolchain is
+therefore itself an invariant, not housekeeping.
+
+- Third-party and first-party Git dependencies are **pinned to a commit SHA
+  reachable from the dependency's default branch**. A pin to an unpushed commit
+  reproduces nothing and must fail CI.
+- A dependency lock file exists, and a clean clone reproduces the environment
+  that produced any recorded digest.
+- Lint and type checking are enforced at **zero accepted violations** — no
+  baseline file, no suppression list. Individual `# noqa` is permitted only with
+  a stated reason, and an unused one is itself a violation.
+- **Runtime readiness verifies that every declared gate command is executable**,
+  not merely declared. A gate naming a tool that is absent makes readiness
+  *unready*; it must never be reported as passing or silently skipped.
+- Declaring an empty or unexecutable gate to obtain a gate is worse than
+  declaring none: it reports `passed` for work nobody did.
+
+### Autonomy ceiling
+
+- Effective autonomy is capped at `implement` while **candidate evidence is not
+  demonstrably available** — that is, until isolated verification (P14),
+  independent complete-diff review (P15), and candidate-authorization
+  enforcement are all live. The cap is derived, not configured.
+- **Configuration alone can never raise effective autonomy** to push or open a
+  PR. A repository contract that happens to declare few required gates must not
+  widen authority as a side effect.
+- Autonomy decisions carry a schema/capability version. The action guard
+  **rejects or caps decisions that predate the candidate-evidence source**, so a
+  decision persisted before an upgrade cannot retain `deliver` after it.
+- The ceiling is re-evaluated **inside the concrete Git effects** — immediately
+  before push and before PR creation — not only at graph routing. A direct
+  service call must be as protected as a routed one.
+
+> **A gate promoted to `required` may cap autonomy as a side effect, because
+> `required_gates ⊆ enforced_gate_names` stops holding. That is an accident of
+> configuration, not a safeguard.** It must never be treated as a substitute for
+> the derived ceiling above. `config/repos/lab.yaml` is capped today only by this
+> accident.
+
+### Candidate authorization
+
+A construction-and-validation service that **fails closed** unless all of:
+
+- Repository and goal identities match the contract under which work began.
+- Head SHA and tree OID match the actual commit; base and merge-base OIDs match
+  the review record.
+- Verification and review name the **same** candidate SHA.
+- The full-diff digest matches the diff that was actually reviewed.
+- Contract, harness, policy, and trust-root digests are **non-empty and agree**
+  across current policy, the verification record, the review record, and the
+  authorization itself.
+- Expected chunk IDs and digests exactly equal the reviewed ones.
+
+Further:
+
+- Deterministic checks are recorded as **typed evidence records, never aggregate
+  booleans**. Missing, stale, malformed, mismatched, or legacy evidence denies.
+- `TicketState` carries record IDs and digests only; **delivery reloads the
+  authorization from durable storage** rather than trusting graph state.
+- Authorization is persisted **append-only**, with explicit expiration and
+  invalidation rules. Modifying any bound field invalidates it.
+- **Both `git_push` and `pr_create` are guarded immediately before their
+  external effect**, pushing an explicit candidate-SHA refspec and reading the
+  remote head back.
+- A denial records **every** failed condition, not the first.
+
+Scope note: candidate authorization answers whether an *intermediate* candidate
+may be delivered as a PR. It is not goal achievement — a goal may remain
+incomplete while a candidate is authorized.
+
+### Schema and evidence durability
+
+- Every SQLite database carries an **explicit schema version**. Migrations are
+  forward-only; an **unknown future version fails closed** rather than opening
+  the file.
+- A backup is taken before migrating, and an interrupted migration leaves the
+  database recoverable.
+- WAL, busy-timeout, foreign-key, and transaction settings are applied
+  uniformly across every database.
+- Every table is classified as **mutable state or immutable evidence**.
+  Evidence tables are append-only and reject update and delete.
+- Success must never overwrite failure: **every attempt stays queryable**. One
+  mutable row per action cannot express attempt history.
+- Signed artifacts stay deserializable and signature-verifiable under their
+  original canonical form across schema transitions. A legacy or missing field
+  is surfaced explicitly — **never silently upgraded**.
+
+---
+
 ## Detailed phase specifications
 
 Contiguous and in numeric order for lookup. **This is not the order to work
@@ -625,6 +724,57 @@ P12 checklist:
       spend on ambiguous recovery
 - [ ] non-convergence detection over repeated failure fingerprints and strategy
       outcomes
+- [ ] aggregate goal budget covering wall-clock, iterations, verification
+      retries, and rework rounds — not model cost alone
+
+#### P12 non-convergence and aggregate budget
+
+Something has to stop the `implement → commit → verify → review → implement`
+loop. Two mechanisms, and the first does not depend on the second.
+
+**Structural detection** fires regardless of whether any budget is declared, so
+a missing or generous limit can never buy an unbounded loop:
+
+- Fingerprints are computed over the **candidate tree OID**, not a diff string.
+  P14 already computes it for the commit natural key.
+- Detect: an identical tree repeated · **alternation between previously seen
+  trees (A → B → A)** · repeated verification failure with the same gate and
+  the same classification · a review objection already addressed once · no
+  material change between iterations.
+- **An unchanged candidate consumes no iteration budget.**
+- Non-convergence is a **deny-and-escalate terminal, never a retry.**
+  Escalation carries an evidence summary naming the repeated fingerprints,
+  their attempt IDs, and the budget line that tripped, if any.
+
+**Declared limits** bound the loops that are *not* structurally detectable —
+where each attempt differs genuinely but never converges:
+
+| Limit | Value |
+|---|---|
+| `iterations` (implementation attempts per goal) | **5** |
+| `verification_retries` (flake/transient re-runs) | **3** |
+| `rework_rounds` (after human PR review comments) | **3** |
+
+- These are **deployment defaults injected at
+  `GoalAuthorizer(default_budgets=…)` (`goal/authorizer.py:51`), never constants
+  in the enforcement path.** The resolver reads `GoalContract.budgets`; the
+  numbers only decide what an authorized contract carries when the human did not
+  override them.
+- A goal may declare **tighter** limits freely. **Widening a limit is a scope
+  change** and requires the same authority as any other budget change —
+  otherwise an agent can grant itself more attempts.
+- `authorizer.py:51` currently defaults to `Budgets()`, every field `None`, and
+  `None` means unlimited. **That is a fail-open.** An unattended goal with an
+  unset limit **denies at authorization** rather than resolving to unlimited.
+
+**Aggregate budget.** `Budgets` (`goal/types.py:213-219`) already declares
+`wall_seconds`, `tokens`, `cost_usd`, and `iterations`; add
+`verification_retries` and `rework_rounds`. The gap is enforcement, not
+vocabulary — the `budget_reservations` ledger (`goal/spine.py:80`,
+`reserve_action` at `spine.py:139`) reserves and settles **model cost only**.
+**Extend that ledger; do not replace it.** Concurrent actions cannot overspend
+one goal budget, restart does not reset consumed budget, and exhaustion produces
+`budget_exhausted` with an escalation rather than a silent stop.
 
 Exit criteria for P12:
 
@@ -1027,6 +1177,62 @@ Required changes:
   · `policy` → stop and escalate.
 - Detect gates that mutate the tree they are testing.
 
+#### P14 invariants
+
+**Digest bindings.** `VerificationPolicy` (`orchestrator/gates.py:111-125`)
+carries `contract_digest`, `harness_digest`, and `sandbox_profile` **all
+defaulting to `""`**, and has **no `policy_digest`** at all, despite the exit
+criteria below promising digest-mismatch rejection. Add `policy_digest`, and
+make every digest binding **required and non-empty**. An empty digest set denies;
+it must not read as "matches".
+
+**Run and attempt identity.**
+
+- Verification run ID, verification attempt, and gate attempt are **first-class
+  identity**, persisted **before** dispatch, never derived afterwards.
+- **An intentional retry gets a new attempt identity; crash recovery reuses the
+  existing one.** Conflating the two either loses evidence or double-charges.
+- Every attempt — failed and successful — **remains queryable**. This requires
+  new append-only tables; `action_records` is one mutable row per action
+  (`goal/spine.py:53`) whose `state`, `attempts`, and `error` are updated in
+  place, so success overwrites failure.
+- Exactly **one deterministic classification owner**. `flake` is an *observed*
+  fail-then-pass, never an initial assertion. `unknown` fails closed.
+- Backoff is **durable, via a next-attempt timestamp** — never an in-process
+  sleep, which a restart silently discards.
+- Attempt and wall-time budgets bound every retry path.
+- **Install is a prerequisite that runs once per verification**, and a failed
+  install must **prevent required gates from appearing to pass**.
+- Required versus optional gate failure behavior is stated explicitly, not
+  inferred.
+
+**Commit identity.** `action_records` carries
+`UNIQUE (goal_id, operation, natural_key)` (`goal/spine.py:76`) — **independent
+of iteration**, even though `action_id` includes iteration
+(`goal/types.py:500-503`). With `git_commit`'s natural key `branch:tree_digest`
+(`orchestrator/git_services.py:133`), an **A → B → A rework reproduces tree A's
+digest, collides with the original intent, and restores the old SHA.**
+
+- The natural key becomes **`branch + expected parent OID + target tree OID`**.
+- Crash recovery must prove the recovered commit has **exactly** the expected
+  parent and the expected tree.
+
+**Mutation detection.** State the scope for tracked, staged, ignored, and
+untracked content. Verification runs from a **read-only source checkout with
+ephemeral mounts reusing `CommandSpec.writable_paths`** — which already exists
+and is already required (`config/repo_contract.py:59`) and already drives
+Bubblewrap mounts. Specify temporary backing-directory creation and cleanup,
+whether install output persists across gates within one verification,
+per-command versus verification-wide writable paths, integrity-manifest
+exclusion rules, and symlink and path-boundary validation. Integrity is checked
+**before install and after every gate**, with before/after manifests recorded,
+and it must be **provable that declared writable output cannot mask tracked
+source mutation**.
+
+**Invalidation.** Any new implementation or commit **invalidates all downstream
+verification, review, and authorization state.** Stale evidence is not merely
+ignored; it is cleared.
+
 Exit criteria for P14:
 
 - **Every verification record binds four identifiers: the candidate SHA, the
@@ -1062,6 +1268,54 @@ Required changes:
 - Absorb P9's lint requirement here only insofar as review needs it; the gate
   itself belongs to P14.
 
+#### P15 invariants
+
+**Contributor provenance.** `implementation_result` is
+`{"status", "changed_files", "summary"}` (`orchestrator/model_services.py:243-245`)
+— it names **no contributor providers**, so there is no exclusion set to build.
+Persist provenance for **every response that causally contributed a
+candidate-changing tool call**, not merely the last one.
+
+**Exclusion happens inside the router.** `ModelRouter.invoke`
+(`router/model_router.py:86`) has no exclusion mechanism; `exclude_providers` is
+ignored metadata (`goal/semantic_check.py:175`) and enforcement is **post-hoc
+rejection** (`goal/semantic_check.py:181-188`) — the wrong provider is **called
+and paid for**, then discarded.
+
+- The **complete contributor set** is excluded **inside the router's selection
+  loop**, so an excluded provider is **never invoked**. "Excluded" must mean not
+  called, not called-and-rejected.
+- An exhausted filtered chain **fails closed** and escalates. It never falls
+  back to the implementer.
+- Record the originally selected chain, the filtered chain, the attempted chain,
+  the actual provider and model **per chunk**, and proof that excluded providers
+  were never called.
+- Provider exclusions and the routing-policy/selector digest are part of the
+  **journaled model-call request identity**.
+
+**Deterministic checks precede model disclosure.** Secret, scope, trust-root,
+binary, and submodule checks run **before any diff content reaches an external
+model** — a detected secret must not be exfiltrated to a provider in the act of
+asking whether it is a secret.
+
+**Chunking and coverage.** Deterministic chunking with **no truncation**; every
+chunk proven reviewed; missing or duplicated chunks deny. Review binds base OID,
+merge-base OID, candidate SHA, and full-diff digest. **Base movement invalidates
+or forces recomputation.**
+
+**Budgets before dispatch.** `max_diff_bytes`, token, model-cost, wall-time, and
+chunk-count budgets are enforced **before** dispatch, and oversized files or
+hunks deny or require human review. **"No truncation" must not mean unlimited
+model calls.**
+
+**Safe diff extraction.** External diff drivers and `textconv` are **disabled**;
+metadata is null-delimited and machine-readable; **filenames are treated as
+hostile and never used to build shell commands**; renames, mode changes,
+symlinks, binaries, and submodules are recorded explicitly; the base is bound to
+a fetched explicit snapshot. Prompt fencing is **defense in depth only** — pair
+it with structured prompts, tool restriction, strict output validation, and
+adversarial tests.
+
 Exit criteria for P15:
 
 - **Review consumes the complete real diff and records its coverage** — which
@@ -1092,6 +1346,34 @@ Required changes:
 - Route failures by kind: wrong output → defect · startup timeout → transient
   · missing driver → policy · a required demo that cannot run → deny without
   retry.
+
+#### P16 invariants
+
+**The oracle must be specifiable.** `AcceptanceCriterion.oracle`
+(`goal/types.py:201`) names only a *kind* — it cannot say what would constitute
+passing. An `OracleSpec` carries checker/assertion identity, expected result,
+inputs, timeout, and environment/tool digest.
+
+**A criterion has four outcomes, not two.** `CriterionOutcome.met: bool`
+(`goal/types.py:657`) cannot express `not_runnable`, so a criterion nobody could
+evaluate is indistinguishable from one that failed — or, worse, defaults to
+passing. Replace it with explicit status: `passed` · `failed` · `not_runnable` ·
+`not_run`. **A criterion without an `OracleSpec` is `not_runnable`, never a
+pass**, and a legacy string or missing oracle is `not_runnable` — never silently
+upgraded.
+
+**Corpus inputs are versioned**: base commits, contracts, policies, harnesses,
+environment image and tool versions, oracle definitions, budgets, and model
+configuration. Results are attributable to a candidate SHA, and the corpus
+re-runs with comparable results. **Graduation thresholds are recorded before
+execution**, not chosen afterwards to fit the outcome.
+
+**Relationship to candidate authorization.** P16 demonstration evidence
+contributes to `GoalAchievement`; candidate authorization governs whether an
+intermediate candidate may ship as a PR. Where a criterion is `demo_required`
+**and** must gate its own candidate, its demo evidence is collected and bound
+*before* authorization. Which criteria those are is a declared decision, not a
+default.
 
 Exit criteria for P16:
 
