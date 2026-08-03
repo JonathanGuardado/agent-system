@@ -27,11 +27,11 @@ from ticket_agent.jira.constants import (
     STATUS_TODO,
 )
 from ticket_agent.jira.work_item_loader import JiraWorkItemLoader
+from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
 from ticket_agent.orchestrator.git_services import (
     PullRequestOpener,
     WorktreeCleanupService,
 )
-from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
 from ticket_agent.orchestrator.runner import TicketWorkItem
 from ticket_agent.orchestrator.state import TicketState
 
@@ -496,7 +496,7 @@ class FeedbackWorker:
     def __init__(
         self,
         queue: asyncio.Queue[FeedbackItem],
-        coordinator: "FeedbackExecutionCoordinator",
+        coordinator: FeedbackExecutionCoordinator,
         *,
         emit: EventEmitter | None = None,
         stop_on_error: bool = False,
@@ -920,7 +920,7 @@ def _format_feedback(pr: dict[str, Any], feedback: Sequence[dict[str, str]]) -> 
 
 
 def _fingerprint(url: str, branch_name: str, text: str) -> str:
-    return sha256(f"{url}\0{branch_name}\0{text}".encode("utf-8")).hexdigest()
+    return sha256(f"{url}\0{branch_name}\0{text}".encode()).hexdigest()
 
 
 def _first_ticket_key(
@@ -963,9 +963,9 @@ __all__ = [
     "FeedbackWorker",
     "GhCliFeedbackClient",
     "GhCliMergedDeliveryClient",
-    "GitHubMergedDeliveryPoller",
     "GitHubFeedbackPoller",
+    "GitHubMergedDeliveryPoller",
     "MergedDeliveryItem",
-    "SequentialDeliveryAdvancer",
     "SQLiteFeedbackStore",
+    "SequentialDeliveryAdvancer",
 ]

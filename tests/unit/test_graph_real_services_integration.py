@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from ticket_agent.adapters.local.file_adapter import LocalFileAdapter
@@ -23,7 +22,6 @@ from ticket_agent.orchestrator.model_services import (
 )
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.state import TicketState
-
 
 # ---------------------------------------------------------------------------
 # Happy path

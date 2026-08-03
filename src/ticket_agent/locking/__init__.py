@@ -1,18 +1,18 @@
 """Locking implementations."""
 
 from ticket_agent.locking.checkpointer import SQLiteCheckpointer
+from ticket_agent.locking.reconciler import (
+    EVENT_LOCK_RECONCILE_FAILED,
+    EVENT_LOCK_RECONCILED,
+    ExpiredLockManager,
+    reconcile_expired_locks,
+)
 from ticket_agent.locking.sqlite_store import (
     EVENT_LOCK_ACQUIRED,
     EVENT_LOCK_HEARTBEAT,
     EVENT_LOCK_RELEASED,
     SQLiteLockManager,
     SQLiteTicketLockStore,
-)
-from ticket_agent.locking.reconciler import (
-    EVENT_LOCK_RECONCILE_FAILED,
-    EVENT_LOCK_RECONCILED,
-    ExpiredLockManager,
-    reconcile_expired_locks,
 )
 
 __all__ = [

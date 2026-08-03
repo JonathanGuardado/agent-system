@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 
 import pytest
 
@@ -25,7 +24,6 @@ from ticket_agent.goal.identity import GoalIdentityError
 from ticket_agent.goal.policy import (
     DEFAULT_POLICY,
     ChangeClassRule,
-    RiskPolicy,
     RiskPolicyError,
     load_risk_policy,
     stricter,
@@ -390,16 +388,16 @@ def _compiler(signer=None, checker=None, users=("U1",)):
 
 
 async def _compile(signer=None, checker=None, **overrides):
-    request = dict(
-        goal_id="prop-000000000001",
-        original_request="Build a landing page in Spanish",
-        objective="Ship a Spanish landing page",
-        acceptance_criteria=["Page renders", "Copy is in Spanish"],
-        user_id="U1",
-        channel="C1",
-        thread_ts="1.0",
-        repositories=["ofertas-sv"],
-    )
+    request = {
+        "goal_id": "prop-000000000001",
+        "original_request": "Build a landing page in Spanish",
+        "objective": "Ship a Spanish landing page",
+        "acceptance_criteria": ["Page renders", "Copy is in Spanish"],
+        "user_id": "U1",
+        "channel": "C1",
+        "thread_ts": "1.0",
+        "repositories": ["ofertas-sv"],
+    }
     users = overrides.pop("users", ("U1",))
     request.update(overrides)
     return await _compiler(signer, checker, users).compile(**request)
@@ -623,7 +621,7 @@ def test_revocation_is_append_only_and_removes_effective_authority(
     outcome = asyncio.run(_compile(signer))
     store = SQLiteGoalContractStore(
         tmp_path / "contracts.sqlite3",
-        clock=lambda: datetime(2027, 7, 29, tzinfo=timezone.utc),
+        clock=lambda: datetime(2027, 7, 29, tzinfo=UTC),
     )
     try:
         store.save_outcome(outcome)
@@ -655,8 +653,8 @@ def test_latest_valid_revocation_explains_effective_decision(tmp_path, signer):
     outcome = asyncio.run(_compile(signer))
     revocation_times = iter(
         (
-            datetime(2027, 7, 29, tzinfo=timezone.utc),
-            datetime(2027, 7, 30, tzinfo=timezone.utc),
+            datetime(2027, 7, 29, tzinfo=UTC),
+            datetime(2027, 7, 30, tzinfo=UTC),
         )
     )
     store = SQLiteGoalContractStore(
@@ -703,16 +701,21 @@ def test_approval_records_a_signed_contract(tmp_path, signer):
     """
 
     import asyncio as _asyncio
+    from datetime import datetime
 
-    from ticket_agent.domain.intake import IntakeMode, Proposal, ProposalStatus, TicketSpec
+    from ticket_agent.domain.intake import (
+        IntakeMode,
+        Proposal,
+        ProposalStatus,
+        TicketSpec,
+    )
     from ticket_agent.goal.authorizer import ProposalGoalAuthorizer
     from ticket_agent.intake.approval_flow import ApprovalFlow
-    from datetime import datetime, timezone
 
     store = SQLiteGoalContractStore(tmp_path / "contracts.sqlite3")
     authorizer = ProposalGoalAuthorizer(_compiler(signer), store)
 
-    now = datetime(2026, 7, 28, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 28, tzinfo=UTC)
     proposal = Proposal(
         proposal_id="prop-000000000001",
         slack_user_id="U1",
@@ -846,22 +849,23 @@ def test_unsigned_decision_is_stored_but_not_published(tmp_path):
 def test_authorizer_uses_the_verbatim_request_not_the_summary(signer):
     """The whole value of the semantic check is the original wording."""
 
-    from ticket_agent.goal.authorizer import _verbatim_request
-    from ticket_agent.domain.intake import IntakeMode, Proposal, ProposalStatus
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    now = datetime(2026, 7, 28, tzinfo=timezone.utc)
-    base = dict(
-        proposal_id="prop-000000000001",
-        slack_user_id="U1",
-        slack_thread_ts="1.0",
-        mode=IntakeMode.NEW_FEATURE,
-        title="t",
-        summary="A model-written summary",
-        status=ProposalStatus.AWAITING_CONFIRMATION,
-        created_at=now,
-        expires_at=now,
-    )
+    from ticket_agent.domain.intake import IntakeMode, Proposal, ProposalStatus
+    from ticket_agent.goal.authorizer import _verbatim_request
+
+    now = datetime(2026, 7, 28, tzinfo=UTC)
+    base = {
+        "proposal_id": "prop-000000000001",
+        "slack_user_id": "U1",
+        "slack_thread_ts": "1.0",
+        "mode": IntakeMode.NEW_FEATURE,
+        "title": "t",
+        "summary": "A model-written summary",
+        "status": ProposalStatus.AWAITING_CONFIRMATION,
+        "created_at": now,
+        "expires_at": now,
+    }
 
     verbatim = Proposal(**base, original_request="the user's own words")
     assert _verbatim_request(verbatim) == "the user's own words"
@@ -906,7 +910,7 @@ def _approval_proposal():
         TicketSpec,
     )
 
-    now = datetime(2026, 7, 28, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 28, tzinfo=UTC)
     return Proposal(
         proposal_id="prop-000000000001",
         slack_user_id="U1",

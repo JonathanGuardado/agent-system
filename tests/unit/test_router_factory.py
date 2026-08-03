@@ -61,11 +61,11 @@ def test_create_model_router_wires_selector_and_mvp_providers(monkeypatch):
 
 
 def test_create_model_router_preserves_default_ollama_base_url(monkeypatch):
-    monkeypatch.setattr(factory, "load_model_selector", lambda: object())
+    monkeypatch.setattr(factory, "load_model_selector", object)
     monkeypatch.setattr(
         factory,
         "load_provider",
-        lambda provider_name: ProviderConfig(provider_name),
+        ProviderConfig,
     )
 
     router = create_model_router()

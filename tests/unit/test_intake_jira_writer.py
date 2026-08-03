@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -20,8 +20,8 @@ from ticket_agent.jira.client import JiraClientError
 from ticket_agent.jira.constants import (
     FIELD_AGENT_CAPABILITIES_NEEDED,
     FIELD_AGENT_RETRY_COUNT,
-    FIELD_REPOSITORY,
     FIELD_REPO_PATH,
+    FIELD_REPOSITORY,
     FIELD_SLACK_CHANNEL,
     FIELD_SLACK_THREAD_TS,
     LABEL_AI_READY,
@@ -39,7 +39,7 @@ def _proposal(
     epic_summary: str | None = None,
     tickets: list[TicketSpec] | None = None,
 ) -> Proposal:
-    created = datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc)
+    created = datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
     return Proposal(
         proposal_id="prop-000000000001",
         slack_user_id="U1",

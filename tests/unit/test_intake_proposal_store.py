@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -24,7 +24,7 @@ def _make_proposal(
     project_key: str | None = "AGENT",
     revision_count: int = 0,
 ) -> Proposal:
-    created = created_at or datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc)
+    created = created_at or datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
     return Proposal(
         proposal_id=proposal_id,
         slack_user_id=user_id,
@@ -101,7 +101,7 @@ def test_mark_status_changes_status_and_excludes_from_active(tmp_path):
 
 
 def test_expire_old_marks_expired(tmp_path):
-    created = datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc)
+    created = datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
     store = ProposalStore(tmp_path / "proposals.db")
     proposal = _make_proposal(
         created_at=created,

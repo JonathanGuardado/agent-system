@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from inspect import isawaitable
-from typing import Any, Generic, Protocol, TypeVar, cast
+from typing import Any, Protocol, TypeVar, cast
 
 from ticket_agent.domain.errors import AgentSystemError
 from ticket_agent.goal.identity import normalize_goal_id
@@ -33,7 +33,7 @@ class InjectedJournalCrash(BaseException):
 
 
 @dataclass(frozen=True, slots=True)
-class ProbeResult(Generic[T]):
+class ProbeResult[T]:
     """Result of probing whether an external effect already happened."""
 
     found: bool
@@ -42,7 +42,7 @@ class ProbeResult(Generic[T]):
 
 
 @dataclass(frozen=True, slots=True)
-class ActionOutcome(Generic[T]):
+class ActionOutcome[T]:
     """Value plus durable record returned by one journaled action."""
 
     value: T | None
@@ -387,7 +387,7 @@ def _merge_loop_state(
     )
 
 
-async def _restore_completed(
+async def _restore_completed[T](
     record: ActionRecord,
     *,
     probe: Probe[T] | None,
@@ -442,7 +442,7 @@ def _model_phase(workflow_node: object) -> str:
     }.get(str(workflow_node), "discovering")
 
 
-async def _await(value: T | Awaitable[T]) -> T:
+async def _await[T](value: T | Awaitable[T]) -> T:
     if isawaitable(value):
         return await cast(Awaitable[T], value)
     return cast(T, value)

@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import os
-import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+import os
 from pathlib import Path, PurePosixPath
+import re
 from typing import Any
 
 from ticket_agent.config.repo_contract import RepoContract
 from ticket_agent.orchestrator.state import TicketState
-
 
 DEFAULT_SKIP_DIRS: frozenset[str] = frozenset(
     {
@@ -497,8 +496,7 @@ def _normalize_relative(path: str) -> str | None:
     if not cleaned:
         return None
     cleaned = cleaned.replace("\\", "/")
-    if cleaned.startswith("./"):
-        cleaned = cleaned[2:]
+    cleaned = cleaned.removeprefix("./")
     if cleaned.startswith("/"):
         return None
     parts = tuple(p for p in cleaned.split("/") if p)

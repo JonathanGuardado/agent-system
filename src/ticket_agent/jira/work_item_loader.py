@@ -8,16 +8,16 @@ from pathlib import Path
 import re
 from typing import Any
 
+from ticket_agent.goal.identity import GoalIdentityError, goal_id_from_labels
 from ticket_agent.jira.client import JiraClient
 from ticket_agent.jira.constants import (
     FIELD_MAX_ATTEMPTS,
-    FIELD_REPOSITORY,
     FIELD_REPO_PATH,
+    FIELD_REPOSITORY,
     FIELD_SLACK_CHANNEL,
     FIELD_SLACK_THREAD_TS,
 )
 from ticket_agent.jira.models import JiraTicket, JiraWorkItemLoadError
-from ticket_agent.goal.identity import GoalIdentityError, goal_id_from_labels
 from ticket_agent.orchestrator.runner import TicketWorkItem
 
 

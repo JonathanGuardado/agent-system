@@ -5,10 +5,11 @@ from typing import Any
 
 import pytest
 
+from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
 from ticket_agent.jira.constants import (
     FIELD_AGENT_ASSIGNED_COMPONENT,
-    FIELD_REPOSITORY,
     FIELD_REPO_PATH,
+    FIELD_REPOSITORY,
     LABEL_AI_CLAIMED,
     LABEL_AI_FAILED,
     LABEL_AI_READY,
@@ -23,7 +24,6 @@ from ticket_agent.jira.models import JiraExecutionError, JiraTicket
 from ticket_agent.jira.work_item_loader import JiraWorkItemLoader
 from ticket_agent.orchestrator.runner import TicketClaimFailedError, TicketWorkItem
 from ticket_agent.orchestrator.state import TicketState
-from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
 
 
 def test_fake_jira_transition_ticket_uses_status_names():

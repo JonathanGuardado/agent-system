@@ -24,7 +24,6 @@ from dataclasses import dataclass
 import os
 from typing import Literal
 
-
 GH_ROLE_ADMIN = "admin"
 GH_ROLE_BOT = "bot"
 
@@ -98,7 +97,7 @@ class GitHubCredentials:
         env["GIT_CONFIG_COUNT"] = "1"
         env["GIT_CONFIG_KEY_0"] = _GIT_GITHUB_EXTRAHEADER_KEY
         encoded_token = base64.b64encode(
-            f"x-access-token:{token}".encode("utf-8")
+            f"x-access-token:{token}".encode()
         ).decode("ascii")
         env["GIT_CONFIG_VALUE_0"] = f"AUTHORIZATION: basic {encoded_token}"
         env["GH_TOKEN"] = token

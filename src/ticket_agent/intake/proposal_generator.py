@@ -9,13 +9,13 @@ can replace :class:`DeterministicProposalGenerator` without changes to
 from __future__ import annotations
 
 import asyncio
-import re
-import json
-import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from inspect import isawaitable
+import json
+import logging
+import re
 from typing import Protocol
 from uuid import uuid4
 
@@ -35,7 +35,6 @@ from ticket_agent.domain.intake import (
 from ticket_agent.intake.proposal_store import PROPOSAL_TTL_SECONDS
 from ticket_agent.jira.constants import LABEL_AI_READY
 from ticket_agent.redaction import redact_local_paths
-
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1111,7 +1110,7 @@ def _extract_json_object(text: str) -> dict[str, object]:
 
 
 def _extract_fenced_or_embedded_json(text: str) -> object:
-    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.I | re.S)
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.IGNORECASE | re.DOTALL)
     if fenced is not None:
         return json.loads(fenced.group(1).strip())
     start = text.find("{")
@@ -1852,7 +1851,7 @@ _PATH_PATTERN = re.compile(r"\b([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)\b")
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _default_proposal_id() -> str:
@@ -1860,8 +1859,8 @@ def _default_proposal_id() -> str:
 
 
 __all__ = [
-    "DeterministicProposalGenerator",
     "MAX_TICKETS",
+    "DeterministicProposalGenerator",
     "ModelRouterProposalGenerator",
     "ProposalDraft",
     "ProposalGenerator",

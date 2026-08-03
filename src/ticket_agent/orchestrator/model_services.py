@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
-import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+import json
 from pathlib import Path, PureWindowsPath
+import re
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -110,7 +110,7 @@ class ToolCall(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def validate_args_for_action(self) -> "ToolCall":
+    def validate_args_for_action(self) -> ToolCall:
         if self.action not in _TOOL_ACTIONS:
             raise ValueError(f"unknown action: {self.action!r}")
 

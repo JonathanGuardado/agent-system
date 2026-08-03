@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import json
-import re
-import sqlite3
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from inspect import isawaitable
+import json
 from pathlib import Path
+import re
+import sqlite3
 from threading import RLock
 from typing import Any, Literal, Protocol
 
@@ -24,11 +24,10 @@ from ticket_agent.orchestrator.state import TicketState
 from ticket_agent.sqlite_support import connect as _connect
 from ticket_agent.sqlite_support import write_transaction as _write_transaction
 
-
 ApprovalStatus = Literal["pending", "approved", "rejected", "expired"]
 _COMMAND_RE = re.compile(
     r"^\s*(approve|reject)\s+([A-Z][A-Z0-9]*-\d+)\s*$",
-    re.I,
+    re.IGNORECASE,
 )
 _DEFAULT_TIMEOUT = timedelta(hours=24)
 
@@ -843,13 +842,13 @@ def _coerce_status(value: object) -> ApprovalStatus:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _ensure_aware(value: datetime) -> datetime:
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _datetime_text(value: datetime) -> str:
@@ -861,13 +860,13 @@ def _datetime_from_text(value: str) -> datetime:
 
 
 __all__ = [
+    "DryRunDecisionCallback",
     "ExecutionApproval",
     "ExecutionApprovalCommandHandler",
     "ExecutionApprovalCommandResult",
     "PendingApprovalResult",
+    "ResumeCallback",
     "SQLiteExecutionApprovalStore",
     "SlackExecutionApprovalService",
-    "DryRunDecisionCallback",
-    "ResumeCallback",
     "is_execution_approval_command",
 ]

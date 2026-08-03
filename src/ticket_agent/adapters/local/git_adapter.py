@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from pathlib import Path
 import re
 import subprocess
-from pathlib import Path
-from typing import Mapping, Sequence
 
 from ticket_agent.domain.errors import (
     GitAdapterError,
@@ -16,7 +16,6 @@ from ticket_agent.domain.errors import (
 )
 from ticket_agent.domain.git import WorktreeInfo
 from ticket_agent.github import GH_ROLE_ADMIN, GH_ROLE_BOT, GitHubCredentials
-
 
 _SAFE_REF_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 _SAFE_GITHUB_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
@@ -616,7 +615,7 @@ def _validate_push_branch(branch_name: str) -> None:
 
 def _validate_integration_branch(
     branch_name: str,
-    error_type: type[WorktreeCreationError] | type[PushError],
+    error_type: type[WorktreeCreationError | PushError],
 ) -> None:
     parts = branch_name.split("/")
     if (

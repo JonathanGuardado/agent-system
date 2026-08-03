@@ -16,8 +16,9 @@ from ticket_agent.goal.contract import (
     GoalContractCompiler,
     SQLiteGoalContractStore,
 )
-from ticket_agent.goal.types import Budgets
 from ticket_agent.goal.identity import normalize_goal_id
+from ticket_agent.goal.types import Budgets
+
 
 class GoalAuthorizer(Protocol):
     async def authorize(

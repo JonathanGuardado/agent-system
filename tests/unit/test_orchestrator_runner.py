@@ -6,13 +6,14 @@ from typing import Any
 
 import pytest
 
+from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
 from ticket_agent.locking.sqlite_store import SQLiteLockManager
 from ticket_agent.orchestrator.runner import (
+    EVENT_GRAPH_CHECKPOINT_CLEARED,
     EVENT_LOCK_ACQUIRED,
     EVENT_LOCK_HEARTBEAT_FAILED,
-    EVENT_LOCK_RELEASED,
     EVENT_LOCK_RELEASE_FAILED,
-    EVENT_GRAPH_CHECKPOINT_CLEARED,
+    EVENT_LOCK_RELEASED,
     EVENT_RUNNER_CLAIM_FAILED,
     EVENT_TICKET_COMPLETED,
     EVENT_TICKET_FAILED,
@@ -25,7 +26,6 @@ from ticket_agent.orchestrator.runner import (
     TicketWorkItem,
 )
 from ticket_agent.orchestrator.state import TicketState
-from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
 
 
 def test_successful_run_acquires_lock_invokes_graph_and_releases_lock():
@@ -190,7 +190,7 @@ def test_runner_resumes_from_checkpoint_when_adopting_existing_lock():
         lock_manager,
         event_emitter=events,
         checkpointer=checkpointer,
-        claim_ticket=lambda ticket_key: claims.append(ticket_key),
+        claim_ticket=claims.append,
     )
 
     asyncio.run(runner.run_ticket(_work_item()))
@@ -219,7 +219,7 @@ def test_approval_resume_reacquires_lock_and_uses_runner_heartbeat_path():
     runner = _runner(
         graph,
         lock_manager,
-        claim_ticket=lambda ticket_key: claims.append(ticket_key),
+        claim_ticket=claims.append,
         execution_preflight=preflight,
     )
     work_item = _work_item(goal_id="prop-000000000001")

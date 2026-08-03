@@ -24,7 +24,6 @@ from ticket_agent.orchestrator.local_services import ImplementationContext
 from ticket_agent.orchestrator.model_services import IterativeImplementationService
 from ticket_agent.orchestrator.state import TicketState
 
-
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
@@ -265,7 +264,7 @@ def test_search_respects_max_results_cap(tmp_path):
         }
     )
 
-    result = _run_implement(router, tmp_path)
+    _run_implement(router, tmp_path)
 
     tool_result = _last_tool_result(router, 1)
     assert '"match_count": 2' in tool_result
@@ -376,7 +375,7 @@ def test_edit_file_missing_file_reports_not_found(tmp_path):
         }
     )
 
-    result = _run_implement(router, tmp_path)
+    _run_implement(router, tmp_path)
 
     tool_result = _last_tool_result(router, 1)
     assert '"error_code": "edit_target_not_found"' in tool_result

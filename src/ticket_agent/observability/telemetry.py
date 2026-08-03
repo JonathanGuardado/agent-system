@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 import logging
 from pathlib import Path
 import sqlite3
@@ -161,7 +161,7 @@ class SQLiteTelemetryStore:
         busy_timeout_ms: int = _DEFAULT_BUSY_TIMEOUT_MS,
         clock: Any = None,
     ) -> None:
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._clock = clock or (lambda: datetime.now(UTC))
         self._lock = RLock()
         self._connection = connect(db_path, busy_timeout_ms)
         self._warned = False

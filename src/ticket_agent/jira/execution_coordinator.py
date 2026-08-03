@@ -23,8 +23,8 @@ from ticket_agent.jira.constants import (
 )
 from ticket_agent.jira.execution_service import JiraExecutionService
 from ticket_agent.jira.work_item_loader import JiraWorkItemLoader
-from ticket_agent.orchestrator.runner import TicketClaimFailedError, TicketWorkItem
 from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
+from ticket_agent.orchestrator.runner import TicketClaimFailedError, TicketWorkItem
 from ticket_agent.orchestrator.state import TicketState
 
 EventEmitter = Callable[[str, dict[str, object]], object]

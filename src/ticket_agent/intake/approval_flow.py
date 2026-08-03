@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from inspect import isawaitable
 from typing import Protocol
 
 from ticket_agent.domain.intake import (
-    IntakeMode,
     Proposal,
     ProposalStatus,
     TicketSpec,
@@ -18,7 +17,7 @@ from ticket_agent.goal.authorizer import GoalAuthorizer
 from ticket_agent.goal.contract import AuthorizationOutcome
 from ticket_agent.goal.types import AutonomyDecision, AutonomyMode, GoalContract
 from ticket_agent.intake.intent_resolver import IntakeIntentResolver
-from ticket_agent.intake.jira_writer import JiraWriteResult, JiraWriter
+from ticket_agent.intake.jira_writer import JiraWriter, JiraWriteResult
 from ticket_agent.intake.proposal_generator import (
     MAX_TICKETS,
     ProposalDraft,
@@ -51,7 +50,7 @@ class GoalAutonomyResolver(Protocol):
     ) -> AutonomyDecision: ...
 
 
-class ApprovalOutcome(str, Enum):
+class ApprovalOutcome(StrEnum):
     """High-level result of handling a Slack message."""
 
     CLARIFICATION_REQUESTED = "clarification_requested"

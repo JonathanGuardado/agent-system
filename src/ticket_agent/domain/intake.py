@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class IntakeMode(str, Enum):
+class IntakeMode(StrEnum):
     """High-level intake intent that drives proposal shape and Jira writes."""
 
     NEW_PROJECT = "new_project"
@@ -18,7 +18,7 @@ class IntakeMode(str, Enum):
     DIRECT_TICKET = "direct_ticket"
 
 
-class ProposalStatus(str, Enum):
+class ProposalStatus(StrEnum):
     """Lifecycle states tracked by the proposal store."""
 
     DRAFTING = "drafting"

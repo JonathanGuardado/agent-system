@@ -21,15 +21,15 @@ from ticket_agent.jira.work_item_loader import JiraWorkItemLoader
 __all__ = [
     "FakeJiraClient",
     "JiraClient",
-    "JiraClientError",
     "JiraClientCall",
+    "JiraClientError",
     "JiraExecutionCoordinator",
     "JiraExecutionError",
     "JiraExecutionService",
     "JiraOperationFailure",
     "JiraRestClient",
     "JiraTicket",
-    "TicketRunner",
-    "JiraWorkItemLoader",
     "JiraWorkItemLoadError",
+    "JiraWorkItemLoader",
+    "TicketRunner",
 ]

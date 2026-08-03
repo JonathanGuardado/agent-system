@@ -26,14 +26,14 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, is_dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 import json
 import logging
 from pathlib import Path
 import re
 from threading import RLock
-from typing import Any, Protocol, TextIO
+from typing import Any, Protocol, TextIO, Self
 
 from ticket_agent.redaction import redact
 
@@ -83,7 +83,7 @@ class NullTranscriptRecorder:
 
     __slots__ = ()
 
-    def record(self, event: TranscriptEvent) -> None:  # noqa: D102
+    def record(self, event: TranscriptEvent) -> None:
         return None
 
 
@@ -202,7 +202,7 @@ class JsonlTranscriptRecorder:
         self._root = Path(root)
         self._local_paths = tuple(local_paths)
         self._max_open_handles = max(1, max_open_handles)
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._clock = clock or (lambda: datetime.now(UTC))
         self._lock = RLock()
         self._handles: OrderedDict[str, TextIO] = OrderedDict()
         self._write_failures = 0
@@ -232,7 +232,7 @@ class JsonlTranscriptRecorder:
                     pass
             self._handles.clear()
 
-    def __enter__(self) -> "JsonlTranscriptRecorder":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_exc: object) -> None:

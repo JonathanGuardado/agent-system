@@ -8,7 +8,6 @@ from pathlib import Path, PurePosixPath
 from ticket_agent.config.repo_contract import RepoContract
 from ticket_agent.domain.errors import PathBoundaryError, PolicyViolationError
 
-
 _ROOT_CONFIG_SUFFIXES = frozenset(
     {".yml", ".yaml", ".toml", ".json", ".ini", ".cfg"}
 )

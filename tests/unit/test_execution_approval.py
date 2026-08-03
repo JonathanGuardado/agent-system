@@ -1,24 +1,24 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import pytest
 from langgraph.types import Command
+import pytest
 
 from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
 from ticket_agent.locking.checkpointer import SQLiteCheckpointer
 from ticket_agent.orchestrator.execution_approval import (
     ExecutionApprovalCommandHandler,
-    SQLiteExecutionApprovalStore,
     SlackExecutionApprovalService,
+    SQLiteExecutionApprovalStore,
     is_execution_approval_command,
 )
 from ticket_agent.orchestrator.graph import build_ticket_graph
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
-from ticket_agent.orchestrator.state import TicketState
 from ticket_agent.orchestrator.runner import TicketWorkItem
+from ticket_agent.orchestrator.state import TicketState
 
 
 def test_execution_approval_posts_to_slack_and_pauses_before_implement(tmp_path):
@@ -481,7 +481,7 @@ class _Escalation:
 
 class _MutableClock:
     def __init__(self) -> None:
-        self.now = datetime(2026, 5, 4, 12, 0, tzinfo=timezone.utc)
+        self.now = datetime(2026, 5, 4, 12, 0, tzinfo=UTC)
 
     def __call__(self) -> datetime:
         return self.now

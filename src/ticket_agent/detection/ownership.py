@@ -15,7 +15,6 @@ from ticket_agent.jira.constants import (
 )
 from ticket_agent.jira.models import JiraTicket
 
-
 LockLookup = Callable[[str], object | bool | None]
 """Callable returning a current lock truthy marker for a ticket key, or None."""
 
@@ -134,9 +133,7 @@ def _has_human_assignee(ticket: JiraTicket, known_agent_identities: set[str]) ->
 
 
 def _active_lock_marker(value: object | bool | None) -> bool:
-    if value is None or value is False:
-        return False
-    return True
+    return not (value is None or value is False)
 
 
 def _identity_set(*groups: Iterable[str] | None) -> set[str]:

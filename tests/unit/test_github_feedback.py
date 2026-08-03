@@ -5,11 +5,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
 from ticket_agent.feedback.github import (
-    GitHubMergedDeliveryPoller,
     FeedbackExecutionCoordinator,
     FeedbackItem,
     GitHubFeedbackPoller,
+    GitHubMergedDeliveryPoller,
     MergedDeliveryItem,
     SequentialDeliveryAdvancer,
 )
@@ -18,8 +21,6 @@ from ticket_agent.jira.fake_client import FakeJiraClient
 from ticket_agent.jira.models import JiraTicket
 from ticket_agent.orchestrator.runner import TicketWorkItem
 from ticket_agent.orchestrator.state import TicketState
-from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
-import pytest
 
 
 def test_feedback_poller_enqueues_unseen_items_once():

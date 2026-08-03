@@ -14,7 +14,6 @@ from ticket_agent.jira.constants import (
 )
 from ticket_agent.jira.models import JiraTicket
 
-
 COMPONENT_ID = "agent-system"
 
 

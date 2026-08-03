@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
 from ticket_agent.config.repo_contract import (
     CommandSpec,
     ExecutionPolicy,
@@ -13,15 +14,14 @@ from ticket_agent.config.repo_contract import (
     RepoInfo,
 )
 from ticket_agent.domain.errors import RepoContractError, WorktreeCreationError
-from ticket_agent.adapters.local.sandbox import SandboxUnavailableError
 from ticket_agent.domain.git import WorktreeInfo
 from ticket_agent.goal.journal import GoalActionJournal
 from ticket_agent.goal.spine import SQLiteGoalSpine
-from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.local_services import (
     ImplementationContext,
     LocalImplementationService,
 )
+from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.state import TicketState
 
 

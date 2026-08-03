@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ticket_agent.domain.acceptance import (
@@ -37,7 +37,6 @@ from ticket_agent.orchestrator.model_services import (
     _review_messages,
 )
 from ticket_agent.orchestrator.state import TicketState
-
 
 # ---------------------------------------------------------------------------
 # Shared acceptance-criteria format
@@ -344,7 +343,7 @@ def test_review_missing_verdict_met_flag_counts_as_unmet():
 
 
 def _clock() -> datetime:
-    return datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc)
+    return datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
 
 
 def _request(

@@ -4,41 +4,41 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
-import subprocess
-import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+import json
 from pathlib import Path
+import subprocess
+import sys
 from typing import Literal
 
 import httpx
 
+from ticket_agent.adapters.local.sandbox import BubblewrapSandbox
 from ticket_agent.app import (
     AppConfig,
     RuntimeConfig,
     StartupConfigError,
     load_app_config,
 )
-from ticket_agent.adapters.local.sandbox import BubblewrapSandbox
 from ticket_agent.config.repo_contract import load_repo_contract
 from ticket_agent.goal.policy import load_risk_policy
 from ticket_agent.goal.signing import SigningError, load_signer
-from ticket_agent.orchestrator.execution_environment import (
-    ExecutionEnvironmentPreflight,
-)
-from ticket_agent.orchestrator.local_services import RuntimeShellFactory
 from ticket_agent.jira.constants import (
     FIELD_AGENT_ASSIGNED_COMPONENT,
     FIELD_AGENT_CAPABILITIES_NEEDED,
     FIELD_AGENT_RETRY_COUNT,
     FIELD_EPIC_LINK,
     FIELD_MAX_ATTEMPTS,
-    FIELD_REPOSITORY,
     FIELD_REPO_PATH,
+    FIELD_REPOSITORY,
     FIELD_SLACK_CHANNEL,
     FIELD_SLACK_THREAD_TS,
 )
+from ticket_agent.orchestrator.execution_environment import (
+    ExecutionEnvironmentPreflight,
+)
+from ticket_agent.orchestrator.local_services import RuntimeShellFactory
 
 _JIRA_PROJECT_ISSUE_TYPES_REQUIRED = frozenset({"Epic", "Task"})
 

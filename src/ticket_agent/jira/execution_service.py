@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import logging
-import os
 from collections.abc import Awaitable, Callable, Iterable
 from hashlib import sha256
 from inspect import isawaitable
+import logging
+import os
 
 from ticket_agent.goal.identity import goal_id_from_labels
 from ticket_agent.goal.journal import GoalActionJournal, ProbeResult
@@ -97,6 +97,11 @@ class JiraExecutionService:
                 ),
             )
         except JiraExecutionError as exc:
+            # Python unbinds the `as` target when the block exits, so the
+            # compensation lambdas below must close over a name that outlives
+            # it. They happen to run before the block ends today; binding here
+            # means they keep working if that ever stops being true.
+            failure = exc
             await self._run_compensation(
                 ticket_key=ticket_key,
                 operation=_MARK_CLAIMED_OPERATION,
@@ -130,7 +135,7 @@ class JiraExecutionService:
                         "add_claim_failure_comment",
                         lambda: self._comment(
                             ticket_key,
-                            _claim_compensation_comment(failed_step, exc),
+                            _claim_compensation_comment(failed_step, failure),
                         ),
                     ),
                 ),

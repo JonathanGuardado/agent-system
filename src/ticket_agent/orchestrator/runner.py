@@ -18,8 +18,8 @@ from ticket_agent.observability.telemetry import (
     NullTelemetryRecorder,
     TelemetryRecorder,
 )
-from ticket_agent.orchestrator.state import TicketState
 from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
+from ticket_agent.orchestrator.state import TicketState
 
 Lock = TicketLock
 EventEmitter = Callable[[str, Mapping[str, Any]], Any]

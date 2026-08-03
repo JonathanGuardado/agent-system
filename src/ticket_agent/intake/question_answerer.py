@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+import json
+import re
 from typing import Any, Protocol
 
 from ticket_agent.intake.approval_flow import SlackPoster
@@ -578,8 +578,8 @@ def _error_text(exc: BaseException) -> str:
     return message or exc.__class__.__name__
 
 
-_QUESTION_PREFIX_PATTERN = re.compile(r"^(?:ask|question|q|status|find)\s*:\s*", re.I)
-_TICKET_KEY_PATTERN = re.compile(r"\b([A-Z][A-Z0-9]{1,9}-\d+)\b", re.I)
+_QUESTION_PREFIX_PATTERN = re.compile(r"^(?:ask|question|q|status|find)\s*:\s*", re.IGNORECASE)
+_TICKET_KEY_PATTERN = re.compile(r"\b([A-Z][A-Z0-9]{1,9}-\d+)\b", re.IGNORECASE)
 _PROJECT_KEY_PATTERN = re.compile(r"\b(?:project\s+)?([A-Z][A-Z0-9]{1,9})(?:-\d+)?\b")
 _QUESTION_STARTS = (
     "are there ",
@@ -713,7 +713,7 @@ _PROJECT_STOP_WORDS = _STOP_WORDS | {
 __all__ = [
     "InMemoryQuestionConversationStore",
     "JiraQuestionAnswerHandler",
-    "QuestionConversationMessage",
     "QuestionAnswerResult",
+    "QuestionConversationMessage",
     "is_question_text",
 ]

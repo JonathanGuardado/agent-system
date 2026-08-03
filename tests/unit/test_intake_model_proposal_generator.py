@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ticket_agent.domain.intake import IntakeMode, IntakeResolution
@@ -151,23 +151,7 @@ def test_deterministic_proposal_generator_compacts_overlong_ticket_list():
 
 
 def test_deterministic_generator_uses_bullets_not_headings_as_ticket_slices():
-    text = "\n".join(
-        [
-            "Create Ofertas SV for LAB.",
-            "",
-            "Core goal:",
-            "Help users discover local deals.",
-            "",
-            "Main features:",
-            "- Homepage with featured deals",
-            "- Search and filters",
-            "- Favorites page",
-            "- Submit-a-deal form",
-            "",
-            "Design:",
-            "Use Spanish UI copy and USD prices.",
-        ]
-    )
+    text = "Create Ofertas SV for LAB.\n\nCore goal:\nHelp users discover local deals.\n\nMain features:\n- Homepage with featured deals\n- Search and filters\n- Favorites page\n- Submit-a-deal form\n\nDesign:\nUse Spanish UI copy and USD prices."
 
     proposal = DeterministicProposalGenerator(
         clock=_clock,
@@ -859,7 +843,7 @@ def _request(
 
 
 def _clock() -> datetime:
-    return datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc)
+    return datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
 
 
 @dataclass

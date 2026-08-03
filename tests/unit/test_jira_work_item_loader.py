@@ -7,8 +7,8 @@ import pytest
 
 from ticket_agent.jira.constants import (
     FIELD_MAX_ATTEMPTS,
-    FIELD_REPOSITORY,
     FIELD_REPO_PATH,
+    FIELD_REPOSITORY,
     FIELD_SLACK_CHANNEL,
     FIELD_SLACK_THREAD_TS,
 )
@@ -277,15 +277,15 @@ def test_load_raises_clear_error_when_max_attempts_is_invalid(bad_value: object)
 
 
 def _ticket(fields: dict[str, Any], **updates: Any) -> JiraTicket:
-    values = dict(
-        key="AGENT-123",
-        summary="Implement Jira execution",
-        description="Wire execution state to Jira.",
-        status="To Do",
-        labels=["ai-ready"],
-        assignee=None,
-        fields=fields,
-    )
+    values = {
+        "key": "AGENT-123",
+        "summary": "Implement Jira execution",
+        "description": "Wire execution state to Jira.",
+        "status": "To Do",
+        "labels": ["ai-ready"],
+        "assignee": None,
+        "fields": fields,
+    }
     values.update(updates)
     return JiraTicket(**values)
 

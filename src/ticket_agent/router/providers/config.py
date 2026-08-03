@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
+import os
 
 
 @dataclass(frozen=True)

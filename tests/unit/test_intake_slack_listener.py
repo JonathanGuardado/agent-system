@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from langgraph.types import Command
@@ -20,7 +20,7 @@ from ticket_agent.intake.approval_flow import (
 )
 from ticket_agent.intake.jira_writer import JiraWriter
 from ticket_agent.intake.proposal_generator import DeterministicProposalGenerator
-from ticket_agent.intake.proposal_store import PROPOSAL_TTL_SECONDS, ProposalStore
+from ticket_agent.intake.proposal_store import ProposalStore
 from ticket_agent.intake.slack_listener import (
     SlackEvent,
     SlackIntakeListener,
@@ -31,13 +31,13 @@ from ticket_agent.jira.fake_client import FakeJiraClient
 from ticket_agent.locking.checkpointer import SQLiteCheckpointer
 from ticket_agent.orchestrator.execution_approval import (
     ExecutionApprovalCommandHandler,
-    SQLiteExecutionApprovalStore,
     SlackExecutionApprovalService,
+    SQLiteExecutionApprovalStore,
 )
 from ticket_agent.orchestrator.graph import build_ticket_graph
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
-from ticket_agent.orchestrator.state import TicketState
 from ticket_agent.orchestrator.runner import TicketWorkItem
+from ticket_agent.orchestrator.state import TicketState
 
 
 class _FakeSlack:
@@ -76,7 +76,7 @@ def _build_listener(tmp_path, *, intake_channel: str | None = None):
     store = ProposalStore(tmp_path / "proposals.db")
     slack = _FakeSlack()
     jira_client = FakeJiraClient([])
-    fixed_now = datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc)
+    fixed_now = datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
     counter = {"n": 0}
 
     def _proposal_id() -> str:
@@ -345,7 +345,7 @@ def test_listener_routes_dm_task_request_to_safe_dm_handler(tmp_path):
 
 
 def test_listener_routes_active_thread_to_handle_reply(tmp_path):
-    listener, store, slack = _build_listener(tmp_path)
+    listener, store, _slack = _build_listener(tmp_path)
 
     proposal = Proposal(
         proposal_id="prop-0000000000aa",
@@ -367,8 +367,8 @@ def test_listener_routes_active_thread_to_handle_reply(tmp_path):
         ],
         revision_count=0,
         status=ProposalStatus.AWAITING_CONFIRMATION,
-        created_at=datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc),
-        expires_at=datetime(2026, 5, 4, 12, 0, tzinfo=timezone.utc),
+        created_at=datetime(2026, 5, 3, 12, 0, tzinfo=UTC),
+        expires_at=datetime(2026, 5, 4, 12, 0, tzinfo=UTC),
     )
     store.save(proposal)
 
@@ -684,7 +684,7 @@ class _ListenerExecutionScenario:
         flow = ApprovalFlow(
             resolver=_StubResolver([_new_feature_resolution()]),
             generator=DeterministicProposalGenerator(
-                clock=lambda: datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc),
+                clock=lambda: datetime(2026, 5, 3, 12, 0, tzinfo=UTC),
                 proposal_id_factory=lambda: "prop-0000000000ab",
             ),
             store=self.proposal_store,
@@ -821,8 +821,8 @@ def _save_active_proposal(store: ProposalStore, *, thread_ts: str) -> None:
             ],
             revision_count=0,
             status=ProposalStatus.AWAITING_CONFIRMATION,
-            created_at=datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc),
-            expires_at=datetime(2026, 5, 4, 12, 0, tzinfo=timezone.utc),
+            created_at=datetime(2026, 5, 3, 12, 0, tzinfo=UTC),
+            expires_at=datetime(2026, 5, 4, 12, 0, tzinfo=UTC),
         )
     )
 

@@ -5,7 +5,7 @@ from ticket_agent.intake.intent_resolver import (
     CAPABILITY_TO_MODE,
     IntakeIntentResolver,
 )
-from ticket_agent.intake.jira_writer import JiraWriteResult, JiraWriter
+from ticket_agent.intake.jira_writer import JiraWriter, JiraWriteResult
 from ticket_agent.intake.proposal_generator import (
     DeterministicProposalGenerator,
     ModelRouterProposalGenerator,
@@ -26,15 +26,15 @@ from ticket_agent.intake.slack_listener import (
 )
 
 __all__ = [
+    "CAPABILITY_TO_MODE",
     "ApprovalFlow",
     "ApprovalOutcome",
-    "CAPABILITY_TO_MODE",
     "DeterministicProposalGenerator",
-    "ModelRouterProposalGenerator",
     "IntakeIntentResolver",
     "JiraQuestionAnswerHandler",
     "JiraWriteResult",
     "JiraWriter",
+    "ModelRouterProposalGenerator",
     "ProposalDraft",
     "ProposalGenerator",
     "ProposalRequest",

@@ -639,4 +639,4 @@ class _EventRecorder:
 
     @property
     def payloads(self) -> dict[str, dict[str, object]]:
-        return {name: payload for name, payload in self.events}
+        return dict(self.events)

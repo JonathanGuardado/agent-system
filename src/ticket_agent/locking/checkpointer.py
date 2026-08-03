@@ -9,16 +9,13 @@ Thread-safety: all public methods are protected by an RLock.
 
 from __future__ import annotations
 
-import random
 from collections.abc import AsyncIterator, Iterator, Sequence
 from pathlib import Path
+import random
 from threading import RLock
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
-
-from ticket_agent.sqlite_support import connect as _connect
-from ticket_agent.sqlite_support import write_transaction as _write_transaction
 from langgraph.checkpoint.base import (
     WRITES_IDX_MAP,
     BaseCheckpointSaver,
@@ -29,6 +26,9 @@ from langgraph.checkpoint.base import (
     get_checkpoint_id,
     get_checkpoint_metadata,
 )
+
+from ticket_agent.sqlite_support import connect as _connect
+from ticket_agent.sqlite_support import write_transaction as _write_transaction
 
 
 class SQLiteCheckpointer(BaseCheckpointSaver):

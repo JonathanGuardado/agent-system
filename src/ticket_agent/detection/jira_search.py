@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
+import re
 from typing import Any, Protocol
 
 from ticket_agent.jira.constants import (
@@ -14,7 +14,6 @@ from ticket_agent.jira.constants import (
     STATUS_TODO,
 )
 from ticket_agent.jira.models import JiraTicket
-
 
 DETECTION_JQL = (
     'project in agentProjects() '

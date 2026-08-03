@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import sqlite3
 from threading import RLock
@@ -14,7 +14,6 @@ from ticket_agent.domain.errors import TicketLockError
 from ticket_agent.domain.execution import TicketLock
 from ticket_agent.sqlite_support import connect as _connect
 from ticket_agent.sqlite_support import write_transaction as _write_transaction
-
 
 LockIdFactory = Callable[[], str]
 Clock = Callable[[], datetime]
@@ -604,11 +603,11 @@ def _to_datetime(value: datetime | None) -> datetime:
 def _ensure_aware(value: datetime) -> datetime:
     if value.tzinfo is None:
         raise TicketLockError("lock timestamps must be timezone-aware")
-    return value.astimezone(timezone.utc)
+    return value.astimezone(UTC)
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _datetime_text(value: datetime) -> str:
@@ -617,7 +616,7 @@ def _datetime_text(value: datetime) -> str:
 
 def _coerce_datetime_text(value: object) -> str:
     if isinstance(value, (int, float)):
-        return _datetime_text(datetime.fromtimestamp(float(value), tz=timezone.utc))
+        return _datetime_text(datetime.fromtimestamp(float(value), tz=UTC))
     if isinstance(value, str) and value.strip():
         return _datetime_text(_parse_datetime_text(value))
     return _datetime_text(_utcnow())
@@ -625,7 +624,7 @@ def _coerce_datetime_text(value: object) -> str:
 
 def _parse_datetime_text(value: object) -> datetime:
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        return datetime.fromtimestamp(float(value), tz=UTC)
     if not isinstance(value, str):
         raise TicketLockError("lock timestamp must be a datetime string")
     text = value.strip()

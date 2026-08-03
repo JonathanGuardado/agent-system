@@ -17,11 +17,11 @@ adapter) and feed messages directly via :meth:`handle_event`.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 import json
 import logging
 import os
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ticket_agent.intake.approval_flow import (
@@ -456,9 +456,9 @@ def _required_env(name: str) -> str:
 
 
 __all__ = [
-    "SlackClient",
     "ExecutionApprovalHandler",
     "QuestionAnswerHandler",
+    "SlackClient",
     "SlackEvent",
     "SlackIntakeListener",
     "SlackPoster",

@@ -15,7 +15,6 @@ from ticket_agent.router.selector_config import (
     load_model_selector,
 )
 
-
 CAPABILITY_TO_MODE: dict[str, IntakeMode] = {
     "architecture.design": IntakeMode.NEW_PROJECT,
     "code.implement": IntakeMode.NEW_FEATURE,

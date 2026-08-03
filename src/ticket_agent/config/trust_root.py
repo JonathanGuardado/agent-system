@@ -23,7 +23,7 @@ lowers the autonomy ceiling. A hole in the trust root is reported, not hidden.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import json
 from pathlib import Path
 from typing import Any, Literal

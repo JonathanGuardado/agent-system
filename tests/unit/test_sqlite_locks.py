@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 import sqlite3
 
 from ticket_agent.locking.sqlite_store import (
@@ -12,7 +12,7 @@ from ticket_agent.locking.sqlite_store import (
 
 def test_sqlite_lock_store_allows_single_active_owner(tmp_path):
     store = SQLiteTicketLockStore(tmp_path / "locks.sqlite3")
-    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
 
     assert store.acquire("PROJ-1", "worker-a", ttl_seconds=30, now=now)
     assert not store.acquire("PROJ-1", "worker-b", ttl_seconds=30, now=now)
@@ -27,7 +27,7 @@ def test_sqlite_lock_store_allows_single_active_owner(tmp_path):
 
 def test_sqlite_lock_store_heartbeats_only_owned_live_lock(tmp_path):
     store = SQLiteTicketLockStore(tmp_path / "locks.sqlite3")
-    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
 
     assert store.acquire("PROJ-1", "worker-a", ttl_seconds=30, now=now)
     assert not store.heartbeat("PROJ-1", "worker-b", ttl_seconds=30, now=now)
@@ -42,8 +42,8 @@ def test_sqlite_lock_store_heartbeats_only_owned_live_lock(tmp_path):
 
 def test_sqlite_lock_store_expires_stale_locks(tmp_path):
     store = SQLiteTicketLockStore(tmp_path / "locks.sqlite3")
-    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
-    later = datetime(2026, 1, 1, 12, 1, tzinfo=timezone.utc)
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    later = datetime(2026, 1, 1, 12, 1, tzinfo=UTC)
 
     assert store.acquire("PROJ-1", "worker-a", ttl_seconds=30, now=start)
     assert store.current_lock("PROJ-1", now=later) is None
@@ -58,7 +58,7 @@ def test_sqlite_lock_store_expires_stale_locks(tmp_path):
 
 def test_sqlite_lock_store_releases_only_owned_lock(tmp_path):
     store = SQLiteTicketLockStore(tmp_path / "locks.sqlite3")
-    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
 
     assert store.acquire("PROJ-1", "worker-a", ttl_seconds=30, now=now)
     assert not store.release("PROJ-1", "worker-b")
@@ -125,7 +125,7 @@ def test_sqlite_lock_manager_allows_only_one_concurrent_acquire(tmp_path):
 
 
 def test_sqlite_lock_manager_expired_lock_waits_for_reconciliation(tmp_path):
-    current_time = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    current_time = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 
     def clock() -> datetime:
         return current_time
@@ -138,7 +138,7 @@ def test_sqlite_lock_manager_expired_lock_waits_for_reconciliation(tmp_path):
     )
     try:
         assert manager.acquire("PROJ-1", ttl_s=1) is not None
-        current_time = datetime(2026, 1, 1, 12, 1, tzinfo=timezone.utc)
+        current_time = datetime(2026, 1, 1, 12, 1, tzinfo=UTC)
 
         assert manager.has_active_lock("PROJ-1") is False
         assert len(manager.expired_locks()) == 1

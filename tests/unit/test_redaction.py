@@ -1,4 +1,5 @@
 import pytest
+from tests.constants import FAKE_OFERTAS_SV_REPO_PATH, FAKE_USER_HOME
 
 from ticket_agent.redaction import (
     SECRET_PLACEHOLDER,
@@ -6,7 +7,6 @@ from ticket_agent.redaction import (
     redact_local_paths,
     redact_secrets,
 )
-from tests.constants import FAKE_OFERTAS_SV_REPO_PATH, FAKE_USER_HOME
 
 
 def test_redact_local_paths_covers_repo_worktree_and_home_paths():

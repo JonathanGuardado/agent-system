@@ -17,21 +17,22 @@ from ticket_agent.config.repo_contract import (
 from ticket_agent.domain.errors import RepoContractError
 from ticket_agent.goal.journal import GoalActionJournal
 from ticket_agent.goal.spine import SQLiteGoalSpine
-from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.local_services import AdapterTestService
+from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.state import TicketState
 from ticket_agent.ports.tools import CommandResult
 
 
 def test_service_impls_preserves_compatibility_exports():
-    from ticket_agent.orchestrator import local_services
-    from ticket_agent.orchestrator import service_impls
+    from ticket_agent.orchestrator import local_services, service_impls
     from ticket_agent.orchestrator.git_services import (
         GhPullRequestOpener,
         GitService,
     )
     from ticket_agent.orchestrator.local_services import (
         AdapterTestService as LocalAdapterTestService,
+    )
+    from ticket_agent.orchestrator.local_services import (
         ImplementationContext,
         LocalImplementationService,
     )

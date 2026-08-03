@@ -7,22 +7,20 @@ from typing import Any
 import pytest
 
 from ticket_agent.detection.detector import (
-    DetectionComponent,
     EVENT_DETECTION_ENQUEUED,
     EVENT_DETECTION_POLL_COMPLETED,
     EVENT_DETECTION_POLL_FAILED,
     EVENT_DETECTION_POLL_STARTED,
     EVENT_DETECTION_SKIPPED,
+    DetectionComponent,
 )
 from ticket_agent.detection.ownership import OwnershipChecker
 from ticket_agent.jira.constants import (
-    FIELD_AGENT_RETRY_COUNT,
     LABEL_AI_READY,
     STATUS_IN_PROGRESS,
     STATUS_TODO,
 )
 from ticket_agent.jira.models import JiraTicket
-
 
 COMPONENT_ID = "agent-system"
 

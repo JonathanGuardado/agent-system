@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+import json
 from pathlib import Path
 from threading import RLock
 
@@ -13,7 +13,6 @@ from ticket_agent.sqlite_support import connect as _connect
 from ticket_agent.sqlite_support import (
     write_transaction as _write_transaction,
 )
-
 
 Clock = Callable[[], datetime]
 
@@ -228,13 +227,13 @@ def _proposal_to_row(proposal: Proposal) -> tuple[object, ...]:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _ensure_aware(value: datetime) -> datetime:
     if value.tzinfo is None:
         raise ValueError("proposal timestamps must be timezone-aware")
-    return value.astimezone(timezone.utc)
+    return value.astimezone(UTC)
 
 
 def _datetime_text(value: datetime) -> str:

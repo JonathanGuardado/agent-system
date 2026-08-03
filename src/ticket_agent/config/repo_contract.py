@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+import logging
 from pathlib import Path
 from typing import Any, Literal
 
@@ -281,9 +281,7 @@ def _is_vacuous_command(argv: Sequence[str]) -> bool:
     joined = " ".join(argv)
     if "else" in joined and "exit 1" not in joined and "echo" in joined:
         return True
-    if "--if-present" in joined:
-        return True
-    return False
+    return "--if-present" in joined
 
 
 def _parse_gates(raw: Any, commands: RepoCommands) -> Mapping[str, GateRequirement]:

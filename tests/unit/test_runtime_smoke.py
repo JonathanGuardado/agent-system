@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import subprocess
 from pathlib import Path
-from typing import Any
+import subprocess
+from typing import Any, Self
 
 from ticket_agent import runtime_smoke as runtime_smoke_module
 from ticket_agent.runtime_smoke import collect_smoke_checks, main
@@ -408,13 +408,13 @@ class _FakeResponse:
 class _FakeAsyncClient:
     """One AsyncClient instance, backed by the shared _FakeHttpx response queue."""
 
-    def __init__(self, owner: "_FakeHttpx") -> None:
+    def __init__(self, owner: _FakeHttpx) -> None:
         self._owner = owner
 
-    async def __aenter__(self) -> "_FakeAsyncClient":
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *args: Any) -> None:
+    async def __aexit__(self, *args: object) -> None:
         return None
 
     async def get(self, url: str, **kwargs: Any) -> Any:
@@ -437,7 +437,7 @@ class _FakeHttpx:
         self._queue = list(responses)
         self._pos = 0
 
-    def AsyncClient(self, **kwargs: Any) -> "_FakeAsyncClient":
+    def AsyncClient(self, **kwargs: Any) -> _FakeAsyncClient:
         del kwargs
         return _FakeAsyncClient(self)
 

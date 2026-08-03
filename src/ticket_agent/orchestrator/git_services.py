@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
+import subprocess
 from typing import Any, Protocol
 
 from ticket_agent.adapters.local.git_adapter import GitAdapter
 from ticket_agent.domain.errors import PullRequestCreationError
+from ticket_agent.github import GH_ROLE_BOT, GitHubCredentials
 from ticket_agent.goal.journal import GoalActionJournal, ProbeResult
 from ticket_agent.goal.types import LoopState, digest
-from ticket_agent.github import GH_ROLE_BOT, GitHubCredentials
 from ticket_agent.orchestrator.state import TicketState
 from ticket_agent.redaction import redact_local_paths
 
@@ -436,8 +436,8 @@ def _subprocess_failure_message(result: subprocess.CompletedProcess[str]) -> str
 __all__ = [
     "GhPullRequestOpener",
     "GitPullRequestPort",
-    "GitWorktreeCleanupPort",
     "GitService",
+    "GitWorktreeCleanupPort",
     "PullRequestOpener",
     "WorktreeCleanupService",
 ]

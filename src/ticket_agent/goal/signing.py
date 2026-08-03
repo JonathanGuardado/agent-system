@@ -21,8 +21,8 @@ every transcript.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hmac
 from hashlib import sha256
+import hmac
 import os
 from pathlib import Path
 import stat
@@ -52,7 +52,7 @@ class Signature:
         return f"{self.version}:{self.algorithm}:{self.value}"
 
     @classmethod
-    def parse(cls, text: str) -> "Signature":
+    def parse(cls, text: str) -> Signature:
         parts = str(text).split(":")
         if len(parts) != 3:
             raise SigningError(f"malformed signature: {text!r}")

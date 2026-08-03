@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Callable, Mapping
 from inspect import isawaitable
+import logging
 from typing import Any, Protocol
 
 from ticket_agent.domain.execution import TicketLock
@@ -18,7 +18,6 @@ from ticket_agent.jira.constants import (
     STATUS_TODO,
 )
 from ticket_agent.jira.models import JiraTicket
-
 
 EVENT_LOCK_RECONCILED = "lock.reconciled"
 EVENT_LOCK_RECONCILE_FAILED = "lock.reconcile_failed"
@@ -170,8 +169,8 @@ def _error_payload(exc: BaseException) -> dict[str, str]:
 
 
 __all__ = [
-    "EVENT_LOCK_RECONCILE_FAILED",
     "EVENT_LOCK_RECONCILED",
+    "EVENT_LOCK_RECONCILE_FAILED",
     "ExpiredLockManager",
     "reconcile_expired_locks",
 ]

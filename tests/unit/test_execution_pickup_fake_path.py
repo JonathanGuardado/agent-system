@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
@@ -12,8 +13,8 @@ from ticket_agent.detection.ownership import OwnershipChecker
 from ticket_agent.jira.constants import (
     FIELD_AGENT_ASSIGNED_COMPONENT,
     FIELD_AGENT_RETRY_COUNT,
-    FIELD_REPOSITORY,
     FIELD_REPO_PATH,
+    FIELD_REPOSITORY,
     LABEL_AI_CLAIMED,
     LABEL_AI_READY,
     STATUS_IN_PROGRESS,
@@ -233,7 +234,7 @@ async def test_expired_lock_reconciler_restores_jira(tmp_path):
 
     try:
         assert manager.acquire("AGENT-123", ttl_s=1) is not None
-        clock.now = datetime(2026, 1, 1, 12, 1, tzinfo=timezone.utc)
+        clock.now = datetime(2026, 1, 1, 12, 1, tzinfo=UTC)
 
         assert manager.acquire("AGENT-123", ttl_s=60) is None
         assert await detector.poll_once() == 0
@@ -277,7 +278,7 @@ async def test_reconciler_failure_keeps_lock(tmp_path):
 
     try:
         assert manager.acquire("AGENT-123", ttl_s=1) is not None
-        clock.now = datetime(2026, 1, 1, 12, 1, tzinfo=timezone.utc)
+        clock.now = datetime(2026, 1, 1, 12, 1, tzinfo=UTC)
 
         assert await reconcile_expired_locks(manager, client, emit=events) == 0
 
@@ -385,7 +386,7 @@ class _BlockingGraph(_RecordingGraph):
 
 class _MutableClock:
     def __init__(self) -> None:
-        self.now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        self.now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 
     def __call__(self) -> datetime:
         return self.now

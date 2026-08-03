@@ -11,17 +11,20 @@ from ticket_agent.router.providers.config import (
 from ticket_agent.router.providers.deepseek import DeepSeekProvider
 from ticket_agent.router.providers.gemini import GeminiProvider
 from ticket_agent.router.providers.ollama import OllamaProvider
-from ticket_agent.router.providers.stubs import FailingProviderClient, StaticProviderClient
+from ticket_agent.router.providers.stubs import (
+    FailingProviderClient,
+    StaticProviderClient,
+)
 
 __all__ = [
-    "ProviderClient",
-    "StaticProviderClient",
-    "FailingProviderClient",
+    "PROVIDER_DEFAULTS",
     "DeepSeekProvider",
+    "FailingProviderClient",
     "GeminiProvider",
     "OllamaProvider",
+    "ProviderClient",
     "ProviderConfig",
-    "PROVIDER_DEFAULTS",
+    "StaticProviderClient",
     "load_provider",
     "load_provider_configs",
     "load_providers",

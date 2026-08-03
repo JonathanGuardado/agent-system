@@ -9,10 +9,11 @@ directly.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from ticket_agent.detection.detector import DetectionComponent
+from tests.constants import FAKE_AGENT_SYSTEM_REPO_PATH
+
 from ticket_agent.detection.jira_search import JiraDetectionSearchClient
 from ticket_agent.detection.ownership import OwnershipChecker
 from ticket_agent.intake.approval_flow import ApprovalFlow, ApprovalOutcome
@@ -23,7 +24,6 @@ from ticket_agent.intake.proposal_store import ProposalStore
 from ticket_agent.intake.slack_listener import SlackEvent, SlackIntakeListener
 from ticket_agent.jira.constants import LABEL_AI_READY
 from ticket_agent.jira.fake_client import FakeJiraClient
-from tests.constants import FAKE_AGENT_SYSTEM_REPO_PATH
 
 
 class _FakeSlack:
@@ -61,7 +61,7 @@ def test_slack_message_to_ai_ready_jira_ticket(tmp_path):
     flow = ApprovalFlow(
         resolver=IntakeIntentResolver(),
         generator=DeterministicProposalGenerator(
-            clock=lambda: datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc),
+            clock=lambda: datetime(2026, 5, 3, 12, 0, tzinfo=UTC),
             proposal_id_factory=lambda: "prop-0000000000ad",
         ),
         store=store,
@@ -148,7 +148,7 @@ def test_plain_text_approval_creates_epic_and_child_tasks(tmp_path):
     flow = ApprovalFlow(
         resolver=IntakeIntentResolver(),
         generator=DeterministicProposalGenerator(
-            clock=lambda: datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc),
+            clock=lambda: datetime(2026, 5, 3, 12, 0, tzinfo=UTC),
             proposal_id_factory=lambda: "prop-0000000000ae",
         ),
         store=store,
@@ -215,7 +215,7 @@ def test_listener_emits_no_jira_writes_for_clarification_path(tmp_path):
     flow = ApprovalFlow(
         resolver=IntakeIntentResolver(),
         generator=DeterministicProposalGenerator(
-            clock=lambda: datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc),
+            clock=lambda: datetime(2026, 5, 3, 12, 0, tzinfo=UTC),
         ),
         store=store,
         jira_writer=JiraWriter(jira_client),

@@ -22,7 +22,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
-
 GateName = Literal["install", "test", "lint", "typecheck", "build"]
 GateStatus = Literal["passed", "failed", "not_runnable", "skipped", "not_run"]
 FailureClass = Literal["defect", "flake", "transient", "policy", "unknown"]

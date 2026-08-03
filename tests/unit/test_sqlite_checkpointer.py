@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 from collections.abc import Mapping
+import sqlite3
 from typing import Any
 
 from ticket_agent.locking.checkpointer import SQLiteCheckpointer

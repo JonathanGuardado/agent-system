@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from hashlib import sha256
-from typing import Any
+from typing import Any, Self
 
 from ticket_agent.jira import client as jira_client_module
 from ticket_agent.jira.client import JiraRestClient
@@ -97,13 +97,13 @@ class _FakeAsyncClient:
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
 
-    async def __aenter__(self) -> "_FakeAsyncClient":
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *args: Any) -> None:
+    async def __aexit__(self, *args: object) -> None:
         return None
 
-    async def request(self, method: str, url: str, **kwargs: Any) -> "_Response":
+    async def request(self, method: str, url: str, **kwargs: Any) -> _Response:
         self.requests.append({"method": method, "url": url, **kwargs})
         if url.endswith("/rest/api/3/search/jql"):
             return _Response({"issues": []})

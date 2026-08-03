@@ -145,7 +145,7 @@ def test_builder_never_reads_outside_worktree(tmp_path: Path):
     builder = RepoContextBuilder()
     context = builder.build(state)
 
-    for path, content in context.file_contents.items():
+    for _path, content in context.file_contents.items():
         assert "SECRET = True" not in content
     # The symlink target is outside the worktree, so it must not appear at all.
     assert not any(

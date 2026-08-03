@@ -12,9 +12,9 @@ diff a reviewer needs to read, and it trains people to ignore the placeholder.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 import os
 import re
-from collections.abc import Iterable
 
 SECRET_PLACEHOLDER = "<redacted-secret>"
 

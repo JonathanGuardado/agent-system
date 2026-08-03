@@ -22,13 +22,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 import json
 from pathlib import Path
 from threading import RLock
 from typing import Any
 
 from ticket_agent.domain.errors import AgentSystemError
+from ticket_agent.goal.identity import GoalIdentityError, normalize_goal_id
 from ticket_agent.goal.policy import Decision, RiskPolicy, stricter
 from ticket_agent.goal.semantic_check import (
     NullSemanticChecker,
@@ -46,7 +47,6 @@ from ticket_agent.goal.types import (
     canonical_json,
     digest,
 )
-from ticket_agent.goal.identity import GoalIdentityError, normalize_goal_id
 from ticket_agent.sqlite_support import connect, write_transaction
 
 _DEFAULT_BUSY_TIMEOUT_MS = 5_000
@@ -144,7 +144,7 @@ class GoalContractCompiler:
         self._checker = semantic_checker or NullSemanticChecker()
         self._harness_digest = harness_digest
         self._trust_root_digest = trust_root_digest
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     async def compile(
         self,
@@ -451,7 +451,7 @@ class SQLiteGoalContractStore:
     ) -> None:
         self._lock = RLock()
         self._connection = connect(db_path, busy_timeout_ms)
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._clock = clock or (lambda: datetime.now(UTC))
         with self._lock:
             self._connection.executescript(self._SCHEMA)
             self._migrate_authorization_columns()

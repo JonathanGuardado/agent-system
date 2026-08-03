@@ -14,7 +14,6 @@ from ticket_agent.config.trust_root import (
 )
 from ticket_agent.domain.errors import RepoContractError
 
-
 # -- matching --------------------------------------------------------------
 
 

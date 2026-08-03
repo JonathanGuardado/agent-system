@@ -8,7 +8,6 @@ import hashlib
 import json
 from typing import Literal
 
-
 CommandNetworkMode = Literal["none", "install"]
 
 

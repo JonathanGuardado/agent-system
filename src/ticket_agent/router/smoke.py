@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import os
-import sys
 from pathlib import Path
-from typing import Mapping
+import sys
 
 from ticket_agent.domain.model_selection import ModelEndpoint, ModelSelection
 from ticket_agent.router import create_model_router
@@ -137,7 +137,7 @@ def _select_remote_provider(
 
 
 def _select_only_remote_provider(router: object, provider: str) -> None:
-    setattr(router, "_selector", _SingleProviderSelector(provider))
+    router._selector = _SingleProviderSelector(provider)
 
 
 def _has_env(env: Mapping[str, str], key: str) -> bool:

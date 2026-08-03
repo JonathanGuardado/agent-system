@@ -6,8 +6,8 @@ import ai_model_selector
 import pytest
 import yaml
 
-from ticket_agent.router.providers import PROVIDER_DEFAULTS
 from ticket_agent.router import selector_config
+from ticket_agent.router.providers import PROVIDER_DEFAULTS
 from ticket_agent.router.selector_config import select_model_for_capability
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"

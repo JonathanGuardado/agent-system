@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 import json
 from pathlib import Path
 import threading
@@ -125,8 +125,8 @@ def test_transcript_normalizes_paths_datetimes_and_dataclasses(tmp_path):
             run_id="abcd1234",
             payload={
                 "path": Path("relative/file.py"),
-                "when": datetime(2026, 7, 27, tzinfo=timezone.utc),
-                "sample": _Sample(name="s", when=datetime(2026, 7, 27, tzinfo=timezone.utc)),
+                "when": datetime(2026, 7, 27, tzinfo=UTC),
+                "sample": _Sample(name="s", when=datetime(2026, 7, 27, tzinfo=UTC)),
             },
         )
     )

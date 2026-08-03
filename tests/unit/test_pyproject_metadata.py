@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
-
+import tomllib
 
 PYPROJECT_PATH = Path(__file__).resolve().parents[2] / "pyproject.toml"
 

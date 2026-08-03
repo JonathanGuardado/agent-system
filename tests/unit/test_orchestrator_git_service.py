@@ -6,6 +6,7 @@ import subprocess
 from typing import Any
 
 import pytest
+from tests.constants import FAKE_USER_HOME
 
 from ticket_agent.domain.errors import (
     NoChangesToCommitError,
@@ -22,7 +23,6 @@ from ticket_agent.orchestrator.git_services import (
 )
 from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 from ticket_agent.orchestrator.state import TicketState
-from tests.constants import FAKE_USER_HOME
 
 
 def test_git_service_commits_pushes_opens_pr_and_returns_url(tmp_path):

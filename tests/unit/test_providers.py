@@ -7,9 +7,12 @@ import httpx
 import pytest
 
 from ticket_agent.domain.errors import ProviderError
-from ticket_agent.router import providers
+from ticket_agent.router.providers import (
+    DeepSeekProvider,
+    GeminiProvider,
+    OllamaProvider,
+)
 from ticket_agent.router.providers import http as provider_http
-from ticket_agent.router.providers import DeepSeekProvider, GeminiProvider, OllamaProvider
 
 
 def test_deepseek_provider_sends_expected_request(monkeypatch):
@@ -263,7 +266,7 @@ def _response(data: Any, *, status_code: int = 200) -> FakeResponse:
 def _install_fake_async_client(monkeypatch, result):
     class FakeAsyncClient:
         calls: list[dict[str, Any]] = []
-        instances: list["FakeAsyncClient"] = []
+        instances: list[FakeAsyncClient] = []
 
         def __init__(self, *, timeout: int) -> None:
             self.timeout = timeout

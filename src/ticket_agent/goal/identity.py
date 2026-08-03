@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable
+import re
 
 from ticket_agent.domain.errors import AgentSystemError
 

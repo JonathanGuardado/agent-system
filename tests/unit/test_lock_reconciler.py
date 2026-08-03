@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ticket_agent.jira.constants import (
@@ -44,7 +44,7 @@ def test_reconcile_expired_locks_restores_jira_and_deletes_lock(tmp_path):
 
     try:
         assert manager.acquire("AGENT-123", ttl_s=1) is not None
-        clock.now = datetime(2026, 1, 1, 12, 1, tzinfo=timezone.utc)
+        clock.now = datetime(2026, 1, 1, 12, 1, tzinfo=UTC)
 
         reconciled = asyncio.run(
             reconcile_expired_locks(manager, client, emit=events)
@@ -128,7 +128,7 @@ def test_reconcile_expired_locks_keeps_row_when_jira_unreachable(tmp_path):
 
     try:
         assert manager.acquire("AGENT-123", ttl_s=1) is not None
-        clock.now = datetime(2026, 1, 1, 12, 1, tzinfo=timezone.utc)
+        clock.now = datetime(2026, 1, 1, 12, 1, tzinfo=UTC)
 
         reconciled = asyncio.run(
             reconcile_expired_locks(manager, client, emit=events)
@@ -169,7 +169,7 @@ def test_reconcile_expired_locks_continues_after_one_ticket_fails(tmp_path):
     try:
         assert manager.acquire("AGENT-123", ttl_s=1) is not None
         assert manager.acquire("AGENT-456", ttl_s=1) is not None
-        clock.now = datetime(2026, 1, 1, 12, 1, tzinfo=timezone.utc)
+        clock.now = datetime(2026, 1, 1, 12, 1, tzinfo=UTC)
 
         reconciled = asyncio.run(
             reconcile_expired_locks(manager, client, emit=events)
@@ -203,7 +203,7 @@ def test_reconcile_expired_locks_is_idempotent_after_success(tmp_path):
 
     try:
         assert manager.acquire("AGENT-123", ttl_s=1) is not None
-        clock.now = datetime(2026, 1, 1, 12, 1, tzinfo=timezone.utc)
+        clock.now = datetime(2026, 1, 1, 12, 1, tzinfo=UTC)
 
         first = asyncio.run(reconcile_expired_locks(manager, client))
         second = asyncio.run(reconcile_expired_locks(manager, client))
@@ -219,7 +219,7 @@ def test_reconcile_expired_locks_is_idempotent_after_success(tmp_path):
 
 class _MutableClock:
     def __init__(self) -> None:
-        self.now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        self.now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 
     def __call__(self) -> datetime:
         return self.now

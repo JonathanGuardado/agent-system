@@ -8,10 +8,9 @@ from inspect import isawaitable
 from logging import Logger
 from typing import Any, Protocol
 
-from ticket_agent.detection.ownership import OwnershipChecker, OwnershipDecision
+from ticket_agent.detection.ownership import OwnershipChecker
 from ticket_agent.jira.constants import LABEL_AI_READY, STATUS_TODO
 from ticket_agent.jira.models import JiraTicket
-
 
 EventEmitter = Callable[[str, Mapping[str, Any]], Any]
 TicketQueue = asyncio.Queue

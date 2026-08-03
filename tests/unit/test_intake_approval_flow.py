@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from ticket_agent.domain.intake import (
     IntakeMode,
@@ -88,7 +88,7 @@ def _build_flow(
     writer = JiraWriter(jira_client)
     slack = _FakeSlack()
     resolver = _StubResolver(resolutions or [_resolution_new_feature()])
-    fixed_now = datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc)
+    fixed_now = datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
     counter = {"n": 0}
 
     def _proposal_id() -> str:
@@ -186,7 +186,7 @@ def test_edit_reply_revises_proposal(tmp_path):
 
 
 def test_edit_reply_preserves_prior_mode_and_updates_target_ticket(tmp_path):
-    flow, store, slack, _, resolver = _build_flow(
+    flow, _store, slack, _, resolver = _build_flow(
         tmp_path,
         resolutions=[_resolution_new_project(), _resolution_new_feature()],
         repo_defaults={
@@ -338,7 +338,7 @@ def test_cancel_accepts_slack_inline_code_formatting(tmp_path):
 
 
 def test_approve_with_partial_jira_failure_posts_partial_result(tmp_path):
-    flow, store, slack, jira_client, _ = _build_flow(
+    flow, _store, slack, jira_client, _ = _build_flow(
         tmp_path,
         resolutions=[
             IntakeResolution(
@@ -421,8 +421,8 @@ def test_handle_new_request_posts_truncation_note_for_model_generated_proposal(
                 ],
                 truncated_ticket_count=2,
                 status=ProposalStatus.AWAITING_CONFIRMATION,
-                created_at=datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc),
-                expires_at=datetime(2026, 5, 4, 12, 0, tzinfo=timezone.utc),
+                created_at=datetime(2026, 5, 3, 12, 0, tzinfo=UTC),
+                expires_at=datetime(2026, 5, 4, 12, 0, tzinfo=UTC),
             )
         )
     )

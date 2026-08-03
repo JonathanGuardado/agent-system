@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import json
 import logging
 import time
-from collections.abc import Mapping
 from typing import Any
 
 from ticket_agent.domain.errors import AllBackendsFailedError

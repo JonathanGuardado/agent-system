@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
+import os
 
 
 def main(argv: Sequence[str] | None = None) -> int:

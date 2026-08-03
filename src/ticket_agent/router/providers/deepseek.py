@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
+import os
 
 from ticket_agent.domain.errors import ProviderError
 from ticket_agent.domain.model import ProviderResponse

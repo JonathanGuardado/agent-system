@@ -15,7 +15,6 @@ from ticket_agent.orchestrator.jira_services import JiraLabelApprovalService
 from ticket_agent.orchestrator.local_services import AutoApprovalService
 from ticket_agent.orchestrator.state import TicketState
 
-
 # ---------------------------------------------------------------------------
 # AutoApprovalService
 # ---------------------------------------------------------------------------

@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 import pytest
+from tests.constants import FAKE_OFERTAS_SV_REPO_PATH, FAKE_USER_HOME
 
 from ticket_agent.jira.constants import (
     EVENT_JIRA_COMPENSATION_FAILED,
@@ -18,7 +19,6 @@ from ticket_agent.jira.constants import (
 )
 from ticket_agent.jira.execution_service import JiraExecutionService
 from ticket_agent.jira.models import JiraExecutionError, JiraTicket
-from tests.constants import FAKE_OFERTAS_SV_REPO_PATH, FAKE_USER_HOME
 
 _ConfiguredFailure = BaseException | list[BaseException | None]
 
