@@ -213,11 +213,11 @@ class GoalAutonomyResolver:
                     executable_gates=self._enforced_gate_names,
                 )
                 required.update(repo_contract.required_gates)
-                detail = reasons or ("ready",)
+                repo_reasons = reasons or ("ready",)
             except Exception as exc:  # noqa: BLE001 - missing harness lowers mode
                 readiness = "unready"
-                detail = (f"harness unavailable: {exc}",)
-            results.append((repository, readiness, tuple(detail)))
+                repo_reasons = (f"harness unavailable: {exc}",)
+            results.append((repository, readiness, tuple(repo_reasons)))
 
         if not results:
             results.append(("(none)", "unready", ("no repository in scope",)))
@@ -245,9 +245,10 @@ class GoalAutonomyResolver:
 
     def _repo_path(self, repository: str) -> Path | None:
         matches = [
-            values.get("repo_path")
+            repo_path
             for values in self._repo_defaults.values()
-            if values.get("repository") == repository and values.get("repo_path")
+            if values.get("repository") == repository
+            and (repo_path := values.get("repo_path"))
         ]
         if len(matches) == 1:
             return Path(matches[0]).expanduser()

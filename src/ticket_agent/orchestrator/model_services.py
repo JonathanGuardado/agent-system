@@ -1062,8 +1062,7 @@ def _tool_arg_string(
     allow_empty: bool = False,
 ) -> str:
     value = args.get(name)
-    valid = isinstance(value, str) and (allow_empty or bool(value.strip()))
-    if not valid:
+    if not isinstance(value, str) or not (allow_empty or value.strip()):
         raise ValueError(f"{action}.args.{name} must be a string")
     return value
 

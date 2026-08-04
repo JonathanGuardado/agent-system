@@ -553,7 +553,8 @@ class SQLiteGoalContractStore:
             ).fetchone()
         if row is None:
             return None
-        return json.loads(row["payload"])
+        payload: Mapping[str, Any] = json.loads(row["payload"])
+        return payload
 
     def load_authorization(
         self,
@@ -736,6 +737,8 @@ class SQLiteGoalContractStore:
                     str(signature),
                 ),
             )
+            if cursor.lastrowid is None:
+                raise GoalContractError("revocation insert returned no row id")
             revocation_id = int(cursor.lastrowid)
         return RevocationRecord(
             revocation_id=revocation_id,

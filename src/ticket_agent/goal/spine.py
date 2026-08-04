@@ -557,7 +557,7 @@ def _evidence_from_payload(payload: dict[str, Any]) -> EvidenceRef:
         kind=payload["kind"],
         sha256=payload["sha256"],
         uri=payload["uri"],
-        produced_at=_parse_datetime(payload["produced_at"]),
+        produced_at=_require_datetime(payload["produced_at"], "produced_at"),
         produced_by=payload["produced_by"],
         candidate_sha=payload.get("candidate_sha"),
     )
@@ -582,6 +582,16 @@ def _datetime_text(value: datetime | None) -> str | None:
 
 def _parse_datetime(value: str | None) -> datetime | None:
     return None if not value else datetime.fromisoformat(value)
+
+
+def _require_datetime(value: str | None, field: str) -> datetime:
+    """EvidenceRef declares produced_at non-optional; a row without one is
+    malformed, and passing None through would only move the failure later."""
+
+    parsed = _parse_datetime(value)
+    if parsed is None:
+        raise GoalSpineError(f"evidence row is missing {field}")
+    return parsed
 
 
 __all__ = ["GoalSpineError", "SQLiteGoalSpine"]

@@ -101,6 +101,12 @@ class ExecutionPolicy:
 
 GateRequirement = Literal["required", "optional"]
 
+#: How much of its own verification a repository can describe. Spelled the same
+#: as `goal.types.HarnessReadiness`, which is the consumer -- declared here too
+#: so `readiness()` returns the three values it can return rather than `str`,
+#: without this config module depending on the goal package.
+HarnessReadiness = Literal["unready", "partial", "full"]
+
 #: Gate requirements when no ``gates:`` block is declared. ``test`` is
 #: required because a repository that cannot state what "working" means
 #: cannot be verified at all.
@@ -154,7 +160,7 @@ class RepoContract:
         repo_root: Path | None = None,
         *,
         executable_gates: Collection[str] | None = None,
-    ) -> tuple[str, tuple[str, ...]]:
+    ) -> tuple[HarnessReadiness, tuple[str, ...]]:
         """Harness readiness and the reasons holding it back.
 
         ``executable_gates`` is the set of gates the *runtime* can actually

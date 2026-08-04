@@ -230,7 +230,12 @@ def _collect_adf_text(value: object, parts: list[str]) -> None:
 
 def _max_attempts(ticket: JiraTicket) -> int:
     if FIELD_MAX_ATTEMPTS not in ticket.fields:
-        return _ticket_work_item_default("max_attempts")
+        default = _ticket_work_item_default("max_attempts")
+        if not isinstance(default, int):
+            raise JiraWorkItemLoadError(
+                "TicketWorkItem.max_attempts has no integer default"
+            )
+        return default
 
     value = ticket.fields[FIELD_MAX_ATTEMPTS]
     if type(value) is not int:

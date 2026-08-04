@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 import subprocess
-from typing import Any, Protocol
+from typing import Protocol
 
 from ticket_agent.adapters.local.git_adapter import GitAdapter
 from ticket_agent.domain.errors import PullRequestCreationError
@@ -289,7 +290,7 @@ class GhPullRequestOpener:
                 capture_output=True,
                 text=True,
                 timeout=self._timeout_seconds,
-                **self._gh_env_kwargs(),
+                env=self._gh_env(),
             )
         except subprocess.TimeoutExpired as exc:
             raise PullRequestCreationError(
@@ -347,7 +348,7 @@ class GhPullRequestOpener:
                 capture_output=True,
                 text=True,
                 timeout=self._timeout_seconds,
-                **self._gh_env_kwargs(),
+                env=self._gh_env(),
             )
         except subprocess.TimeoutExpired:
             return None
@@ -359,7 +360,7 @@ class GhPullRequestOpener:
             return None
         return url
 
-    def _gh_env_kwargs(self) -> dict[str, Any]:
+    def _gh_env(self) -> Mapping[str, str]:
         env = (
             None
             if self._credentials is None
@@ -369,7 +370,7 @@ class GhPullRequestOpener:
             raise PullRequestCreationError(
                 "GH_BOT_TOKEN is required to open pull requests as the system user"
             )
-        return {"env": env}
+        return env
 
 
 def _worktree_path(state: TicketState) -> Path | None:

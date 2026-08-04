@@ -543,7 +543,8 @@ def _migrate_legacy_table(
 def _row_value(row: sqlite3.Row, columns: set[str], name: str) -> object | None:
     if name not in columns:
         return None
-    return row[name]
+    value: object = row[name]
+    return value
 
 
 def _delete_expired(
