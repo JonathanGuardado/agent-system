@@ -344,6 +344,7 @@ class SlackSocketModeService:
 
         try:
             from slack_sdk.socket_mode import SocketModeClient
+            from slack_sdk.socket_mode.client import BaseSocketModeClient
             from slack_sdk.socket_mode.request import SocketModeRequest
             from slack_sdk.socket_mode.response import SocketModeResponse
             from slack_sdk.web import WebClient
@@ -360,7 +361,10 @@ class SlackSocketModeService:
         )
         pending: set[Any] = set()
 
-        def _on_request(client: SocketModeClient, req: SocketModeRequest) -> None:
+        def _on_request(
+            client: BaseSocketModeClient,
+            req: SocketModeRequest,
+        ) -> None:
             client.send_socket_mode_response(
                 SocketModeResponse(envelope_id=req.envelope_id)
             )

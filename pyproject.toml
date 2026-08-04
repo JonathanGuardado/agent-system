@@ -85,4 +85,9 @@ force-sort-within-sections = true
 python_version = "3.12"
 strict = true
 ignore_missing_imports = true
-files = ["src"]
+files = ["src", "scripts"]
+# `tests` is deliberately outside the scope. Adding it needs a packaging
+# decision first -- tests/ has no __init__.py, so mypy sees constants.py under
+# two module names -- and behind that sit 1106 errors, 907 of them bare
+# `no-untyped-def` on test functions. That is a call about whether test bodies
+# carry annotations, not part of taking src/ to zero.

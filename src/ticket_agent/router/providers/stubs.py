@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ticket_agent.domain.model import ProviderResponse
@@ -18,7 +19,7 @@ class StaticProviderClient:
     async def chat(
         self,
         model: str,
-        messages: list[ChatMessage],
+        messages: Sequence[ChatMessage],
         timeout_s: int,
     ) -> ProviderResponse:
         del model, messages, timeout_s
@@ -39,7 +40,7 @@ class FailingProviderClient:
     async def chat(
         self,
         model: str,
-        messages: list[ChatMessage],
+        messages: Sequence[ChatMessage],
         timeout_s: int,
     ) -> ProviderResponse:
         del model, messages, timeout_s

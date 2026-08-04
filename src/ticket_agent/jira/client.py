@@ -237,7 +237,7 @@ class JiraRestClient:
         method: str,
         path: str,
         *,
-        params: Mapping[str, object] | None = None,
+        params: Mapping[str, str | int] | None = None,
         json: Mapping[str, object] | None = None,
         expect_json: bool = True,
     ) -> Any:

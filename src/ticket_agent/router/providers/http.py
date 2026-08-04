@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
@@ -15,7 +16,7 @@ async def _post_openai_chat(
     url: str,
     api_key: str,
     model: str,
-    messages: list[ChatMessage],
+    messages: Sequence[ChatMessage],
     timeout_s: int,
 ) -> ProviderResponse:
     payload = {"model": model, "messages": messages}

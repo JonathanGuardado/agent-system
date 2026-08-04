@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from inspect import isawaitable
 import json
 import logging
@@ -168,6 +169,23 @@ class RuntimeLoopExited(RuntimeError):
 
 class _ShutdownRequested(Exception):
     """Internal sentinel used to cancel a TaskGroup for graceful shutdown."""
+
+
+def _threadsafe_shutdown(
+    loop: asyncio.AbstractEventLoop,
+    request_shutdown: Callable[[str], None],
+    signal_name: str,
+    _signum: int,
+    _frame: object,
+) -> None:
+    """`signal.signal` fallback for loops without add_signal_handler.
+
+    Named rather than a lambda with default-argument capture: that idiom binds
+    correctly but has no inferable type, so the handler's arguments went
+    unchecked.
+    """
+
+    loop.call_soon_threadsafe(request_shutdown, signal_name)
 
 
 def _require_implementation_loop(
@@ -446,7 +464,7 @@ def build_runtime(
     )
     shell_factory = RuntimeShellFactory(environment_preflight)
 
-    router = model_router
+    router: ModelRouterProtocol | None = model_router
     if planner is None or implementation is None or review is None:
         router = router or create_model_router(transcripts=transcripts)
     if router is not None:
@@ -1232,7 +1250,7 @@ def _install_signal_handlers(
             return
         result = emit("app.shutdown_requested", {"signal": signal_name})
         if isawaitable(result):
-            _shutdown_tasks.add(loop.create_task(result))
+            _shutdown_tasks.add(asyncio.ensure_future(result, loop=loop))
         shutdown_event.set()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -1242,10 +1260,7 @@ def _install_signal_handlers(
             try:
                 signal.signal(
                     sig,
-                    lambda _signum, _frame, name=sig.name: loop.call_soon_threadsafe(
-                        _request_shutdown,
-                        name,
-                    ),
+                    partial(_threadsafe_shutdown, loop, _request_shutdown, sig.name),
                 )
             except (RuntimeError, ValueError):
                 continue

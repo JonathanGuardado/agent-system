@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path, PureWindowsPath
 import re
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -18,6 +18,7 @@ from ticket_agent.domain.errors import (
     PathBoundaryError,
     PolicyViolationError,
 )
+from ticket_agent.domain.model import ModelRouterProtocol
 from ticket_agent.observability.transcripts import (
     NullTranscriptRecorder,
     TranscriptEvent,
@@ -35,15 +36,6 @@ from ticket_agent.redaction import redact_local_paths
 
 class ModelServiceError(RuntimeError):
     """Raised when a model-backed service receives an unusable response."""
-
-
-class ModelRouterProtocol(Protocol):
-    async def invoke(
-        self,
-        capability: str,
-        messages: Sequence[Mapping[str, str]],
-        **kwargs: Any,
-    ) -> Any: ...
 
 
 FileAdapterFactory = Callable[[str], Any]

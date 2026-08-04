@@ -32,6 +32,7 @@ from ticket_agent.domain.intake import (
     ProposalStatus,
     TicketSpec,
 )
+from ticket_agent.domain.model import ModelRouterProtocol
 from ticket_agent.intake.proposal_store import PROPOSAL_TTL_SECONDS
 from ticket_agent.jira.constants import LABEL_AI_READY
 from ticket_agent.redaction import redact_local_paths
@@ -95,15 +96,6 @@ class ProposalGenerator(Protocol):
         request: ProposalRequest,
         prior: Proposal | None = None,
     ) -> ProposalDraft | Awaitable[ProposalDraft]: ...
-
-
-class ModelRouterProtocol(Protocol):
-    async def invoke(
-        self,
-        capability: str,
-        messages: Sequence[Mapping[str, str]],
-        **kwargs: object,
-    ) -> object: ...
 
 
 MAX_TICKETS = 10

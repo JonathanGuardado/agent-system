@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from inspect import isawaitable
 import logging
@@ -86,10 +86,17 @@ class TicketGraph(Protocol):
 
     def ainvoke(
         self,
-        state: TicketState | None,
-        config: Mapping[str, Any],
-    ) -> Awaitable[Any]:
-        """Run the workflow graph for a ticket state."""
+        state: Any,
+        /,
+        config: Any = None,
+    ) -> Coroutine[Any, Any, Any]:
+        """Run the workflow graph for a ticket state.
+
+        Positional-only and loosely typed on purpose: the implementation is
+        langgraph's `CompiledStateGraph`, whose first parameter is named
+        `input` and whose config is a `RunnableConfig` TypedDict. Naming or
+        narrowing either here would describe a graph that does not exist.
+        """
 
 
 class CheckpointCleaner(Protocol):

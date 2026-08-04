@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 import os
 
@@ -17,7 +18,7 @@ class GeminiProvider:
     async def chat(
         self,
         model: str,
-        messages: list[ChatMessage],
+        messages: Sequence[ChatMessage],
         timeout_s: int,
     ) -> ProviderResponse:
         api_key = os.getenv(self.api_key_env, "")

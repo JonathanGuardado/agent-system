@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import httpx
@@ -23,7 +24,7 @@ class OllamaProvider:
     async def chat(
         self,
         model: str,
-        messages: list[ChatMessage],
+        messages: Sequence[ChatMessage],
         timeout_s: int,
     ) -> ProviderResponse:
         url = _join_url(self.base_url, "/api/chat")

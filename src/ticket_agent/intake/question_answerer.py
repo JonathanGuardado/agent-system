@@ -8,6 +8,7 @@ import json
 import re
 from typing import Any, Protocol
 
+from ticket_agent.domain.model import ModelRouterProtocol
 from ticket_agent.intake.approval_flow import SlackPoster
 from ticket_agent.jira.models import JiraTicket
 
@@ -25,18 +26,6 @@ class JiraQuestionClient(Protocol):
         fields: Sequence[str] | None = None,
     ) -> Sequence[JiraTicket | Mapping[str, Any]] | Mapping[str, Any]:
         """Return Jira issues matching a JQL query."""
-
-
-class ModelRouterProtocol(Protocol):
-    """Model router boundary used to compose assistant replies."""
-
-    async def invoke(
-        self,
-        capability: str,
-        messages: Sequence[Mapping[str, str]],
-        **kwargs: Any,
-    ) -> object:
-        """Return a model response for ``messages``."""
 
 
 @dataclass(frozen=True)

@@ -287,22 +287,26 @@ class JournaledModelRouter:
         self,
         capability: str,
         messages: Sequence[Mapping[str, str]],
-        **kwargs: Any,
+        ticket_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ) -> Any:
-        raw_metadata = kwargs.get("metadata")
-        metadata = dict(raw_metadata) if isinstance(raw_metadata, Mapping) else {}
-        raw_goal_id = metadata.get("goal_id")
+        # Named rather than **kwargs: this wrapper stands in for the router
+        # everywhere the protocol is required, and only a signature that
+        # matches it can actually be substituted.
+        kwargs: dict[str, Any] = {"ticket_id": ticket_id, "metadata": metadata}
+        goal_metadata = dict(metadata) if metadata is not None else {}
+        raw_goal_id = goal_metadata.get("goal_id")
         if raw_goal_id is None:
             return await self._delegate.invoke(capability, messages, **kwargs)
         goal_id = normalize_goal_id(raw_goal_id)
         iteration = _nonnegative_int(
-            metadata.get(
+            goal_metadata.get(
                 "goal_iteration",
-                metadata.get("implementation_turn", 0),
+                goal_metadata.get("implementation_turn", 0),
             )
         )
         prompt_digest = digest(messages)
-        phase = _model_phase(metadata.get("workflow_node"))
+        phase = _model_phase(goal_metadata.get("workflow_node"))
 
         async def effect() -> Any:
             return await self._delegate.invoke(capability, messages, **kwargs)
