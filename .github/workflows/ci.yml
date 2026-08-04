@@ -17,6 +17,22 @@ concurrency:
 permissions:
   contents: read
 
+# The smoke run refuses to start without the seven required variables. These
+# are placeholders, not secrets and not usable as any: --skip-network means
+# nothing is ever called with them. What the gate then checks is real -- config
+# parsing, repo-contract loading, harness readiness, signing-key handling --
+# and none of it needs a credential that works.
+env:
+  SLACK_BOT_TOKEN: xoxb-ci-placeholder-not-a-real-token
+  SLACK_APP_TOKEN: xapp-ci-placeholder-not-a-real-token
+  JIRA_BASE_URL: https://ci.invalid
+  JIRA_USER_EMAIL: ci@ci.invalid
+  JIRA_API_KEY: ci-placeholder-not-a-real-key
+  DEEPSEEK_API_KEY: ci-placeholder-not-a-real-key
+  GEMINI_API_KEY: ci-placeholder-not-a-real-key
+  # Explicitly no env file, rather than depending on a runner not having one.
+  AGENT_SYSTEM_ENV_FILE: /dev/null
+
 jobs:
   checks:
     name: Tests, lint, smoke

@@ -36,7 +36,12 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# "." is not decoration: tests import `tests.constants` and `scripts.system_reset`,
+# neither of which is an installed package. `python -m pytest` put the repo root
+# on sys.path implicitly and bare `pytest` did not, so the suite only ever
+# passed under one of the two invocations. Declaring it here makes the
+# requirement the config's, not the caller's.
+pythonpath = ["src", "."]
 
 [tool.ruff]
 target-version = "py312"
