@@ -32,6 +32,19 @@ env:
   GEMINI_API_KEY: ci-placeholder-not-a-real-key
   # Explicitly no env file, rather than depending on a runner not having one.
   AGENT_SYSTEM_ENV_FILE: /dev/null
+  # The smoke asserts every required logical field is mapped, not that any
+  # particular custom field exists -- so placeholder IDs exercise the check.
+  JIRA_FIELD_MAP_JSON: >-
+    {"agent_assigned_component":"customfield_10001",
+     "agent_capabilities_needed":"customfield_10002",
+     "agent_retry_count":"customfield_10003",
+     "repository":"customfield_10004",
+     "repo_path":"customfield_10005",
+     "slack_channel":"customfield_10006",
+     "slack_thread_ts":"customfield_10007"}
+  # `gh` is installed on the runner but logged into nothing; the workflow token
+  # is read-only here and is what the github_auth check looks for.
+  GH_TOKEN: ${{ github.token }}
 
 jobs:
   checks:
