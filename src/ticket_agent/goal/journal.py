@@ -447,7 +447,7 @@ def _model_phase(workflow_node: object) -> GoalPhase:
 async def _await[T](value: T | Awaitable[T]) -> T:
     if isawaitable(value):
         return await cast(Awaitable[T], value)
-    return cast(T, value)
+    return value
 
 
 __all__ = [

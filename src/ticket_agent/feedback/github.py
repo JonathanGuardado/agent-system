@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from inspect import isawaitable
@@ -928,9 +928,9 @@ def _fingerprint(url: str, branch_name: str, text: str) -> str:
 
 
 def _first_ticket_key(
-    result: Sequence[Any] | dict[str, Any],
+    result: Sequence[Any] | Mapping[str, Any],
 ) -> str | None:
-    issues = result.get("issues", []) if isinstance(result, dict) else result
+    issues = result.get("issues", []) if isinstance(result, Mapping) else result
     for issue in issues:
         if hasattr(issue, "key"):
             key = str(issue.key)

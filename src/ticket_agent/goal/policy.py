@@ -393,7 +393,7 @@ def _parse_risk(value: Any, label: str) -> RiskClass:
         raise RiskPolicyError(
             f"{label} must be one of {', '.join(_RISK_ORDER)}; got {text!r}"
         )
-    return text  # type: ignore[return-value]
+    return text
 
 
 __all__ = [

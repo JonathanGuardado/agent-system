@@ -1311,13 +1311,13 @@ def _candidate_summaries(mode: IntakeMode, text: str) -> list[SummarySlice]:
     if mode == IntakeMode.NEW_TICKETS:
         items = _split_into_items(text)
         if items:
-            return items
+            return list(items)
     if mode in {IntakeMode.NEW_PROJECT, IntakeMode.NEW_FEATURE}:
         if _is_application_request(text):
             return _application_delivery_slices(text)
         items = _split_into_items(text)
         if len(items) >= 2:
-            return items
+            return list(items)
     return [_first_sentence(text)]
 
 

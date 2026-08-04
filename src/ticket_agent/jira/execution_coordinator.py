@@ -237,9 +237,14 @@ class JiraExecutionCoordinator:
         )
 
     async def _post_slack(self, state: TicketState, text: str) -> None:
+        # Both callers check this, one method up; repeating it here is what
+        # lets the attribute access below be checked rather than assumed.
+        if self._slack is None:
+            return
+        slack = self._slack
         try:
             async def effect() -> None:
-                result = self._slack.post_thread_reply(
+                result = slack.post_thread_reply(
                     state.slack_channel,
                     state.slack_thread_ts or state.ticket_key,
                     self._slack_poster_user_id,
@@ -270,7 +275,10 @@ class JiraExecutionCoordinator:
                         "body_digest": body_digest,
                     },
                     effect=effect,
-                    result_identity=lambda ignored: body_digest,
+                    # A named function rather than a lambda: the effect returns
+                    # None, and an untyped lambda parameter leaves the journal's
+                    # result type with nothing to bind to but Never.
+                    result_identity=_posted_body_digest(body_digest),
                 )
         except asyncio.CancelledError:
             raise
@@ -367,6 +375,15 @@ def _state_from_work_item(work_item: TicketWorkItem) -> TicketState:
         slack_thread_ts=work_item.slack_thread_ts,
         max_attempts=work_item.max_attempts,
     )
+
+
+def _posted_body_digest(body_digest: str) -> Callable[[None], str]:
+    """Identity for a journaled Slack post, whose effect returns None."""
+
+    def identity(_result: None) -> str:
+        return body_digest
+
+    return identity
 
 
 __all__ = [

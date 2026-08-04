@@ -401,7 +401,10 @@ class SlackExecutionApprovalService:
                         "body_digest": body_digest,
                     },
                     effect=effect,
-                    result_identity=lambda ignored: body_digest,
+                    # A named function rather than a lambda: the effect returns
+                    # None, and an untyped lambda parameter leaves the journal's
+                    # result type with nothing to bind to but Never.
+                    result_identity=_posted_body_digest(body_digest),
                 )
 
         resume_value = interrupt(
@@ -848,6 +851,15 @@ def _datetime_text(value: datetime) -> str:
 
 def _datetime_from_text(value: str) -> datetime:
     return _ensure_aware(datetime.fromisoformat(value))
+
+
+def _posted_body_digest(body_digest: str) -> Callable[[None], str]:
+    """Identity for a journaled Slack post, whose effect returns None."""
+
+    def identity(_result: None) -> str:
+        return body_digest
+
+    return identity
 
 
 __all__ = [

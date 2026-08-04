@@ -8,6 +8,7 @@ import sys
 
 from ticket_agent.domain.model_selection import ModelEndpoint, ModelSelection
 from ticket_agent.router import create_model_router
+from ticket_agent.router.model_router import ModelRouter
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CAPABILITY = "trivial.respond"
@@ -136,7 +137,9 @@ def _select_remote_provider(
     return None
 
 
-def _select_only_remote_provider(router: object, provider: str) -> None:
+def _select_only_remote_provider(router: ModelRouter, provider: str) -> None:
+    # Reaching past the public surface is the point: this smoke script pins the
+    # router to one provider so a single backend can be exercised in isolation.
     router._selector = _SingleProviderSelector(provider)
 
 

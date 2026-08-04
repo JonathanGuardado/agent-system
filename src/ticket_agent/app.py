@@ -20,6 +20,7 @@ from ticket_agent.detection.jira_search import JiraDetectionSearchClient
 from ticket_agent.detection.ownership import OwnershipChecker
 from ticket_agent.feedback.github import (
     FeedbackExecutionCoordinator,
+    FeedbackItem,
     FeedbackWorker,
     GhCliFeedbackClient,
     GhCliMergedDeliveryClient,
@@ -583,7 +584,7 @@ def build_runtime(
             for defaults in repo_defaults.values()
             if defaults.get("repo_path")
         ]
-        feedback_queue = asyncio.Queue()
+        feedback_queue: asyncio.Queue[FeedbackItem] = asyncio.Queue()
         feedback_store = SQLiteFeedbackStore(database_paths["feedback_store"])
         feedback_poller = GitHubFeedbackPoller(
             client=GhCliFeedbackClient(
@@ -1384,16 +1385,16 @@ def _runtime_repo_defaults(
         path.stem.upper(): contract for path, contract in contracts
     }
     for project_key in config.jira_target_projects:
-        contract = (
+        matched = (
             contracts_by_file_stem.get(project_key)
             or contracts_by_name.get(project_key)
             or contracts_by_stem.get(project_key)
         )
-        if contract is None:
+        if matched is None:
             continue
         defaults[project_key] = {
-            "repository": contract.repo.name,
-            "repo_path": str(Path(contract.repo.root).expanduser()),
+            "repository": matched.repo.name,
+            "repo_path": str(Path(matched.repo.root).expanduser()),
         }
     return defaults
 
