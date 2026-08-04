@@ -67,6 +67,26 @@ def test_both_contract_test_paths_use_the_same_enforcing_shell_factory(tmp_path)
     assert "actual wrapper profile" in model_result["error"]
 
 
+def test_omitting_the_shell_factory_refuses_instead_of_crashing(tmp_path):
+    """There is no safe default shell factory, so the default must say so.
+
+    `_build_contract_shell` used to be the default while requiring a
+    keyword-only `sandbox`, so it could not be called through the
+    `ShellFactory` signature at all. Omitting the factory raised `TypeError:
+    missing 1 required keyword-only argument` -- and TypeError is not among the
+    `(AgentSystemError, OSError, ValueError)` this boundary catches, so it
+    escaped as an unhandled crash instead of a failed test result. No test
+    reached it: the ones that omit the factory all fail earlier on contract
+    errors. Now it is a SandboxUnavailableError, which the boundary does catch.
+    """
+
+    result = _make_contract_test_runner(tmp_path, _contract())()
+
+    assert result["tests_passed"] is False
+    assert result["status"] == "failed"
+    assert "RuntimeShellFactory" in result["error"]
+
+
 def _contract() -> RepoContract:
     return RepoContract(
         repo=RepoInfo(name="example", root=".", default_branch="main"),

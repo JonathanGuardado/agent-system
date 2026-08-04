@@ -17,7 +17,7 @@ from yaml import YAMLError
 
 from ticket_agent.adapters.local.file_adapter import LocalFileAdapter
 from ticket_agent.adapters.local.git_adapter import GitAdapter
-from ticket_agent.adapters.local.sandbox import Sandbox
+from ticket_agent.adapters.local.sandbox import Sandbox, SandboxUnavailableError
 from ticket_agent.adapters.local.shell_adapter import LocalShellAdapter
 from ticket_agent.adapters.local.test_adapter import LocalTestAdapter
 from ticket_agent.config.repo_contract import (
@@ -159,7 +159,7 @@ class LocalImplementationService:
         self._file_adapter_factory = file_adapter_factory
         self._implementation_step = implementation_step or _prepare_only_step
         self._lock_id_factory = lock_id_factory or _new_short_lock_id
-        self._shell_factory = shell_factory or _build_contract_shell
+        self._shell_factory = shell_factory or _no_shell_factory
         self._test_runner_factory = test_runner_factory or (
             lambda worktree, contract: _make_contract_test_runner(
                 worktree,
@@ -323,7 +323,7 @@ class AdapterTestService:
     ) -> None:
         self._contract_dir = Path(contract_dir)
         self._contract_loader = contract_loader
-        self._shell_factory = shell_factory or _build_contract_shell
+        self._shell_factory = shell_factory or _no_shell_factory
         self._adapter_factory = adapter_factory
         self._action_journal = action_journal
 
@@ -533,6 +533,24 @@ def _normalize_repo_name(repository: str) -> str:
     return Path(normalized).name
 
 
+def _no_shell_factory(worktree_path: Path, contract: RepoContract) -> ShellPort:
+    """The absence of a shell factory, stated rather than crashed into.
+
+    `_build_contract_shell` used to sit in this slot as the default, but it
+    requires a keyword-only `sandbox` and so cannot be called as a
+    `ShellFactory` at all -- reaching it raised `TypeError: missing 1 required
+    keyword-only argument`. There is no correct default here: a factory that
+    built a shell without a sandbox would be the thing P13 exists to prevent,
+    so the honest default is one that refuses and says what to supply.
+    """
+
+    del worktree_path, contract
+    raise SandboxUnavailableError(
+        "no shell factory was supplied; production contract commands must be "
+        "built by RuntimeShellFactory, which carries the sandbox preflight"
+    )
+
+
 def _build_contract_shell(
     worktree_path: Path,
     contract: RepoContract,
@@ -588,7 +606,7 @@ def _make_contract_test_runner(
     worktree_path: Path,
     contract: RepoContract,
     *,
-    shell_factory: ShellFactory = _build_contract_shell,
+    shell_factory: ShellFactory = _no_shell_factory,
 ) -> TestRunner:
     """Build a zero-arg runner for the repo-contract test command.
 
