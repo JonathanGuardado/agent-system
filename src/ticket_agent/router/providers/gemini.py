@@ -5,6 +5,7 @@ import os
 
 from ticket_agent.domain.errors import ProviderError
 from ticket_agent.domain.model import ProviderResponse
+from ticket_agent.router.providers.base import ChatMessage
 from ticket_agent.router.providers.http import _join_url, _post_openai_chat
 
 
@@ -16,7 +17,7 @@ class GeminiProvider:
     async def chat(
         self,
         model: str,
-        messages: list[dict],
+        messages: list[ChatMessage],
         timeout_s: int,
     ) -> ProviderResponse:
         api_key = os.getenv(self.api_key_env, "")

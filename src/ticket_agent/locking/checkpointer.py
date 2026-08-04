@@ -30,8 +30,15 @@ from langgraph.checkpoint.base import (
 from ticket_agent.sqlite_support import connect as _connect
 from ticket_agent.sqlite_support import write_transaction as _write_transaction
 
+#: (task_id, channel, value) triples from the checkpoint_writes table.
+#:
+#: Declared out here because BaseCheckpointSaver requires a method named
+#: ``list``, which shadows the builtin for every annotation inside the class
+#: body -- so ``-> list[...]`` in there resolves to the method, not the type.
+type WriteRows = list[tuple[str, str, Any]]
 
-class SQLiteCheckpointer(BaseCheckpointSaver):
+
+class SQLiteCheckpointer(BaseCheckpointSaver[str]):
     """Checkpoint saver backed by a SQLite WAL database.
 
     Implements the full BaseCheckpointSaver interface including sync and async
@@ -397,7 +404,7 @@ class SQLiteCheckpointer(BaseCheckpointSaver):
         thread_id: str,
         checkpoint_ns: str,
         checkpoint_id: str,
-    ) -> list[tuple[str, str, Any]]:
+    ) -> WriteRows:
         with self._conn_lock:
             rows = self._conn.execute(
                 """

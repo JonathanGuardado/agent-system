@@ -187,7 +187,7 @@ class LocalShellAdapter:
             sandbox_attestation=attestation,
         )
 
-    def _terminate_group(self, process: subprocess.Popen) -> tuple[str, str]:
+    def _terminate_group(self, process: subprocess.Popen[bytes]) -> tuple[str, str]:
         """SIGTERM the group, then SIGKILL anything still alive."""
 
         for signal_number in (signal.SIGTERM, signal.SIGKILL):

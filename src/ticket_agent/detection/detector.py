@@ -16,7 +16,9 @@ from ticket_agent.jira.models import JiraTicket
 _LOGGER = logging.getLogger(__name__)
 
 EventEmitter = Callable[[str, Mapping[str, Any]], Any]
-TicketQueue = asyncio.Queue
+#: Detection enqueues ticket keys, not tickets -- the worker reloads each one
+#: under its lock, so anything richer here would be stale by the time it runs.
+type TicketQueue = asyncio.Queue[str]
 
 
 EVENT_DETECTION_POLL_STARTED = "detection.poll_started"

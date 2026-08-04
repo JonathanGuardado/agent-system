@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ticket_agent.router.providers.base import ProviderClient
+from ticket_agent.router.providers.base import ChatMessage, ProviderClient
 from ticket_agent.router.providers.config import (
     PROVIDER_DEFAULTS,
     ProviderConfig,
@@ -18,6 +18,7 @@ from ticket_agent.router.providers.stubs import (
 
 __all__ = [
     "PROVIDER_DEFAULTS",
+    "ChatMessage",
     "DeepSeekProvider",
     "FailingProviderClient",
     "GeminiProvider",

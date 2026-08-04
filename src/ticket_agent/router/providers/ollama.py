@@ -6,6 +6,7 @@ import httpx
 
 from ticket_agent.domain.errors import ProviderError
 from ticket_agent.domain.model import ProviderResponse
+from ticket_agent.router.providers.base import ChatMessage
 from ticket_agent.router.providers.http import (
     _join_url,
     _parse_ollama_chat_response,
@@ -22,7 +23,7 @@ class OllamaProvider:
     async def chat(
         self,
         model: str,
-        messages: list[dict],
+        messages: list[ChatMessage],
         timeout_s: int,
     ) -> ProviderResponse:
         url = _join_url(self.base_url, "/api/chat")

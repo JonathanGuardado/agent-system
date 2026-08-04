@@ -56,8 +56,8 @@ class TicketWorkflowNodes:
 def build_ticket_graph(
     nodes: TicketWorkflowNodes | TicketNodeRunner | None = None,
     *,
-    checkpointer: BaseCheckpointSaver | None = None,
-) -> CompiledStateGraph:
+    checkpointer: BaseCheckpointSaver[str] | None = None,
+) -> CompiledStateGraph[TicketState, None, TicketState, TicketState]:
     workflow_nodes = _coerce_workflow_nodes(nodes)
     graph = StateGraph(TicketState)
 
@@ -128,8 +128,8 @@ def build_persistent_ticket_graph(
     nodes: TicketWorkflowNodes | TicketNodeRunner | None = None,
     *,
     checkpoint_db_path: str | Path = DEFAULT_CHECKPOINT_DB_PATH,
-    checkpointer: BaseCheckpointSaver | None = None,
-) -> CompiledStateGraph:
+    checkpointer: BaseCheckpointSaver[str] | None = None,
+) -> CompiledStateGraph[TicketState, None, TicketState, TicketState]:
     """Build the production graph with SQLite-backed checkpoint persistence."""
 
     saver = checkpointer or SQLiteCheckpointer(checkpoint_db_path)

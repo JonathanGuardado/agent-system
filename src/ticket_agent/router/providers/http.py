@@ -6,6 +6,7 @@ import httpx
 
 from ticket_agent.domain.errors import ProviderError
 from ticket_agent.domain.model import ProviderResponse
+from ticket_agent.router.providers.base import ChatMessage
 
 
 async def _post_openai_chat(
@@ -14,7 +15,7 @@ async def _post_openai_chat(
     url: str,
     api_key: str,
     model: str,
-    messages: list[dict],
+    messages: list[ChatMessage],
     timeout_s: int,
 ) -> ProviderResponse:
     payload = {"model": model, "messages": messages}

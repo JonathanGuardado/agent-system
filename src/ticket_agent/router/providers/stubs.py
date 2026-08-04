@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ticket_agent.domain.model import ProviderResponse
+from ticket_agent.router.providers.base import ChatMessage
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,7 +18,7 @@ class StaticProviderClient:
     async def chat(
         self,
         model: str,
-        messages: list[dict],
+        messages: list[ChatMessage],
         timeout_s: int,
     ) -> ProviderResponse:
         del model, messages, timeout_s
@@ -38,7 +39,7 @@ class FailingProviderClient:
     async def chat(
         self,
         model: str,
-        messages: list[dict],
+        messages: list[ChatMessage],
         timeout_s: int,
     ) -> ProviderResponse:
         del model, messages, timeout_s

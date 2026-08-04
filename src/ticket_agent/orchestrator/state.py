@@ -44,21 +44,21 @@ class TicketState(BaseModel):
     worktree_path: str | None = None
     slack_channel: str | None = None
     slack_thread_ts: str | None = None
-    decomposition: dict | None = None
+    decomposition: dict[str, Any] | None = None
     current_node: str | None = None
     workflow_status: WorkflowStatus = "new"
     execution_approved: bool | None = None
     execution_approval_status: str | None = None
     implementation_attempts: int = 0
     max_attempts: int = 3
-    implementation_result: dict | None = None
+    implementation_result: dict[str, Any] | None = None
     branch_name: str | None = None
     pull_request_base_branch: str | None = None
     lock_id: str | None = None
     tests_passed: bool | None = None
-    test_result: dict | None = None
+    test_result: dict[str, Any] | None = None
     review_passed: bool | None = None
-    verification_result: dict | None = None
+    verification_result: dict[str, Any] | None = None
     #: Goal this ticket serves. The durable spine is keyed on it; the ticket
     #: graph only carries it so evidence and transcripts can be correlated.
     goal_id: str | None = None

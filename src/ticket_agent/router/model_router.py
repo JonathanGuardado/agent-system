@@ -15,7 +15,7 @@ from ticket_agent.observability.transcripts import (
     safe_record,
 )
 from ticket_agent.redaction import redact
-from ticket_agent.router.providers import ProviderClient
+from ticket_agent.router.providers import ChatMessage, ProviderClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -78,9 +78,9 @@ class ModelRouter:
     async def invoke(
         self,
         capability: str,
-        messages: list[dict],
+        messages: list[ChatMessage],
         ticket_id: str | None = None,
-        metadata: dict | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> ModelResponse:
         decision = _select_for_capability(self._selector, capability)
         selected_models = (decision.primary, *decision.fallbacks)
