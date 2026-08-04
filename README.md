@@ -27,6 +27,7 @@ Slack request
   -> implementation
   -> worktree tests
   -> summary-based model review
+  -- candidate-evidence ceiling: unreachable in production --
   -> commit/push
   -> pull request
   -> Jira and Slack reporting
@@ -37,6 +38,12 @@ Slack request
 > automatically: the runtime opens PRs and does not merge them, and any review
 > or merge is performed by a human as required by current policy. See the
 > [Roadmap](#roadmap) for what is missing and in what order it lands.
+
+> **The last three stages are code paths, not current behavior.** Opening a pull
+> request requires `deliver` autonomy, and the candidate-evidence ceiling caps
+> effective autonomy at `implement` until isolated verification (P14),
+> independent complete-diff review (P15), and candidate authorization are all
+> live. A production run today stops after review.
 
 Slack is the human-facing interface. The authorized `GoalContract` is scope
 authority, while Jira is its work-queue projection: detection reads Jira and
@@ -311,7 +318,9 @@ Local prerequisites that are not environment variables:
 **P0–P7 are complete: a bounded, human-reviewed ticket-processing pipeline.**
 Slack intake, Jira tickets, detection, locking, the LangGraph workflow,
 implementation, tests, PR creation, and feedback polling are implemented and
-unit-tested. External Slack/Jira/GitHub end-to-end verification remains manual.
+unit-tested. External Slack/Jira/GitHub end-to-end verification remains manual,
+and the PR-creation path is currently unreachable in production behind the
+candidate-evidence ceiling.
 
 Everything after that exists to make the pipeline trustworthy enough to run
 *unattended*, which **it is not today**.
@@ -356,13 +365,22 @@ because it acts on comments left on the promotion PR that P17 opens. Per-step
 rationale is in
 [the roadmap](docs/autonomous-delivery-roadmap.md#recommended-execution-order).
 
-Two things are worth knowing before trusting a status mark anywhere:
+The near-term plan layered on that order is
+[M1–M4](docs/autonomous-delivery-roadmap.md#near-term-plan-m1m4): engineering
+baseline (lock file, typing, CI) → **a first operationally validated run** →
+schema and evidence durability → P14 onward.
+
+Three things are worth knowing before trusting a status mark anywhere:
 
 - **A capability is not complete because its types exist.** Sandbox and goal
   authority are enforced, while their parent phases remain partial for the
   separately listed P12/P13 exit criteria.
 - **Opt-in is not operational proof.** Transcripts default to off; a feature
   that *can* be enabled has demonstrated nothing.
+- **No phase has been operationally validated.** Every runtime database is
+  empty; no ticket has been processed end to end. Every ✅ above means
+  "implemented, wired, enforced, unit-tested" and nothing more. Closing that is
+  M2.
 
 ## Tests
 

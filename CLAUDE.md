@@ -27,7 +27,8 @@ Slack → ai-model-selector → IntakeHandler → authorized GoalContract / Jira
 projection → durable spine → DetectionComponent → authorization+sandbox
 preflight → SQLite lock/action journal → LangGraph StateGraph →
 ImplementationComponent → internal ModelRouter → worktree tests →
-summary-based review → commit/push → PR → Slack alert
+summary-based review → [candidate-evidence ceiling stops here] → commit/push →
+PR → Slack alert
 
 **Remaining target after P14–P18** (not current behavior):
 
@@ -63,12 +64,22 @@ Slack request
   → implementation
   → worktree tests
   → summary-based model review
+  → ── candidate-evidence ceiling: unreachable in production ──
   → commit/push
   → pull request
   → Jira/Slack reporting
 ```
 
 Important current boundaries:
+
+- **The delivery tail is code, not current behavior.** `open_pull_request` and
+  `pr_create` require `deliver` (`goal/autonomy.py:53-56`), and the Step 0.5
+  candidate-evidence ceiling caps effective autonomy at `implement` until P14
+  verification, P15 review, and candidate authorization are all live.
+  `CANDIDATE_EVIDENCE_CAPABILITIES_LIVE = False` (`app.py:136`, consumed at
+  `:424`) is a code constant that no configuration file reaches. A production
+  run stops after review; only tests opting in via the `candidate_evidence_live`
+  fixture exercise commit, push, and PR.
 
 - **The authorized `GoalContract` is scope authority; Jira is its work-queue
   projection.** Detection reads Jira, but shared preflight rejects missing,
@@ -130,8 +141,13 @@ dependency · ↪ absorbed into another phase.
 goal authority are enforced, but P13 still lacks context assembly and P12 still
 lacks non-convergence policy plus reviewed live recovery evidence; both are 🔶.
 
-**P0–P7 are implemented and unit-tested, not operationally validated.**
-External Slack/Jira/GitHub end-to-end verification remains manual.
+**Nothing here has reached operational validation.** As measured on
+2026-08-04, every runtime database in `.agent-system-data/` is empty, no
+transcripts directory exists, and the goal-contract and spine databases have
+never been created — not one ticket has been processed end to end. Read every ✅
+as "implemented, wired, enforced, and unit-tested" (level 2), never as "observed
+working on real work" (level 3). External Slack/Jira/GitHub verification remains
+manual.
 
 ### Recommended execution order
 
@@ -155,6 +171,27 @@ recovery policy are in
 One phase per PR; multiple PRs per phase is fine. When a phase lands, update
 the status table there and here — and only mark ✅ once it is wired into the
 production path, not merely implemented.
+
+### What to work on next
+
+Phase order is dependency-driven; the near-term execution plan layered on top of
+it is
+[`docs/autonomous-delivery-roadmap.md#near-term-plan-m1m4`](docs/autonomous-delivery-roadmap.md#near-term-plan-m1m4):
+
+```txt
+M1  engineering baseline — lock file, mypy to zero, scripts/ linted, CI
+M2  first operationally validated run on a neutral scratch target
+M3  schema versioning + evidence store
+M4  P14 → P12 closure → P15 → CandidateAuthorization → P16 → hard-kill
+```
+
+**M2 is not a phase.** It is scheduled ahead of P14 because P14–P16 build
+evidence machinery, and there is currently no evidence that the loop underneath
+them works on real work. It ends at the candidate-evidence ceiling — no pull
+request — and its deliverable is a committed run report.
+
+Greenfield repository creation is **deferred past Milestone B** by decision, not
+awaiting one.
 
 ## Runtime model
 

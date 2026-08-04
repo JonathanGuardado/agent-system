@@ -36,10 +36,21 @@ Slack request
   → implementation
   → worktree tests
   → summary-based model review
+  → ── candidate-evidence ceiling: unreachable in production ──
   → commit/push
   → pull request
   → Jira/Slack reporting
 ```
+
+**The last three steps are code paths, not current behavior.** The Step 0.5
+candidate-evidence ceiling caps effective autonomy at `implement` until isolated
+verification (P14), independent complete-diff review (P15), and
+candidate-authorization enforcement are all live. `open_pull_request` and
+`pr_create` require `deliver` (`goal/autonomy.py:53-56`), and
+`CANDIDATE_EVIDENCE_CAPABILITIES_LIVE = False` (`app.py:136`, consumed at
+`:424`) is a code constant no configuration reaches. A production run today
+stops after review. The delivery tail becomes reachable when
+`CandidateAuthorization` lands — see the near-term plan below.
 
 The execution-approval node always runs. Whether it requires a human depends on
 which `ApprovalService` is wired: the default `AutoApprovalService`
@@ -243,6 +254,10 @@ P11 → P13 → P12 → P14 → P15 → P16 → P17 → P18 → revisit P8
 | 8 | **P18** — bounded rework | Acts on comments left on the promotion PR that P17 opens. |
 | 9 | **P8** — revisit strategy work | Only once P15/P16 can tell whether a strategy helped. |
 
+P11, P13's sandbox work, and P12's authority work are done. For what to do next
+— including one milestone that is not a phase — see
+[Near-term plan (M1–M4)](#near-term-plan-m1m4).
+
 ---
 
 ## Cross-phase invariants
@@ -341,6 +356,124 @@ incomplete while a candidate is authorized.
 - Signed artifacts stay deserializable and signature-verifiable under their
   original canonical form across schema transitions. A legacy or missing field
   is surfaced explicitly — **never silently upgraded**.
+
+---
+
+## Near-term plan (M1–M4)
+
+The phase order above is dependency-driven and unchanged. This section is the
+**near-term execution plan layered on top of it**: what to do next, in what
+order, verified against the code on 2026-08-04. Where a milestone maps onto an
+existing phase or milestone-plan step, it says so rather than restating the
+specification.
+
+### Verified state on 2026-08-04
+
+| Check | Result |
+|---|---|
+| `pytest tests/unit/ -q` | 908 passed |
+| `ruff check src tests` | clean |
+| `ruff check .` | 22 findings, all in `scripts/` |
+| `mypy` (strict, `files = ["src"]`) | 98 errors in 36 files |
+| `ai-model-selector` pin | `c9ab8e3`, reachable from `origin/main` |
+| Dependency lock file | none |
+| `.github/` | does not exist — no CI |
+| SQLite schema versioning | none — no `PRAGMA user_version` in `src/` |
+| Graph topology | `plan → approval → implement → run_tests → review → open_pull_request → escalate → report` (`orchestrator/graph.py:64-74`) — no `commit`, `verify`, or `authorize_candidate` node |
+| Host prerequisites | `bwrap` 0.9.0, `gh`, and all Slack/Jira/DeepSeek/Gemini/GitHub credentials present |
+| Runtime databases | **all empty** — see "Operational validation" below |
+
+mypy's 98 cluster as ~32 `arg-type` narrowing, 20 `type-arg` bare generics, and
+10 `call-overload` on `subprocess.run(**kwargs)`. `tests/` and `scripts/` are
+outside the typecheck scope entirely.
+
+### M1 — Engineering baseline (Milestone B step 0e)
+
+Every digest the later phases bind is only as trustworthy as the toolchain that
+computed it, which is why this is an invariant rather than housekeeping — see
+[Engineering baseline](#engineering-baseline).
+
+1. **Dependency lock file**, so a clean clone reproduces the environment that
+   produced a recorded digest.
+2. **mypy to zero** across the three clusters above. The `subprocess.run`
+   overloads need typed wrapper signatures around the shell adapters, not
+   annotations. Extend `files` to `tests/` and `scripts/` once `src/` is clean.
+3. **`scripts/` into the lint scope** — 22 findings today, checked by nothing.
+4. **CI** under `.github/workflows/`: unit tests, ruff, mypy, packaging,
+   `ticket-agent-smoke-runtime --skip-network`, and an assertion that the pinned
+   dependency SHA resolves from a fresh clone. Record current coverage as the
+   floor and forbid regression.
+5. **Readiness verifies gate executability.** `config/repos/lab.yaml` declares
+   `typecheck: required` with no executor and is capped only by accident; that
+   state must report `unready` explicitly.
+
+Promoting `agent-system.yaml`'s `lint` gate to `required` and adding `typecheck`
+becomes possible once the sweep is real — but doing so lowers autonomy as a side
+effect of configuration, which is the fragility the derived ceiling exists to
+replace. It is not a substitute for it. See [Autonomy ceiling](#autonomy-ceiling).
+
+### M2 — First operationally validated run
+
+**Rationale.** No phase in this document has ever reached maturity level 3. The
+runtime databases are empty, so every capability marked ✅ rests on unit tests
+alone. Building P14–P16 first would stack four more phases of evidence machinery
+on a loop whose evidence is entirely synthetic. Every host prerequisite is
+already installed; the only reason no run exists is that none has been
+attempted.
+
+This pulls Milestone B step 0d's scratch repository forward. The scratch target
+is app-agnostic by construction — satisfying the rule that nothing in `src/` may
+be shaped around a particular target — and serves as the hard-kill fixture later.
+
+- **Scratch target repository**: a real Git repository with a contract under
+  `config/repos/`, real `test` and `lint` gates, declared `writable_paths`, and
+  a trust root. Not `ofertas-sv`; not `agent-system` itself.
+- **Drive one ticket end to end** on the live path: Slack request → proposal →
+  intake approval → `GoalContract` + spine → Jira epic/tasks → detection →
+  preflight → lock → plan → implement → `run_tests` → review.
+- **The run stops before delivery, by design.** The candidate-evidence ceiling
+  blocks `open_pull_request`. Inspect the produced worktree diff by hand.
+  Reaching a pull request is M4's `CandidateAuthorization` step, not this one.
+- **Enable transcripts** (`AGENT_SYSTEM_TRANSCRIPTS_ENABLED=true`) and review
+  one. The sink existing demonstrates nothing.
+- **Deliverable — a committed run report**: funnel rows, spine and journal rows,
+  model attempts and cost, where the run needed help, and what was surprising.
+  This is the project's first level-3 evidence.
+
+Expect defects that 908 unit tests could not surface. That is the reason this
+milestone precedes P14 rather than following the hard-kill validation.
+
+### M3 — Schema and evidence durability (Milestone B step 0b)
+
+Specified under [Schema and evidence durability](#schema-and-evidence-durability)
+and in the P14/P15 sections; sequenced here, after M2, so there is real data to
+migrate rather than empty files.
+
+- Version the eight existing databases: `locking/checkpointer.py`,
+  `feedback/github.py`, `orchestrator/execution_approval.py`,
+  `goal/contract.py`, `goal/spine.py`, `intake/proposal_store.py`,
+  `locking/sqlite_store.py`, `observability/telemetry.py`.
+- Add the new evidence tables and the content-addressed evidence store.
+- Fix the two identity defects while the schema is open: `action_records`'
+  `UNIQUE (goal_id, operation, natural_key)` (`goal/spine.py:76`) collides on an
+  A → B → A rework, and one mutable row per action (`spine.py:53`) cannot
+  preserve attempt history.
+
+### M4 — Milestone B as specified
+
+`P14 → P12 closure → P15 → CandidateAuthorization → P16 → supervised hard-kill
+validation`. Specifications and exit criteria are unchanged and live in the
+phase sections below. `deliver` first becomes reachable at
+`CandidateAuthorization`; `autonomous` remains P17's to unlock.
+
+### Deferred, as decisions rather than open questions
+
+- **Greenfield repository creation** — deferred past Milestone B. See
+  [Greenfield behavior](#greenfield-behavior).
+- **P8** — unchanged; waits on P15/P16 feedback.
+- **P13 remainder** — context assembly / knowledge map, still unscheduled.
+- **`lab.yaml` naming** and **`risk.yaml` shipping one operator's allowlist** —
+  real debt, cosmetic priority; fold into M1 if convenient.
 
 ---
 
@@ -1604,8 +1737,14 @@ Stated carefully, because the distinction matters:
 So a request naming a target that has no local repository at all stalls: the
 repo contract scaffolder can describe a repository, but nothing brings one into
 existence. Harness readiness reports `unready`, which correctly caps autonomy
-at `propose`. Closing this gap is not currently covered by any phase, and would
-be a prerequisite for "build me a new application" requests.
+at `propose`. It is a prerequisite for "build me a new application" requests.
+
+**Decision (2026-08-04): deferred past Milestone B**, as an accepted limitation
+rather than an open question. Work on repositories that already exist is the
+path with specifications behind it; greenfield adds a new class of authority
+questions — what a human authorized when no contract, trust root, or default
+branch yet exists — on top of a loop that has no operational evidence. Revisit
+once M2 has produced a run report and the delivery tail is reachable.
 
 ### Operational validation
 
@@ -1614,6 +1753,21 @@ operationally validated.** External Slack, Jira, and GitHub end-to-end
 verification remains manual, and the repository holds no recorded live-run
 evidence. Where this document marks something ✅, read it as "implemented,
 wired, enforced, and unit-tested" — level 2 of the maturity scale, not level 3.
+
+**Stated exactly, as measured on 2026-08-04:** every runtime database is empty
+and no run has ever been recorded.
+
+```txt
+execution_approvals: 0    intake_proposals: 0    ticket_locks: 0
+checkpoints: 0            checkpoint_writes: 0   feedback_fingerprints: 0
+.agent-system-data/transcripts/   does not exist
+goal contract and spine DBs       never created
+```
+
+**Nothing in this project has reached maturity level 3.** Not one ticket has
+been processed end to end. This is not a gap in a particular phase; it applies
+to every ✅ in the status table. Closing it is [M2](#m2--first-operationally-validated-run),
+which is scheduled ahead of P14 for that reason.
 
 Related: transcripts are gated behind `AGENT_SYSTEM_TRANSCRIPTS_ENABLED`,
 default **false**. A feature that *can* be switched on has demonstrated nothing
