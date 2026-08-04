@@ -41,6 +41,14 @@ DECLARABLE_GATES: frozenset[GateName] = frozenset(
     {"test", "lint", "typecheck", "build"}
 )
 
+#: The gates the runtime actually executes. A contract may declare a command
+#: for any gate in DECLARABLE_GATES, but only these reach an executor -- the
+#: `run_tests` node runs `test` and nothing runs the rest. A required gate
+#: outside this set is a hole in the evidence, not a preference, so readiness
+#: and the autonomy resolver both read it from here rather than repeating a
+#: literal that could drift from what is wired.
+EXECUTABLE_GATES: frozenset[GateName] = frozenset({"test"})
+
 
 @dataclass(frozen=True, slots=True)
 class GateOutcome:

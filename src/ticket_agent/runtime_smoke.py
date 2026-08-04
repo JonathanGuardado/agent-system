@@ -38,6 +38,7 @@ from ticket_agent.jira.constants import (
 from ticket_agent.orchestrator.execution_environment import (
     ExecutionEnvironmentPreflight,
 )
+from ticket_agent.orchestrator.gates import EXECUTABLE_GATES
 from ticket_agent.orchestrator.local_services import RuntimeShellFactory
 
 _JIRA_PROJECT_ISSUE_TYPES_REQUIRED = frozenset({"Epic", "Task"})
@@ -291,7 +292,9 @@ def _harness_readiness_checks(contract_dir: Path) -> list[SmokeCheck]:
         try:
             contract = load_repo_contract(path)
             root = Path(contract.repo.root).expanduser()
-            readiness, reasons = contract.readiness(root)
+            readiness, reasons = contract.readiness(
+                root, executable_gates=EXECUTABLE_GATES
+            )
         except Exception as exc:  # noqa: BLE001 - smoke boundary
             results.append(
                 SmokeCheck(f"harness_readiness[{path.stem}]", "fail", str(exc))

@@ -13,6 +13,7 @@ from ticket_agent.config.trust_root import (
     resolve_closure,
 )
 from ticket_agent.domain.errors import RepoContractError
+from ticket_agent.orchestrator.gates import DECLARABLE_GATES, EXECUTABLE_GATES
 
 # -- matching --------------------------------------------------------------
 
@@ -255,6 +256,88 @@ def test_fully_declared_contract_is_ready(tmp_path):
     readiness, reasons = contract.readiness(tmp_path)
 
     assert readiness == "full", reasons
+
+
+_TYPECHECKED = """
+trust_root:
+  - {kind: file, path: CODEOWNERS}
+  - {kind: derived, source: verification_commands}
+gates:
+  test: required
+  typecheck: required
+"""
+
+_TYPECHECK_COMMAND = """
+  typecheck:
+    command: ["npx", "--no-install", "tsc", "--noEmit"]
+    timeout_seconds: 60
+    working_directory: "."
+    writable_paths: []
+    network: none
+"""
+
+
+def _typechecked_contract(tmp_path: Path):
+    """A contract requiring a gate that is declared but has no executor."""
+
+    body = _BASE.format(
+        root=str(tmp_path),
+        test_command='["npm", "run", "test"]',
+        extra=_TYPECHECKED,
+    ).replace("policy:", _TYPECHECK_COMMAND.strip("\n") + "\npolicy:", 1)
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest"}}')
+    return _contract(tmp_path, body)
+
+
+def test_required_gate_with_no_runtime_executor_is_unready(tmp_path):
+    """A gate nothing runs reads as a passing gate that never ran."""
+
+    contract = _typechecked_contract(tmp_path)
+
+    readiness, reasons = contract.readiness(
+        tmp_path, executable_gates=EXECUTABLE_GATES
+    )
+
+    assert readiness == "unready"
+    assert any("no runtime executor" in reason for reason in reasons)
+    assert any("typecheck" in reason for reason in reasons)
+
+
+def test_executable_gates_defaults_to_unchecked(tmp_path):
+    """Static validation has no runtime to ask, so it must not guess at one."""
+
+    contract = _typechecked_contract(tmp_path)
+
+    assert contract.readiness(tmp_path)[0] == "full"
+
+
+def test_required_gate_the_runtime_runs_stays_ready(tmp_path):
+    contract = _contract(
+        tmp_path,
+        _BASE.format(
+            root=str(tmp_path),
+            test_command='["npm", "run", "test"]',
+            extra=(
+                "trust_root:\n"
+                "  - {kind: file, path: CODEOWNERS}\n"
+                "  - {kind: derived, source: verification_commands}\n"
+            ),
+        ),
+    )
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest"}}')
+
+    readiness, reasons = contract.readiness(
+        tmp_path, executable_gates=EXECUTABLE_GATES
+    )
+
+    assert readiness == "full", reasons
+
+
+def test_only_test_has_a_runtime_executor():
+    """Guards the constant the readiness check and app.py both read."""
+
+    assert frozenset({"test"}) == EXECUTABLE_GATES
+    assert EXECUTABLE_GATES < DECLARABLE_GATES
 
 
 def test_gate_declared_required_without_a_command_is_rejected(tmp_path):

@@ -96,6 +96,7 @@ from ticket_agent.orchestrator.execution_environment import (
     ExecutionPreflight,
 )
 from ticket_agent.orchestrator.execution_worker import ExecutionWorker
+from ticket_agent.orchestrator.gates import EXECUTABLE_GATES
 from ticket_agent.orchestrator.git_services import (
     GhPullRequestOpener,
     GitService,
@@ -415,7 +416,7 @@ def build_runtime(
         repo_defaults=repo_defaults,
         # Only the test node has a production executor whose failure blocks
         # progress today. Config declarations cannot manufacture coverage.
-        enforced_gate_names=("test",),
+        enforced_gate_names=tuple(sorted(EXECUTABLE_GATES)),
         # Deliberately not read from configuration. Candidate evidence exists
         # only once isolated verification of a committed SHA, independent
         # complete-diff review, and candidate-authorization enforcement are all

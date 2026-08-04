@@ -208,7 +208,10 @@ class GoalAutonomyResolver:
             try:
                 repo_contract = self._repo_contract(repository)
                 repo_path = self._repo_path(repository)
-                readiness, reasons = repo_contract.readiness(repo_path)
+                readiness, reasons = repo_contract.readiness(
+                    repo_path,
+                    executable_gates=self._enforced_gate_names,
+                )
                 required.update(repo_contract.required_gates)
                 detail = reasons or ("ready",)
             except Exception as exc:  # noqa: BLE001 - missing harness lowers mode

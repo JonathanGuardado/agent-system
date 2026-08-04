@@ -72,8 +72,20 @@ def test_gate_enforcement_is_derived_from_wired_executors(tmp_path):
 
         assert decision.required_gates == ("test", "typecheck")
         assert decision.enforced_gate_names == ("test",)
-        assert decision.effective_mode is AutonomyMode.IMPLEMENT
-        assert "runtime:derived_gate_enforcement" in decision.binding_sources
+        # Two independent ceilings now name the same hole, and readiness is the
+        # stricter of the two: a repository whose required verification cannot
+        # run is unready (-> propose), not merely limited to implementing.
+        assert decision.effective_mode is AutonomyMode.PROPOSE
+        assert decision.binding_sources == ("repo:harness_readiness",)
+
+        ceilings = {ceiling.source: ceiling for ceiling in decision.ceilings}
+        # The gate-enforcement ceiling still records the same hole at implement;
+        # readiness simply binds below it now, and says why.
+        assert (
+            ceilings["runtime:derived_gate_enforcement"].mode
+            is AutonomyMode.IMPLEMENT
+        )
+        assert "no runtime executor" in ceilings["repo:harness_readiness"].detail
     finally:
         spine.close()
 

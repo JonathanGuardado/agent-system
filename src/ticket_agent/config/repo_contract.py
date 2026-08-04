@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 import logging
 from pathlib import Path
@@ -149,8 +149,21 @@ class RepoContract:
             repo_root=repo_root,
         )
 
-    def readiness(self, repo_root: Path | None = None) -> tuple[str, tuple[str, ...]]:
+    def readiness(
+        self,
+        repo_root: Path | None = None,
+        *,
+        executable_gates: Collection[str] | None = None,
+    ) -> tuple[str, tuple[str, ...]]:
         """Harness readiness and the reasons holding it back.
+
+        ``executable_gates`` is the set of gates the *runtime* can actually
+        run. A contract can declare a command for a gate nothing in ``src/``
+        executes, and that reads as a passing gate that never ran -- so a
+        required gate with no executor is blocking here, named as such, rather
+        than left to be inferred from an autonomy ceiling somewhere else.
+        Pass ``None`` when the runtime is not known, as static contract
+        validation does; the check is then skipped rather than guessed at.
 
         Readiness is a ceiling on autonomy, not a warning: a repository that
         cannot describe how it is verified must not be driven unattended.
@@ -167,6 +180,11 @@ class RepoContract:
         for gate in self.required_gates:
             if self.commands.gate_commands().get(gate) is None:
                 reasons.append(f"gate {gate!r} is required but no command is declared")
+            elif executable_gates is not None and gate not in executable_gates:
+                reasons.append(
+                    f"gate {gate!r} is required but no runtime executor runs it "
+                    f"(runnable: {sorted(executable_gates)})"
+                )
 
         for gate, spec in self.commands.gate_commands().items():
             if _is_vacuous_command(spec.command):
@@ -190,6 +208,7 @@ class RepoContract:
             or "without running anything" in reason
             or "does not exist" in reason
             or "no required gates" in reason
+            or "no runtime executor" in reason
             for reason in reasons
         )
         return ("unready" if blocking else "partial"), tuple(reasons)
