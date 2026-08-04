@@ -2,20 +2,20 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import sqlite3
-import sys
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+import re
+import sqlite3
+import sys
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from ticket_agent.app import load_app_config
-from ticket_agent.jira.client import JiraRestClient
-from ticket_agent.jira.constants import (
+from ticket_agent.app import load_app_config  # noqa: E402 -- needs the path insert
+from ticket_agent.jira.client import JiraRestClient  # noqa: E402
+from ticket_agent.jira.constants import (  # noqa: E402
     FIELD_AGENT_ASSIGNED_COMPONENT,
     FIELD_AGENT_RETRY_COUNT,
     FIELD_MAX_ATTEMPTS,
@@ -179,7 +179,7 @@ def _reset_local_state(
                 _delete_rows(
                     db_path,
                     table,
-                    f"{key_column} = ?",
+                    key_column,
                     (ticket,),
                     dry_run=dry_run,
                 )
@@ -198,13 +198,28 @@ def _reset_local_state(
     return report
 
 
+#: SQLite cannot bind an identifier, so table and column names reach these
+#: queries by interpolation. Every one of them comes from LOCAL_TABLES or
+#: PROPOSAL_TABLE, which are module constants -- validating here is what keeps
+#: that true if a caller ever starts passing something else, and is what makes
+#: the S608 suppressions below honest rather than assumed.
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _identifier(name: str, *, kind: str) -> str:
+    if not _IDENTIFIER.match(name):
+        raise ValueError(f"unsafe SQL {kind}: {name!r}")
+    return name
+
+
 def _delete_all_rows(db_path: Path, table: str, *, dry_run: bool) -> str:
+    table = _identifier(table, kind="table")
     if not db_path.exists():
         return f"{db_path.name}.{table}: database missing"
     count = _count_rows(db_path, table)
     if not dry_run:
         with sqlite3.connect(db_path) as con:
-            con.execute(f"DELETE FROM {table}")
+            con.execute(f"DELETE FROM {table}")  # noqa: S608 -- identifier validated
             con.commit()
     return f"{db_path.name}.{table}: {'would delete' if dry_run else 'deleted'} {count}"
 
@@ -212,17 +227,23 @@ def _delete_all_rows(db_path: Path, table: str, *, dry_run: bool) -> str:
 def _delete_rows(
     db_path: Path,
     table: str,
-    where_sql: str,
+    key_column: str,
     params: tuple[object, ...],
     *,
     dry_run: bool,
 ) -> str:
+    table = _identifier(table, kind="table")
+    where_sql = f"{_identifier(key_column, kind='column')} = ?"
     if not db_path.exists():
         return f"{db_path.name}.{table}: database missing"
     count = _count_rows(db_path, table, where_sql, params)
     if not dry_run:
         with sqlite3.connect(db_path) as con:
-            con.execute(f"DELETE FROM {table} WHERE {where_sql}", params)
+            con.execute(
+                # Identifiers validated above; values are bound, not interpolated.
+                f"DELETE FROM {table} WHERE {where_sql}",  # noqa: S608
+                params,
+            )
             con.commit()
     return f"{db_path.name}.{table}: {'would delete' if dry_run else 'deleted'} {count}"
 
@@ -233,7 +254,9 @@ def _count_rows(
     where_sql: str | None = None,
     params: tuple[object, ...] = (),
 ) -> int:
-    query = f"SELECT COUNT(*) FROM {table}"
+    # Both callers validate their identifiers before reaching here; re-checking
+    # the table keeps this function safe to call directly.
+    query = f"SELECT COUNT(*) FROM {_identifier(table, kind='table')}"  # noqa: S608
     if where_sql is not None:
         query += f" WHERE {where_sql}"
     with sqlite3.connect(db_path) as con:
@@ -296,7 +319,7 @@ async def _reset_jira(
 
         if delete_issues:
             try:
-                await client._request(  # noqa: SLF001 - script-only Jira reset path
+                await client._request(
                     "DELETE",
                     f"/rest/api/3/issue/{ticket}",
                     expect_json=False,

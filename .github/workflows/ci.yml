@@ -36,7 +36,7 @@ jobs:
         run: uv sync --frozen --extra dev
 
       - name: Lint
-        run: uv run ruff check src tests
+        run: uv run ruff check .
 
       # The floor is the coverage measured when CI landed (84.95%), rounded
       # down. It exists to forbid regression, not to be a target.

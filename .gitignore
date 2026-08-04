@@ -9,3 +9,6 @@ build/
 .claude/
 .agent-system-data/
 .worktrees/
+.coverage
+coverage.xml
+htmlcov/

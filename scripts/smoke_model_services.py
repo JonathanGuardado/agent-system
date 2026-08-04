@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import json
 import os
+from pathlib import Path
 import sys
 import tempfile
-from collections.abc import Mapping
-from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -14,15 +14,17 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from ticket_agent.adapters.local.file_adapter import LocalFileAdapter
-from ticket_agent.orchestrator.model_services import (
+from ticket_agent.adapters.local.file_adapter import (  # noqa: E402 -- needs the path insert above
+    LocalFileAdapter,
+)
+from ticket_agent.orchestrator.model_services import (  # noqa: E402
     ModelRouterImplementationService,
     ModelRouterPlannerService,
     ModelRouterReviewService,
     ModelServiceError,
 )
-from ticket_agent.orchestrator.state import TicketState
-from ticket_agent.router import create_model_router
+from ticket_agent.orchestrator.state import TicketState  # noqa: E402
+from ticket_agent.router import create_model_router  # noqa: E402
 
 
 def main() -> int:
@@ -34,7 +36,10 @@ def main() -> int:
 
     try:
         router = create_model_router(timeout_s=120)
-    except Exception as exc:
+    # Breadth is the point: this script reports whether the router can be built
+    # at all, so a config, import, or credential failure should print and exit
+    # non-zero rather than traceback.
+    except Exception as exc:  # noqa: BLE001
         print(f"Router construction failed: {_format_exception(exc)}", file=sys.stderr)
         return 1
 
@@ -56,7 +61,9 @@ def main() -> int:
     except ModelServiceError as exc:
         print(f"Model service failed: {exc}", file=sys.stderr)
         return 1
-    except Exception as exc:
+    # The expected failure is caught above; this turns an unexpected one into a
+    # reported non-zero exit, which is what a smoke run is for.
+    except Exception as exc:  # noqa: BLE001
         print(f"Smoke failed: {_format_exception(exc)}", file=sys.stderr)
         return 1
 

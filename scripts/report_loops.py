@@ -18,10 +18,11 @@ the transcripts are incomplete and any conclusion drawn from them is suspect.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 import json
 from pathlib import Path
 import sys
-from typing import Any, Sequence
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
@@ -82,7 +83,7 @@ def _conversion(funnel: dict[str, int], claimed: int) -> dict[str, float | None]
     # Every rate is relative to tickets claimed, so stages are comparable to
     # each other rather than to whichever stage happened to precede them.
     if not claimed:
-        return {stage: None for stage in STAGES}
+        return dict.fromkeys(STAGES)
     return {stage: round(funnel.get(stage, 0) / claimed, 4) for stage in STAGES}
 
 

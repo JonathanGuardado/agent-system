@@ -8,8 +8,7 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from ticket_agent.router.smoke import main
-
+from ticket_agent.router.smoke import main  # noqa: E402 -- needs the path insert above
 
 if __name__ == "__main__":
     raise SystemExit(main())
