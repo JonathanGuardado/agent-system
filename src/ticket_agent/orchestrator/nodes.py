@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Mapping
+from typing import TYPE_CHECKING, Any, Protocol
 
 from ticket_agent.orchestrator.state import TicketState, WorkflowStatus
 
@@ -11,7 +11,21 @@ if TYPE_CHECKING:
     from ticket_agent.orchestrator.node_runner import TicketNodeRunner
 
 TicketStateUpdate = Mapping[str, Any]
-TicketNode = Callable[[TicketState], Awaitable[TicketStateUpdate]]
+
+
+class TicketNode(Protocol):
+    """One workflow node: takes the ticket state, returns a state update.
+
+    A callback Protocol rather than a `Callable` alias because langgraph's
+    `add_node` expects its own `_Node` protocol, whose parameter is named
+    `state` and is therefore callable by keyword. A `Callable[[TicketState],
+    ...]` declares that parameter positional-only and does not satisfy it,
+    which is why all eight `add_node` calls failed to match an overload.
+    Naming the parameter is the whole fix.
+    """
+
+    def __call__(self, state: TicketState) -> Awaitable[TicketStateUpdate]:
+        ...
 
 
 def service_backed_ticket_nodes(

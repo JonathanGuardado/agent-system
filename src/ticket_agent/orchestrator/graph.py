@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -13,6 +13,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from ticket_agent.locking.checkpointer import SQLiteCheckpointer
 from ticket_agent.orchestrator.nodes import (
+    TicketNode,
     escalate_ticket,
     implement_ticket,
     open_pull_request,
@@ -37,8 +38,6 @@ OPEN_PULL_REQUEST = "open_pull_request"
 ESCALATE = "escalate"
 REPORT = "report"
 DEFAULT_CHECKPOINT_DB_PATH = Path("data/ticket_graph_checkpoints.sqlite3")
-
-TicketNode = Callable[[TicketState], Awaitable[Mapping[str, Any]]]
 
 
 @dataclass(frozen=True, slots=True)

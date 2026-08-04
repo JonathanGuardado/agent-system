@@ -324,17 +324,17 @@ class GitAdapter:
         cwd: Path,
         env: Mapping[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        kwargs: dict[str, object] = {
-            "cwd": cwd,
-            "check": False,
-            "capture_output": True,
-            "text": True,
-            "timeout": self._default_timeout_seconds,
-        }
-        if env is not None:
-            kwargs["env"] = dict(env)
-        kwargs.setdefault("check", False)  # callers inspect returncode
-        return subprocess.run(("git", *args), **kwargs)  # noqa: PLW1510 - check is setdefault-ed above so callers may still opt in
+        # env=None is subprocess's own "inherit the parent environment", so the
+        # optional argument needs no branch.
+        return subprocess.run(
+            ("git", *args),
+            cwd=cwd,
+            check=False,  # every caller inspects returncode itself
+            capture_output=True,
+            text=True,
+            timeout=self._default_timeout_seconds,
+            env=dict(env) if env is not None else None,
+        )
 
     def _git_bot_env(self) -> Mapping[str, str] | None:
         if self._credentials is None:
@@ -583,17 +583,15 @@ def _run_command(
     timeout_seconds: int,
     env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    kwargs: dict[str, object] = {
-        "cwd": cwd,
-        "check": False,
-        "capture_output": True,
-        "text": True,
-        "timeout": timeout_seconds,
-    }
-    if env is not None:
-        kwargs["env"] = dict(env)
-    kwargs.setdefault("check", False)  # callers inspect returncode
-    return subprocess.run(tuple(command), **kwargs)  # noqa: PLW1510 - check is setdefault-ed above so callers may still opt in
+    return subprocess.run(
+        tuple(command),
+        cwd=cwd,
+        check=False,  # every caller inspects returncode itself
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+        env=dict(env) if env is not None else None,
+    )
 
 
 def _validate_safe_ref_component(value: str, label: str) -> None:
