@@ -1,0 +1,77 @@
+name: CI
+
+# Every gate here must be green before it is added. A workflow that lands red
+# teaches the team to ignore it, which is worse than having no workflow.
+# `ruff check .` and `mypy` join `checks` in the commits that make them pass.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Tests, lint, smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # --frozen is what makes uv.lock load-bearing: the run fails rather than
+      # silently re-resolving if the lock and pyproject.toml have drifted.
+      - name: Sync locked environment
+        run: uv sync --frozen --extra dev
+
+      - name: Lint
+        run: uv run ruff check src tests
+
+      # The floor is the coverage measured when CI landed (84.95%), rounded
+      # down. It exists to forbid regression, not to be a target.
+      - name: Unit tests
+        run: uv run pytest tests/unit -q --cov=ticket_agent --cov-report=term --cov-fail-under=84
+
+      - name: Runtime smoke
+        run: uv run ticket-agent-smoke-runtime --skip-network
+
+  packaging:
+    name: Packaging and pinned dependency
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # The selector pin is the dependency the whole contract rests on, and it
+      # is the one a lock file can silently disagree with: pyproject names a
+      # SHA, uv.lock names a resolved rev, and nothing else compares them.
+      - name: Pinned selector SHA agrees between pyproject and lock
+        run: uv run --no-project python scripts/check_pinned_dependency.py
+
+      - name: Build distributions
+        run: uv build
+
+      # A fresh environment, no lock and no dev extras: this is the path a
+      # clean clone takes, including actually fetching the pinned git rev.
+      - name: Install the wheel into a clean environment
+        run: |
+          uv venv /tmp/wheel-check
+          uv pip install --python /tmp/wheel-check/bin/python dist/*.whl
+          /tmp/wheel-check/bin/python -c "import ticket_agent, ai_model_selector"
+          /tmp/wheel-check/bin/ticket-agent-smoke-runtime --skip-network
