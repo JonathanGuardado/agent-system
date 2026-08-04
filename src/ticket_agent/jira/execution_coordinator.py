@@ -23,7 +23,7 @@ from ticket_agent.jira.constants import (
 )
 from ticket_agent.jira.execution_service import JiraExecutionService
 from ticket_agent.jira.work_item_loader import JiraWorkItemLoader
-from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
+from ticket_agent.orchestrator.execution_environment import AuthorizingPreflight
 from ticket_agent.orchestrator.runner import TicketClaimFailedError, TicketWorkItem
 from ticket_agent.orchestrator.state import TicketState
 
@@ -76,7 +76,7 @@ class JiraExecutionCoordinator:
         worktree_cleaner: WorktreeCleaner | None = None,
         checkpointer: CheckpointCleaner | None = None,
         slack_poster_user_id: str = "ticket-agent",
-        execution_preflight: ExecutionPreflight | None = None,
+        execution_preflight: AuthorizingPreflight | None = None,
         action_journal: GoalActionJournal | None = None,
     ) -> None:
         self._loader = loader

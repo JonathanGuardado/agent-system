@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
 
 from ticket_agent.adapters.local.sandbox import Sandbox, is_enforcing_sandbox
 from ticket_agent.domain.errors import AgentSystemError
-from ticket_agent.domain.execution import CommandExecutionPolicy
 from ticket_agent.goal.autonomy import GoalAutonomyResolver
 from ticket_agent.goal.contract import SQLiteGoalContractStore
 from ticket_agent.goal.identity import (
@@ -38,15 +35,12 @@ class AuthorizedExecutionContext:
     def profile(self) -> str:
         return self.sandbox.profile
 
-    def wrap(
-        self,
-        argv: Sequence[str],
-        *,
-        root: Path,
-        cwd: Path,
-        policy: CommandExecutionPolicy,
-    ) -> tuple[str, ...]:
-        return self.sandbox.wrap(argv, root=root, cwd=cwd, policy=policy)
+    # There was a `wrap` here that forwarded to `self.sandbox.wrap`. It was
+    # never called from src/ or tests/, and it passed a CommandExecutionPolicy
+    # where Sandbox.wrap requires a SandboxPolicy -- the conversion
+    # SandboxPolicy.from_execution_policy exists and this one skipped it. An
+    # uncalled, untested shortcut through the sandbox boundary is worse than no
+    # shortcut; callers use `.sandbox` and go through the real one.
 
 
 class ExecutionAuthorizationPreflight:

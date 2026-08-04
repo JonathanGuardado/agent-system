@@ -33,7 +33,10 @@ from ticket_agent.domain.execution import CommandExecutionPolicy, SandboxAttesta
 from ticket_agent.domain.git import WorktreeInfo
 from ticket_agent.goal.journal import GoalActionJournal, ProbeResult
 from ticket_agent.goal.types import LoopState, canonical_json, digest
-from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
+from ticket_agent.orchestrator.execution_environment import (
+    AuthorizingPreflight,
+    ExecutionPreflight,
+)
 from ticket_agent.orchestrator.git_services import (
     GhPullRequestOpener,
     GitPullRequestPort,
@@ -147,7 +150,7 @@ class LocalImplementationService:
         lock_id_factory: LockIdFactory | None = None,
         test_runner_factory: TestRunnerFactory | None = None,
         shell_factory: ShellFactory | None = None,
-        execution_preflight: ExecutionPreflight | None = None,
+        execution_preflight: AuthorizingPreflight | None = None,
         action_journal: GoalActionJournal | None = None,
     ) -> None:
         self._contract_dir = Path(contract_dir)
@@ -546,7 +549,7 @@ class RuntimeShellFactory:
 
     requires_enforcing_sandbox = True
 
-    def __init__(self, preflight: ExecutionPreflight) -> None:
+    def __init__(self, preflight: ExecutionPreflight[Sandbox]) -> None:
         self._preflight = preflight
 
     def __call__(self, worktree_path: Path, contract: RepoContract) -> ShellPort:

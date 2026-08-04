@@ -763,7 +763,11 @@ class _RecordingPreflight:
 
     def check(self, subject=None):
         self.subjects.append(subject)
-        return object()
+        # An authorizing preflight yields the autonomy decision it just
+        # persisted. This returned a bare object() while the runner reached for
+        # that field through getattr with a None default, so the stub could
+        # ignore half the contract and nothing noticed.
+        return _AutonomyPreflight()
 
 
 class _AutonomyDecision:

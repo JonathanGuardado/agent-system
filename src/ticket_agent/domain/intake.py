@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -87,10 +88,31 @@ class Proposal(BaseModel):
     expires_at: datetime
 
 
+class SlackPoster(Protocol):
+    """Boundary for posting messages back to Slack threads.
+
+    One definition, in the layer both the intake and orchestrator packages
+    already depend on. There were two protocols of this name -- intake's
+    required `thread_ts: str` and execution approval's allowed `str | None` --
+    so the same object could not be passed to both, though the only
+    implementation (`SlackSDKPoster`) accepts None and branches on it. The
+    wider signature is the one that matches reality.
+    """
+
+    async def post_thread_reply(
+        self,
+        channel: str | None,
+        thread_ts: str | None,
+        user_id: str,
+        text: str,
+    ) -> None: ...
+
+
 __all__ = [
     "IntakeMode",
     "IntakeResolution",
     "Proposal",
     "ProposalStatus",
+    "SlackPoster",
     "TicketSpec",
 ]

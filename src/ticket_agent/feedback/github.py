@@ -28,7 +28,7 @@ from ticket_agent.jira.constants import (
     STATUS_TODO,
 )
 from ticket_agent.jira.work_item_loader import JiraWorkItemLoader
-from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
+from ticket_agent.orchestrator.execution_environment import AuthorizingPreflight
 from ticket_agent.orchestrator.git_services import (
     PullRequestOpener,
     WorktreeCleanupService,
@@ -566,7 +566,7 @@ class FeedbackExecutionCoordinator:
         runner: TicketRunner,
         worktree_factory: FeedbackWorktreeFactory | None = None,
         worktree_cleaner: WorktreeCleanupService | None = None,
-        execution_preflight: ExecutionPreflight | None = None,
+        execution_preflight: AuthorizingPreflight | None = None,
         action_journal: GoalActionJournal | None = None,
     ) -> None:
         self._loader = loader

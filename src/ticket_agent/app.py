@@ -92,8 +92,8 @@ from ticket_agent.orchestrator.execution_approval import (
     SQLiteExecutionApprovalStore,
 )
 from ticket_agent.orchestrator.execution_environment import (
+    AuthorizingPreflight,
     ExecutionEnvironmentPreflight,
-    ExecutionPreflight,
 )
 from ticket_agent.orchestrator.execution_worker import ExecutionWorker
 from ticket_agent.orchestrator.gates import EXECUTABLE_GATES
@@ -254,7 +254,7 @@ class AgentSystemRuntime:
     goal_contract_store: SQLiteGoalContractStore
     work_item_loader: JiraWorkItemLoader
     emit: EventEmitter | None = None
-    execution_preflight: ExecutionPreflight | None = None
+    execution_preflight: AuthorizingPreflight | None = None
 
     async def run_execution_services(self) -> None:
         """Run detection, worker, and reconciler loops until cancelled."""

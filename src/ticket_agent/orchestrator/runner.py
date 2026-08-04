@@ -9,7 +9,7 @@ from inspect import isawaitable
 import logging
 from logging import Logger
 import re
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from langgraph.types import Command
 
@@ -19,8 +19,11 @@ from ticket_agent.observability.telemetry import (
     NullTelemetryRecorder,
     TelemetryRecorder,
 )
-from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
+from ticket_agent.orchestrator.execution_environment import AuthorizingPreflight
 from ticket_agent.orchestrator.state import TicketState
+
+if TYPE_CHECKING:
+    from ticket_agent.goal.types import AutonomyDecision
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -140,7 +143,7 @@ class OrchestratorRunner:
         checkpointer: CheckpointCleaner | None = None,
         heartbeat_interval_s: float = 600.0,
         telemetry: TelemetryRecorder | None = None,
-        execution_preflight: ExecutionPreflight | None = None,
+        execution_preflight: AuthorizingPreflight | None = None,
     ) -> None:
         if heartbeat_interval_s <= 0:
             raise ValueError("heartbeat_interval_s must be positive")
@@ -207,10 +210,10 @@ class OrchestratorRunner:
             state = self._build_initial_state(
                 work_item,
                 lock,
-                autonomy_decision=getattr(
-                    preflight_result,
-                    "autonomy_decision",
-                    None,
+                autonomy_decision=(
+                    None
+                    if preflight_result is None
+                    else preflight_result.autonomy_decision
                 ),
             )
             await self._emit(
@@ -291,10 +294,10 @@ class OrchestratorRunner:
         state = self._build_initial_state(
             work_item,
             lock,
-            autonomy_decision=getattr(
-                preflight_result,
-                "autonomy_decision",
-                None,
+            autonomy_decision=(
+                None
+                if preflight_result is None
+                else preflight_result.autonomy_decision
             ),
         )
         graph_exception: Exception | None = None
@@ -342,7 +345,7 @@ class OrchestratorRunner:
         work_item: TicketWorkItem,
         lock: Lock,
         *,
-        autonomy_decision: Any = None,
+        autonomy_decision: AutonomyDecision | None = None,
     ) -> TicketState:
         updates: dict[str, Any] = {}
         state_fields = TicketState.model_fields

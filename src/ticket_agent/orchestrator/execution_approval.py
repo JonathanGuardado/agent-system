@@ -15,9 +15,10 @@ from typing import Any, Literal, Protocol
 
 from langgraph.types import interrupt
 
+from ticket_agent.domain.intake import SlackPoster
 from ticket_agent.goal.journal import GoalActionJournal
 from ticket_agent.goal.types import LoopState, digest
-from ticket_agent.orchestrator.execution_environment import ExecutionPreflight
+from ticket_agent.orchestrator.execution_environment import AuthorizingPreflight
 from ticket_agent.orchestrator.runner import TicketWorkItem
 from ticket_agent.orchestrator.services import ApprovalDecision
 from ticket_agent.orchestrator.state import TicketState
@@ -69,17 +70,6 @@ class ApprovalResumeRunner(Protocol):
         decision: str,
     ) -> Any:
         """Resume through the lock-owning orchestrator runner."""
-
-
-class SlackPoster(Protocol):
-    async def post_thread_reply(
-        self,
-        channel: str | None,
-        thread_ts: str | None,
-        user_id: str,
-        text: str,
-    ) -> None:
-        """Post a plain-text Slack message, optionally as a thread reply."""
 
 
 ResumeCallback = Callable[[str, Any], Awaitable[Any] | Any]
@@ -451,7 +441,7 @@ class ExecutionApprovalCommandHandler:
         on_resumed: ResumeCallback | None = None,
         dry_run: bool = False,
         on_dry_run_decision: DryRunDecisionCallback | None = None,
-        execution_preflight: ExecutionPreflight | None = None,
+        execution_preflight: AuthorizingPreflight | None = None,
     ) -> None:
         self._store = store
         self._runner = runner

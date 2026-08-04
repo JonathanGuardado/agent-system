@@ -11,6 +11,7 @@ from typing import Protocol
 from ticket_agent.domain.intake import (
     Proposal,
     ProposalStatus,
+    SlackPoster,
     TicketSpec,
 )
 from ticket_agent.goal.authorizer import GoalAuthorizer
@@ -25,18 +26,6 @@ from ticket_agent.intake.proposal_generator import (
     ProposalRequest,
 )
 from ticket_agent.intake.proposal_store import ProposalStore
-
-
-class SlackPoster(Protocol):
-    """Boundary for posting messages back to Slack threads."""
-
-    async def post_thread_reply(
-        self,
-        channel: str | None,
-        thread_ts: str,
-        user_id: str,
-        text: str,
-    ) -> None: ...
 
 
 class GoalAutonomyResolver(Protocol):
