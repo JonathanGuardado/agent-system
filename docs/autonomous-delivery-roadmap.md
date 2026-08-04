@@ -367,50 +367,76 @@ order, verified against the code on 2026-08-04. Where a milestone maps onto an
 existing phase or milestone-plan step, it says so rather than restating the
 specification.
 
-### Verified state on 2026-08-04
+### Verified state on 2026-08-04 (after M1)
 
 | Check | Result |
 |---|---|
-| `pytest tests/unit/ -q` | 908 passed |
-| `ruff check src tests` | clean |
-| `ruff check .` | 22 findings, all in `scripts/` |
-| `mypy` (strict, `files = ["src"]`) | 98 errors in 36 files |
-| `ai-model-selector` pin | `c9ab8e3`, reachable from `origin/main` |
-| Dependency lock file | none |
-| `.github/` | does not exist — no CI |
+| `pytest tests/unit/ -q` | 913 passed |
+| `ruff check .` | clean — `scripts/` now in scope |
+| `mypy` (strict, `files = ["src", "scripts"]`) | clean |
+| `ai-model-selector` pin | `c9ab8e3`, reachable from `origin/main`, and asserted to agree between `pyproject.toml` and `uv.lock` |
+| Dependency lock file | `uv.lock`, CI syncs with `--frozen` |
+| `.github/workflows/ci.yml` | tests + coverage floor, ruff, mypy, smoke, packaging, pinned-SHA check |
 | SQLite schema versioning | none — no `PRAGMA user_version` in `src/` |
-| Graph topology | `plan → approval → implement → run_tests → review → open_pull_request → escalate → report` (`orchestrator/graph.py:64-74`) — no `commit`, `verify`, or `authorize_candidate` node |
+| Graph topology | `plan → approval → implement → run_tests → review → open_pull_request → escalate → report` (`orchestrator/graph.py`) — no `commit`, `verify`, or `authorize_candidate` node |
 | Host prerequisites | `bwrap` 0.9.0, `gh`, and all Slack/Jira/DeepSeek/Gemini/GitHub credentials present |
 | Runtime databases | **all empty** — see "Operational validation" below |
 
-mypy's 98 cluster as ~32 `arg-type` narrowing, 20 `type-arg` bare generics, and
-10 `call-overload` on `subprocess.run(**kwargs)`. `tests/` and `scripts/` are
-outside the typecheck scope entirely.
-
-### M1 — Engineering baseline (Milestone B step 0e)
+### M1 — Engineering baseline (Milestone B step 0e) — ✅ complete
 
 Every digest the later phases bind is only as trustworthy as the toolchain that
 computed it, which is why this is an invariant rather than housekeeping — see
 [Engineering baseline](#engineering-baseline).
 
-1. **Dependency lock file**, so a clean clone reproduces the environment that
-   produced a recorded digest.
-2. **mypy to zero** across the three clusters above. The `subprocess.run`
-   overloads need typed wrapper signatures around the shell adapters, not
-   annotations. Extend `files` to `tests/` and `scripts/` once `src/` is clean.
-3. **`scripts/` into the lint scope** — 22 findings today, checked by nothing.
-4. **CI** under `.github/workflows/`: unit tests, ruff, mypy, packaging,
-   `ticket-agent-smoke-runtime --skip-network`, and an assertion that the pinned
-   dependency SHA resolves from a fresh clone. Record current coverage as the
-   floor and forbid regression.
-5. **Readiness verifies gate executability.** `config/repos/lab.yaml` declares
-   `typecheck: required` with no executor and is capped only by accident; that
-   state must report `unready` explicitly.
+1. ✅ **Dependency lock file** — `uv.lock`. uv rather than pip-tools because
+   `pip-compile --generate-hashes` refuses VCS dependencies, which would have
+   left the selector pin — the one that matters most — unlocked.
+2. ✅ **mypy to zero**, 98 → 0, across `src/` and `scripts/`.
+3. ✅ **`scripts/` into the lint scope** — was 22 findings checked by nothing.
+4. ✅ **CI** under `.github/workflows/`.
+5. ✅ **Readiness verifies gate executability** — a required gate with no
+   runtime executor is now a blocking readiness reason, so `lab.yaml` reports
+   `unready` and says why.
+
+**`tests/` is not in the typecheck scope.** It needs a packaging decision first
+— no `__init__.py`, so mypy resolves `constants.py` under two module names —
+and behind that sit 1106 errors, 907 of them bare `no-untyped-def` on test
+functions. Whether test bodies carry annotations is its own call, not part of
+taking `src/` to zero.
+
+What the sweep found, beyond the annotations — these were latent defects, not
+style:
+
+- **The test suite only passed under one invocation.** Tests import
+  `tests.constants` and `scripts.system_reset`, neither an installed package.
+  `python -m pytest` puts the working directory on `sys.path`; bare `pytest`
+  does not. CI used the second and seven modules failed to import. Fixed by
+  declaring `pythonpath = ["src", "."]`.
+- **A default shell factory that could never be called.**
+  `_build_contract_shell` was the default for `ShellFactory` in three places
+  while requiring a keyword-only `sandbox`, so reaching it raised `TypeError` —
+  which the test-runner boundary does not catch, so it would have escaped as a
+  crash. Nothing reached it because the tests that omit the factory all fail
+  earlier.
+- **The preflight protocol did not describe what it returns.** Six entry points
+  took `ExecutionPreflight` (returns `Sandbox`) while being handed
+  `ExecutionAuthorizationPreflight` (returns sandbox *plus* the autonomy
+  decision), and the runner reached the extra field through `getattr(...,
+  None)`. A test stub returned a bare `object()`, so `autonomy_mode` and
+  `autonomy_decision_digest` recorded as absent without complaint.
+- **`AuthorizedExecutionContext.wrap` was dead and wrong** — uncalled, and
+  passing a `CommandExecutionPolicy` where `Sandbox.wrap` needs a
+  `SandboxPolicy`. Removed.
+- **Duplicate protocols that had drifted**: three `ModelRouterProtocol`, two
+  `SlackPoster`, two `TicketNode`. Each pair was interchangeable only while
+  nothing compared them.
+- **Unvalidated SQL identifiers** in `scripts/system_reset.py`, safe by
+  assumption rather than by check.
 
 Promoting `agent-system.yaml`'s `lint` gate to `required` and adding `typecheck`
-becomes possible once the sweep is real — but doing so lowers autonomy as a side
-effect of configuration, which is the fragility the derived ceiling exists to
-replace. It is not a substitute for it. See [Autonomy ceiling](#autonomy-ceiling).
+is now possible — but doing so lowers autonomy as a side effect of
+configuration, which is the fragility the derived ceiling exists to replace. It
+is not a substitute for it. See [Autonomy ceiling](#autonomy-ceiling).
 
 ### M2 — First operationally validated run
 

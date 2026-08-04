@@ -179,11 +179,19 @@ it is
 [`docs/autonomous-delivery-roadmap.md#near-term-plan-m1m4`](docs/autonomous-delivery-roadmap.md#near-term-plan-m1m4):
 
 ```txt
-M1  engineering baseline — lock file, mypy to zero, scripts/ linted, CI
-M2  first operationally validated run on a neutral scratch target
+M1  engineering baseline — ✅ done (uv.lock, mypy 0, ruff over ., CI)
+M2  first operationally validated run on a neutral scratch target  ← next
 M3  schema versioning + evidence store
 M4  P14 → P12 closure → P15 → CandidateAuthorization → P16 → hard-kill
 ```
+
+**M2 is the next thing to do.** M1 landed the toolchain, so every gate the
+later phases record a digest against is now checked by CI on every push:
+`uv sync --frozen`, `ruff check .`, `mypy`, 913 unit tests against an 84%
+coverage floor, the runtime smoke, a wheel installed into a clean environment,
+and an assertion that the pinned selector SHA agrees between `pyproject.toml`
+and `uv.lock`. `tests/` is deliberately outside the typecheck scope — see the
+roadmap for why.
 
 **M2 is not a phase.** It is scheduled ahead of P14 because P14–P16 build
 evidence machinery, and there is currently no evidence that the loop underneath
