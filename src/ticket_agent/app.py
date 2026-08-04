@@ -169,6 +169,19 @@ class _ShutdownRequested(Exception):
     """Internal sentinel used to cancel a TaskGroup for graceful shutdown."""
 
 
+def _require_implementation_loop(
+    loop: IterativeImplementationService | None,
+) -> IterativeImplementationService:
+    """The loop that is built exactly when no implementation is injected."""
+
+    if loop is None:
+        raise StartupConfigError(
+            "the iterative implementation loop is required when no "
+            "implementation service is injected"
+        )
+    return loop
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     """Configuration for composing the long-running agent process."""
@@ -437,10 +450,29 @@ def build_runtime(
         router = router or create_model_router(transcripts=transcripts)
     if router is not None:
         router = JournaledModelRouter(router, action_journal)
+
+    def _require_router() -> ModelRouterProtocol:
+        """The router the three model-backed services above guarantee exists.
+
+        Each is built only when its injected alternative is absent, which is
+        exactly when the block above created a router -- a correlation the
+        types cannot carry. Raising here states the invariant at the
+        composition root instead of leaving three call sites to assume it.
+        """
+
+        if router is None:
+            raise StartupConfigError(
+                "a model router is required when planner, implementation, or "
+                "review is not injected"
+            )
+        return router
+
     implementation_loop = (
         None
         if implementation is not None
-        else IterativeImplementationService(router, transcripts=transcripts)
+        else IterativeImplementationService(
+            _require_router(), transcripts=transcripts
+        )
     )
     worktree_cleaner = WorktreeCleanupService()
 
@@ -457,7 +489,7 @@ def build_runtime(
         action_journal=action_journal,
     )
     node_runner = TicketNodeRunner(
-        planner=planner or ModelRouterPlannerService(router),
+        planner=planner or ModelRouterPlannerService(_require_router()),
         approval=_execution_approval_service(
             runtime_config,
             approval_store,
@@ -468,7 +500,11 @@ def build_runtime(
         implementation=implementation
         or LocalImplementationService(
             contract_dir=runtime_config.contract_dir,
-            implementation_step=implementation_loop.implement_context,
+            # Non-None exactly when `implementation` is None, which is the only
+            # branch that evaluates this.
+            implementation_step=_require_implementation_loop(
+                implementation_loop
+            ).implement_context,
             shell_factory=shell_factory,
             execution_preflight=execution_preflight,
             action_journal=action_journal,
@@ -479,7 +515,7 @@ def build_runtime(
             shell_factory=shell_factory,
             action_journal=action_journal,
         ),
-        review=review or ModelRouterReviewService(router),
+        review=review or ModelRouterReviewService(_require_router()),
         pull_request=pull_request
         or GitService(
             base_branch=runtime_config.pull_request_base_branch,

@@ -22,6 +22,11 @@ from ticket_agent.app import (
     load_app_config,
 )
 from ticket_agent.config.repo_contract import load_repo_contract
+from ticket_agent.github.credentials import (
+    GH_ROLE_ADMIN,
+    GH_ROLE_BOT,
+    GitHubRole,
+)
 from ticket_agent.goal.policy import load_risk_policy
 from ticket_agent.goal.signing import SigningError, load_signer
 from ticket_agent.jira.constants import (
@@ -300,7 +305,12 @@ def _harness_readiness_checks(contract_dir: Path) -> list[SmokeCheck]:
                 SmokeCheck(f"harness_readiness[{path.stem}]", "fail", str(exc))
             )
             continue
-        status = {"full": "pass", "partial": "warn", "unready": "warn"}[readiness]
+        status_by_readiness: dict[str, SmokeStatus] = {
+            "full": "pass",
+            "partial": "warn",
+            "unready": "warn",
+        }
+        status = status_by_readiness[readiness]
         detail = readiness if not reasons else f"{readiness}: " + "; ".join(reasons)
         results.append(SmokeCheck(f"harness_readiness[{path.stem}]", status, detail))
     return results
@@ -368,7 +378,11 @@ def _github_auth_checks(
     if not credentials.admin_token and not credentials.bot_token:
         return [_gh_auth_check(run_command)]
     checks: list[SmokeCheck] = []
-    for role, name in (("admin", "github_admin_auth"), ("bot", "github_bot_auth")):
+    roles: tuple[tuple[GitHubRole, str], ...] = (
+        (GH_ROLE_ADMIN, "github_admin_auth"),
+        (GH_ROLE_BOT, "github_bot_auth"),
+    )
+    for role, name in roles:
         if credentials.has_token_for(role):
             checks.append(
                 _gh_token_login_check(name, credentials.gh_env(role), run_command)

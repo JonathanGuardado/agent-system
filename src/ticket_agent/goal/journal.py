@@ -12,6 +12,7 @@ from ticket_agent.goal.identity import normalize_goal_id
 from ticket_agent.goal.types import (
     OPERATION_POLICIES,
     ActionRecord,
+    GoalPhase,
     LoopState,
     OperationPolicy,
     action_id,
@@ -434,12 +435,13 @@ def _nonnegative_int(value: object) -> int:
     return 0
 
 
-def _model_phase(workflow_node: object) -> str:
-    return {
+def _model_phase(workflow_node: object) -> GoalPhase:
+    mapping: dict[str, GoalPhase] = {
         "plan": "discovering",
         "implement": "implementing",
         "review": "reviewing",
-    }.get(str(workflow_node), "discovering")
+    }
+    return mapping.get(str(workflow_node), "discovering")
 
 
 async def _await[T](value: T | Awaitable[T]) -> T:

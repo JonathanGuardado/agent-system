@@ -182,8 +182,13 @@ class LocalImplementationService:
             contract_path,
             self._contract_loader,
         )
-        if err is not None:
-            return _failed_implementation_update(err)
+        # One guard rather than two: every `return None, err` pairs the two,
+        # but the tuple type cannot say so, and the alternative is asserting a
+        # correlation the signature does not carry.
+        if err is not None or contract is None:
+            return _failed_implementation_update(
+                err or "repo contract could not be loaded"
+            )
 
         repo_path = _repo_path(state, contract)
         if repo_path is None:
