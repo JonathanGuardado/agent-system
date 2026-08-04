@@ -50,7 +50,7 @@ class LocalTestAdapter:
             policy=_execution_policy(lint_command),
         )
 
-    def _install_command(self):
+    def _install_command(self) -> CommandSpec | None:
         if not self._contract.policy.dependency_install_allowed:
             return None
         return self._contract.commands.install

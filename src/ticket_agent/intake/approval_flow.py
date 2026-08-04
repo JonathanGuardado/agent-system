@@ -9,6 +9,7 @@ from inspect import isawaitable
 from typing import Protocol
 
 from ticket_agent.domain.intake import (
+    IntakeResolution,
     Proposal,
     ProposalStatus,
     SlackPoster,
@@ -482,8 +483,8 @@ async def _generate_proposal(
 
 def _revision_resolution(
     proposal: Proposal,
-    edit_resolution,
-):
+    edit_resolution: IntakeResolution,
+) -> IntakeResolution:
     return edit_resolution.model_copy(
         update={
             "mode": proposal.mode,

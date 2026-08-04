@@ -30,7 +30,14 @@ from typing import Any
 import yaml
 
 from ticket_agent.domain.errors import AgentSystemError
-from ticket_agent.goal.types import RISK_CEILING, Budgets, RiskClass, ScopeSpec, digest
+from ticket_agent.goal.types import (
+    RISK_CEILING,
+    AutonomyMode,
+    Budgets,
+    RiskClass,
+    ScopeSpec,
+    digest,
+)
 
 #: Ordered least to most restrictive, so `max` picks the stricter of two.
 _RISK_ORDER: tuple[RiskClass, ...] = ("low", "standard", "elevated", "human_only")
@@ -89,7 +96,7 @@ class Decision:
         return not self.out_of_scope
 
     @property
-    def ceiling(self):
+    def ceiling(self) -> AutonomyMode:
         return RISK_CEILING[self.risk]
 
 

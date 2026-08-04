@@ -1167,17 +1167,20 @@ async def _run_named_loop(
         )
         raise
     else:
-        exc = RuntimeLoopExited(f"runtime loop exited unexpectedly: {name}")
+        # Distinct name from the `except ... as exc` above: Python unbinds that
+        # one at the end of its block, so reusing it here reads as touching a
+        # deleted variable.
+        exited = RuntimeLoopExited(f"runtime loop exited unexpectedly: {name}")
         await _emit(
             emit,
             "app.loop_failed",
             {
                 "loop": name,
-                "error_type": exc.__class__.__name__,
-                "error": str(exc),
+                "error_type": exited.__class__.__name__,
+                "error": str(exited),
             },
         )
-        raise exc
+        raise exited
     finally:
         await _emit(emit, "app.loop_stopped", {"loop": name})
 

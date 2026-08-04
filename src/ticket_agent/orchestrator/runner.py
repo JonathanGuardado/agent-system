@@ -471,9 +471,12 @@ class OrchestratorRunner:
                 raise
 
             if not result:
-                exc = TicketHeartbeatLostError(work_item.ticket_key)
-                await self._emit_heartbeat_failed(work_item, lock, exc)
-                raise exc
+                # Distinct name from the `except ... as exc` above: Python
+                # unbinds that one at the end of its block, so reusing it here
+                # reads as touching a deleted variable.
+                lost = TicketHeartbeatLostError(work_item.ticket_key)
+                await self._emit_heartbeat_failed(work_item, lock, lost)
+                raise lost
 
     async def _emit_claim_failed(
         self,

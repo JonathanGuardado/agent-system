@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any, Protocol
 
-from ticket_agent.config.repo_contract import load_repo_contract
+from ticket_agent.config.repo_contract import RepoContract, load_repo_contract
 from ticket_agent.domain.errors import AgentSystemError
 from ticket_agent.goal.identity import normalize_goal_id
 from ticket_agent.goal.types import (
@@ -231,7 +231,7 @@ class GoalAutonomyResolver:
         )
         return worst, detail, tuple(sorted(required))
 
-    def _repo_contract(self, repository: str):
+    def _repo_contract(self, repository: str) -> RepoContract:
         direct = self._contract_dir / f"{repository}.yaml"
         if direct.is_file():
             return load_repo_contract(direct)
